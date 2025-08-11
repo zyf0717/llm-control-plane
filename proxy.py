@@ -47,12 +47,15 @@ async def passthrough(path: str, request: Request):
     headers.pop("host", None)
     headers.pop("content-length", None)
 
-    if path == "gpt-oss-20b":
-        target_endpoint = f"{GPT_OSS_20B_API_URL}/v1/chat/completions"
-    elif path == "qwen3-4b":
-        target_endpoint = f"{QWEN_3_4B_API_URL}/v1/chat/completions"
-    else:
-        target_endpoint = f"{GPT_OSS_20B_API_URL}/v1/chat/completions"
+    endpoint_map = {
+        "gpt-oss-20b": f"{GPT_OSS_20B_API_URL}/v1/chat/completions",
+        "gpt-oss-20b-api": f"{GPT_OSS_20B_API_URL}/api/v0/chat/completions",
+        "qwen3-4b": f"{QWEN_3_4B_API_URL}/v1/chat/completions",
+        "qwen3-4b-api": f"{QWEN_3_4B_API_URL}/api/v0/chat/completions",
+    }
+    target_endpoint = endpoint_map.get(
+        path, f"{GPT_OSS_20B_API_URL}/v1/chat/completions"
+    )
 
     # Handle body
     body = await request.body()

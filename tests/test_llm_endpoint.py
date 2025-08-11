@@ -9,7 +9,7 @@ API_KEY_SECRET = os.getenv("API_KEY_SECRET")
 LLM_API_URL = os.getenv("QWEN_3_4B_API_URL")
 
 # Test endpoint directly
-url = f"{LLM_API_URL}/v1/chat/completions"
+url = f"{LLM_API_URL}/api/v0/chat/completions"
 payload = {
     "messages": [{"role": "user", "content": "Hello, who are you?"}],
 }
