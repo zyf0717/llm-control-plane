@@ -69,7 +69,6 @@ def server(input, output, session):
     def _run_task():
         _call_llm(input.endpoint(), input.text(), input.pretty())
 
-    @output
     @render.ui
     def responseBox():
         status = _call_llm.status()

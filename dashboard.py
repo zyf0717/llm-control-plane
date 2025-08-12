@@ -20,6 +20,7 @@ app_ui = ui.page_fluid(
     ui.page_sidebar(
         ui.sidebar(
             ui.input_select("endpoint", "Endpoint", choices=list(ENDPOINTS.keys())),
+            ui.input_checkbox("stream", "Streaming", value=True),
         ),
         ui.layout_columns(
             ui.card(
@@ -38,45 +39,65 @@ app_ui = ui.page_fluid(
 def server(input, output, session):
 
     async def llm_stream_generator(
-        endpoint_key: str, text: str = "test"
+        endpoint_key: str, text: str = "test", stream: bool = True
     ) -> AsyncGenerator[str, None]:
         text = (text or "").strip()
         if not text:
             yield "Please enter some text."
 
         url = ENDPOINTS.get(endpoint_key, ENDPOINTS["default"])
-        payload = {"messages": [{"role": "user", "content": text}], "stream": True}
+        payload = {"messages": [{"role": "user", "content": text}]}
         headers = {
             "CF-Access-Client-Id": API_KEY_ID,
             "CF-Access-Client-Secret": API_KEY_SECRET,
             "Content-Type": "application/json",
         }
+        timeout = httpx.Timeout(connect=5, read=None, write=5, pool=10)
+        if stream:
+            payload["stream"] = True
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                async with client.stream(
+                    "POST", url, headers=headers, json=payload
+                ) as r:
+                    r.raise_for_status()
+                    async for line in r.aiter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        data = line[6:].strip()
+                        if data == "[DONE]":
+                            break
 
-        timeout = httpx.Timeout(connect=20, read=None, write=20, pool=20)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            async with client.stream("POST", url, headers=headers, json=payload) as r:
-                r.raise_for_status()
-                async for line in r.aiter_lines():
-                    if not line or not line.startswith("data: "):
-                        continue
-                    data = line[6:].strip()
-                    if data == "[DONE]":
-                        break
+                        # Parse vendor schema (OpenAI: choices[0].delta.content)
+                        obj = json.loads(data)
+                        delta = obj.get("choices", [{}])[0].get("delta", {})
+                        chunk = delta.get("content")
+                        if chunk:
+                            yield chunk
 
-                    # Parse vendor schema (OpenAI: choices[0].delta.content)
-                    obj = json.loads(data)
-                    delta = obj.get("choices", [{}])[0].get("delta", {})
-                    chunk = delta.get("content")
-                    if chunk:
-                        yield chunk
+        else:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+
+                # Non-stream schema uses message.content, not delta.content
+                content = (
+                    data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                )
+                if not isinstance(content, str):
+                    content = str(content)
+                yield content
 
     md = ui.MarkdownStream("streamOutput")
 
     @reactive.effect
     @reactive.event(input.send)
     async def _():
+        md.clear()
         await md.stream(
-            llm_stream_generator(endpoint_key=input.endpoint(), text=input.text())
+            llm_stream_generator(
+                endpoint_key=input.endpoint(), text=input.text(), stream=input.stream()
+            )
         )
 
 
