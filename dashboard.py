@@ -4,7 +4,7 @@ from typing import AsyncGenerator
 
 import httpx
 from dotenv import load_dotenv
-from shiny import App, reactive, ui
+from shiny import App, reactive, render, ui
 
 load_dotenv()
 API_KEY_ID = os.getenv("API_KEY_ID")
@@ -29,6 +29,7 @@ app_ui = ui.page_fluid(
                     "text", "Input text", rows=8, placeholder="Type here…"
                 ),
                 ui.input_task_button("send", "Send"),
+                ui.output_ui("outputStats"),
             ),
             ui.card(ui.output_markdown_stream("streamOutput", auto_scroll=False)),
             col_widths=[3, 9],
@@ -38,6 +39,7 @@ app_ui = ui.page_fluid(
 
 
 def server(input, output, session):
+    run_info = reactive.Value(None)
 
     async def llm_stream_generator(
         endpoint_key: str,
@@ -92,13 +94,30 @@ def server(input, output, session):
                                 yield chunk
                     if output_json and not first:
                         yield "]\n```"
+                    if any(
+                        k in obj for k in ("stats", "usage", "model_info", "runtime")
+                    ):
+                        combined = {}
+                        for key in ("stats", "usage", "model_info", "runtime"):
+                            if key in obj and isinstance(obj[key], dict):
+                                combined[key] = obj[key]
+                        run_info.set(combined if combined else None)
+                    else:
+                        run_info.set(None)
 
         else:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.post(url, headers=headers, json=payload)
                 resp.raise_for_status()
                 data = resp.json()
-
+                if any(k in data for k in ("stats", "usage", "model_info", "runtime")):
+                    combined = {}
+                    for key in ("stats", "usage", "model_info", "runtime"):
+                        if key in data and isinstance(data[key], dict):
+                            combined[key] = data[key]
+                    run_info.set(combined if combined else None)
+                else:
+                    run_info.set(None)
                 if output_json:
                     pretty = json.dumps(data, indent=2)
                     yield f"```json\n{pretty}\n```"
@@ -118,7 +137,6 @@ def server(input, output, session):
     @reactive.effect
     @reactive.event(input.send)
     async def _():
-        md.clear()
         await md.stream(
             llm_stream_generator(
                 endpoint_key=input.endpoint(),
@@ -127,6 +145,30 @@ def server(input, output, session):
                 output_json=input.outputJSON(),
             )
         )
+
+    @render.ui
+    async def outputStats():
+        info = run_info.get()
+        if not info:
+            return ui.div()
+
+        # Helper to format numbers
+        def fmt(v):
+            return f"{v:.2f}" if isinstance(v, (int, float)) else str(v)
+
+        sections = []
+        for section_name in ("usage", "stats", "model_info", "runtime"):
+            section_data = info.get(section_name)
+            if section_data and isinstance(section_data, dict):
+                # Heading for section
+                lines = [f"**{section_name.replace('_', ' ').title()}**<br>"]
+                # Each key/value with <br> for clean break
+                for k, v in section_data.items():
+                    lines.append(f"{k.replace('_', ' ')}: {fmt(v)}<br>")
+                sections.append("".join(lines))
+
+        md = "<br>".join(sections)  # extra spacing between sections
+        return ui.markdown(md)
 
 
 app = App(app_ui, server)
