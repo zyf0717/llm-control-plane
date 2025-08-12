@@ -2,7 +2,6 @@ import json
 import os
 
 import httpx
-import markdown
 from dotenv import load_dotenv
 from shiny import App, reactive, render, ui
 
