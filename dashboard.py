@@ -12,8 +12,8 @@ API_KEY_SECRET = os.getenv("API_KEY_SECRET")
 
 ENDPOINTS = {
     "default": "https://llm.paperclips.dev",
-    "gpt-oss-20b": "https://llm.paperclips.dev/gpt-oss-20b",
-    "qwen3-4b": "https://llm.paperclips.dev/qwen3-4b",
+    "gpt-oss-20b": "https://llm.paperclips.dev/gpt-oss-20b-api",
+    "qwen3-4b": "https://llm.paperclips.dev/qwen3-4b-api",
 }
 
 app_ui = ui.page_fluid(
@@ -24,7 +24,7 @@ app_ui = ui.page_fluid(
             ui.input_task_button("send", "Send"),
             ui.input_checkbox("pretty", "Pretty-print JSON", False),
         ),
-        ui.card(ui.output_ui("response_box")),
+        ui.card(ui.output_ui("responseBox")),
         col_widths=[2, 10],
     ),
 )
@@ -34,10 +34,10 @@ def server(input, output, session):
 
     @ui.bind_task_button(button_id="send")
     @reactive.extended_task
-    async def call_llm(endpoint_key: str, text: str, pretty: bool) -> str:
+    async def _call_llm(endpoint_key: str, text: str, pretty: bool) -> str:
         text = (text or "").strip()
         if not text:
-            return "<em>Please enter some text.</em>"
+            return "Please enter some text."
 
         url = ENDPOINTS[endpoint_key]
         payload = {"messages": [{"role": "user", "content": text}]}
@@ -53,49 +53,44 @@ def server(input, output, session):
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:
-            return f"<pre>Request failed: {e!r}</pre>"
+            return f"Request failed: {e!r}"
 
         if pretty:
-            return f"<pre>{json.dumps(data, indent=2)}</pre>"
+            return json.dumps(data, indent=2)
 
         content = (
             data.get("choices", [{}])[0]
             .get("message", {})
             .get("content", "<no content>")
         )
-        return markdown.markdown(
-            content,
-            extensions=[
-                "fenced_code",
-                "codehilite",
-                "tables",
-                "toc",
-                "abbr",
-                "attr_list",
-                "def_list",
-                "footnotes",
-                "md_in_html",
-                "meta",
-                "nl2br",
-                "sane_lists",
-                "smarty",
-                "wikilinks",
-            ],
-        )
+        return content
 
     @reactive.effect
     @reactive.event(input.send)
     def _run_task():
-        call_llm(input.endpoint(), input.text(), input.pretty())
+        _call_llm(input.endpoint(), input.text(), input.pretty())
 
+    @output
     @render.ui
-    def response_box():
-        status = call_llm.status()
+    def responseBox():
+        status = _call_llm.status()
         if status == "running":
-            return ui.HTML("<em>Processing…</em>")
+            return ui.markdown("_Processing…_")
         if status == "error":
-            return ui.HTML("<em>Request failed.</em>")
-        return ui.HTML(call_llm.result() or "<em>Ready.</em>")
+            # Optional: show the exception detail
+            err = _call_llm.error()
+            return ui.markdown(f"**Request failed.**\n\n```\n{err}\n```")
+
+        result = _call_llm.result()
+        if result is None:
+            return ui.markdown("_Ready._")
+
+        # If pretty was selected, result is JSON text; render as code block.
+        if input.pretty():
+            return ui.markdown(f"```json\n{result}\n```")
+
+        # Otherwise assume Markdown/plain text from the LLM.
+        return ui.markdown(result)
 
 
 app = App(app_ui, server)
