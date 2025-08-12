@@ -20,7 +20,8 @@ app_ui = ui.page_fluid(
     ui.page_sidebar(
         ui.sidebar(
             ui.input_select("endpoint", "Endpoint", choices=list(ENDPOINTS.keys())),
-            ui.input_checkbox("stream", "Streaming", value=True),
+            ui.input_checkbox("stream", "Streaming", True),
+            ui.input_checkbox("outputJSON", "JSON", False),
         ),
         ui.layout_columns(
             ui.card(
@@ -39,7 +40,10 @@ app_ui = ui.page_fluid(
 def server(input, output, session):
 
     async def llm_stream_generator(
-        endpoint_key: str, text: str = "test", stream: bool = True
+        endpoint_key: str,
+        text: str = "test",
+        stream: bool = True,
+        output_json: bool = False,
     ) -> AsyncGenerator[str, None]:
         text = (text or "").strip()
         if not text:
@@ -69,10 +73,14 @@ def server(input, output, session):
 
                         # Parse vendor schema (OpenAI: choices[0].delta.content)
                         obj = json.loads(data)
-                        delta = obj.get("choices", [{}])[0].get("delta", {})
-                        chunk = delta.get("content")
-                        if chunk:
-                            yield chunk
+                        if output_json:
+                            yield json.dumps(obj, indent=2)
+                            yield f"```json\n{pretty}\n```"
+                        else:
+                            delta = obj.get("choices", [{}])[0].get("delta", {})
+                            chunk = delta.get("content")
+                            if chunk:
+                                yield chunk
 
         else:
             async with httpx.AsyncClient(timeout=timeout) as client:
@@ -80,13 +88,19 @@ def server(input, output, session):
                 resp.raise_for_status()
                 data = resp.json()
 
-                # Non-stream schema uses message.content, not delta.content
-                content = (
-                    data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                )
-                if not isinstance(content, str):
-                    content = str(content)
-                yield content
+                if output_json:
+                    pretty = json.dumps(data, indent=2)
+                    yield f"```json\n{pretty}\n```"
+                else:
+                    # Non-stream schema uses message.content, not delta.content
+                    content = (
+                        data.get("choices", [{}])[0]
+                        .get("message", {})
+                        .get("content", "")
+                    )
+                    if not isinstance(content, str):
+                        content = str(content)
+                    yield content
 
     md = ui.MarkdownStream("streamOutput")
 
@@ -96,7 +110,10 @@ def server(input, output, session):
         md.clear()
         await md.stream(
             llm_stream_generator(
-                endpoint_key=input.endpoint(), text=input.text(), stream=input.stream()
+                endpoint_key=input.endpoint(),
+                text=input.text(),
+                stream=input.stream(),
+                output_json=input.outputJSON(),
             )
         )
 
