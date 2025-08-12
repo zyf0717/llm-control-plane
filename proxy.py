@@ -5,7 +5,8 @@ from datetime import datetime
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
+from fastapi.responses import Response, StreamingResponse
 
 load_dotenv()
 API_KEY_ID = os.getenv("API_KEY_ID")
@@ -59,49 +60,107 @@ async def passthrough(path: str, request: Request):
 
     # Handle body
     body = await request.body()
+    is_streaming = False
     if body:
         try:
             body_json = json.loads(body)
-            if isinstance(body_json, dict) and "contextOverflowPolicy" not in body_json:
-                body_json["contextOverflowPolicy"] = "rollingWindow"
+            if isinstance(body_json, dict):
+                # Check if streaming is requested
+                is_streaming = body_json.get("stream", False)
+                if "contextOverflowPolicy" not in body_json:
+                    body_json["contextOverflowPolicy"] = "rollingWindow"
                 body = json.dumps(body_json).encode()
         except Exception:
             logger.warning("Failed to parse request body as JSON")
 
     logger.info(
-        "Proxying %s %s to %s", request.method, request.url.path, target_endpoint
+        "Proxying %s %s to %s (streaming: %s)",
+        request.method,
+        request.url.path,
+        target_endpoint,
+        is_streaming,
     )
 
     # Forward request
     async with httpx.AsyncClient() as client:
-        resp = await client.request(
-            method=request.method,
-            url=target_endpoint,
-            headers=headers,
-            content=body if body else None,
-            params=dict(request.query_params),
-            timeout=120,
-        )
+        if is_streaming or request.query_params.get("stream") in {"true", "1"}:
+            # Upstream request
+            timeout = httpx.Timeout(connect=20, read=None, write=20, pool=20)
+            upstream_headers = {
+                k: v
+                for k, v in headers.items()
+                if k.lower() not in {"content-length", "host"}
+            }
+            upstream_headers["Accept"] = "text/event-stream"
 
-    # Log response (excluding message content)
-    try:
-        resp_json = resp.json()
-        if "created" in resp_json:
-            ts = datetime.fromtimestamp(resp_json["created"])
-            logger.info("Response created: %s", ts)
-        if "model" in resp_json:
-            logger.info("Response model: %s", resp_json["model"])
-        if "usage" in resp_json:
-            logger.info("Usage: %s", resp_json["usage"])
-    except Exception:
-        logger.info("Response: %s", resp.text[-500:])
+            async def stream_response():
+                try:
+                    async with httpx.AsyncClient(timeout=timeout) as client:
+                        async with client.stream(
+                            method=request.method,
+                            url=target_endpoint,
+                            headers=upstream_headers,
+                            content=body if body else None,
+                            params=dict(request.query_params),
+                        ) as resp:
+                            resp.raise_for_status()
+                            async for chunk in resp.aiter_bytes():
+                                # passthrough raw SSE bytes (`data: ...\n\n`)
+                                yield chunk
+                except httpx.HTTPStatusError as e:
+                    # Surface an SSE error event that many clients can log
+                    msg = f'data: {{"type":"proxy.error","status":{e.response.status_code},"detail":{json.dumps(e.response.text)}}}\n\n'
+                    yield msg.encode("utf-8")
+                except Exception as e:
+                    msg = f'data: {{"type":"proxy.error","detail":{json.dumps(repr(e))}}}\n\n'
+                    yield msg.encode("utf-8")
 
-    return Response(
-        content=resp.content,
-        status_code=resp.status_code,
-        headers={
-            k: v
-            for k, v in resp.headers.items()
-            if k.lower() not in {"content-encoding", "transfer-encoding", "connection"}
-        },
-    )
+            # Only safe, response-facing headers (do NOT leak secrets)
+            resp_headers = {
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                # Helps with some reverse proxies (NGINX) to not buffer SSE
+                "X-Accel-Buffering": "no",
+            }
+
+            return StreamingResponse(
+                stream_response(),
+                media_type="text/event-stream",
+                headers=resp_headers,
+                # status_code intentionally 200; most SSE endpoints use 200 OK
+            )
+
+        else:
+            # Handle non-streaming response (original logic)
+            resp = await client.request(
+                method=request.method,
+                url=target_endpoint,
+                headers=headers,
+                content=body if body else None,
+                params=dict(request.query_params),
+                timeout=120,
+            )
+
+            # Log response (excluding message content)
+            try:
+                resp_json = resp.json()
+                if "created" in resp_json:
+                    ts = datetime.fromtimestamp(resp_json["created"])
+                    logger.info("Response created: %s", ts)
+                if "model" in resp_json:
+                    logger.info("Response model: %s", resp_json["model"])
+                if "usage" in resp_json:
+                    logger.info("Usage: %s", resp_json["usage"])
+            except Exception:
+                logger.info("Response: %s", resp.text[-500:])
+
+            return Response(
+                content=resp.content,
+                status_code=resp.status_code,
+                headers={
+                    k: v
+                    for k, v in resp.headers.items()
+                    if k.lower()
+                    not in {"content-encoding", "transfer-encoding", "connection"}
+                },
+            )

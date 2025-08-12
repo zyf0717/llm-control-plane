@@ -11,9 +11,9 @@ API_KEY_ID = os.getenv("API_KEY_ID")
 API_KEY_SECRET = os.getenv("API_KEY_SECRET")
 
 ENDPOINTS = {
-    "default": "https://llm-hrpc.paperclips.dev/api/v0/chat/completions",
-    "gpt-oss-20b": "https://llm-hrpc.paperclips.dev/api/v0/chat/completions",
-    "qwen3-4b": "https://llm-mac-mini.paperclips.dev/api/v0/chat/completions",
+    "default": "https://llm.paperclips.dev/gpt-oss-20b-api",
+    "gpt-oss-20b": "https://llm.paperclips.dev/gpt-oss-20b-api",
+    "qwen3-4b": "https://llm.paperclips.dev/qwen3-4b-api",
 }
 
 app_ui = ui.page_fluid(
