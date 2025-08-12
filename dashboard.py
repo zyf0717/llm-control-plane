@@ -41,13 +41,13 @@ def server(input, output, session):
 
     async def llm_stream_generator(
         endpoint_key: str,
-        text: str = "test",
+        text: str,
         stream: bool = True,
         output_json: bool = False,
     ) -> AsyncGenerator[str, None]:
-        text = (text or "").strip()
+        text = (text or "Hello! What model are you?").strip()
         if not text:
-            yield "Please enter some text."
+            yield ""
 
         url = ENDPOINTS.get(endpoint_key, ENDPOINTS["default"])
         payload = {"messages": [{"role": "user", "content": text}]}
@@ -64,23 +64,34 @@ def server(input, output, session):
                     "POST", url, headers=headers, json=payload
                 ) as r:
                     r.raise_for_status()
+                    first = True
+                    first_obj = True
                     async for line in r.aiter_lines():
                         if not line or not line.startswith("data: "):
                             continue
                         data = line[6:].strip()
                         if data == "[DONE]":
                             break
-
-                        # Parse vendor schema (OpenAI: choices[0].delta.content)
                         obj = json.loads(data)
                         if output_json:
-                            yield json.dumps(obj, indent=2)
-                            yield f"```json\n{pretty}\n```"
+                            if first:
+                                yield "```json\n["
+                                first = False
+                                first_obj = True
+                            else:
+                                first_obj = False
+                            pretty = json.dumps(obj, indent=2)
+                            if not first_obj:
+                                yield ",\n" + pretty
+                            else:
+                                yield pretty
                         else:
                             delta = obj.get("choices", [{}])[0].get("delta", {})
                             chunk = delta.get("content")
                             if chunk:
                                 yield chunk
+                    if output_json and not first:
+                        yield "]\n```"
 
         else:
             async with httpx.AsyncClient(timeout=timeout) as client:
