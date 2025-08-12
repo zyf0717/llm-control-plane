@@ -1,95 +1,83 @@
 import json
 import os
+from typing import AsyncGenerator
 
 import httpx
 from dotenv import load_dotenv
-from shiny import App, reactive, render, ui
+from shiny import App, reactive, ui
 
 load_dotenv()
 API_KEY_ID = os.getenv("API_KEY_ID")
 API_KEY_SECRET = os.getenv("API_KEY_SECRET")
 
 ENDPOINTS = {
-    "default": "https://llm.paperclips.dev",
-    "gpt-oss-20b": "https://llm.paperclips.dev/gpt-oss-20b-api",
-    "qwen3-4b": "https://llm.paperclips.dev/qwen3-4b-api",
+    "default": "https://llm-hrpc.paperclips.dev/api/v0/chat/completions",
+    "gpt-oss-20b": "https://llm-hrpc.paperclips.dev/api/v0/chat/completions",
+    "qwen3-4b": "https://llm-mac-mini.paperclips.dev/api/v0/chat/completions",
 }
 
 app_ui = ui.page_fluid(
-    ui.layout_columns(
-        ui.card(
+    ui.page_sidebar(
+        ui.sidebar(
             ui.input_select("endpoint", "Endpoint", choices=list(ENDPOINTS.keys())),
-            ui.input_text_area("text", "Input text", rows=8, placeholder="Type here…"),
-            ui.input_task_button("send", "Send"),
-            ui.input_checkbox("pretty", "Pretty-print JSON", False),
         ),
-        ui.card(ui.output_ui("responseBox")),
-        col_widths=[2, 10],
+        ui.layout_columns(
+            ui.card(
+                ui.input_text_area(
+                    "text", "Input text", rows=8, placeholder="Type here…"
+                ),
+                ui.input_task_button("send", "Send"),
+            ),
+            ui.card(ui.output_markdown_stream("streamOutput", auto_scroll=False)),
+            col_widths=[3, 9],
+        ),
     ),
 )
 
 
 def server(input, output, session):
 
-    @ui.bind_task_button(button_id="send")
-    @reactive.extended_task
-    async def _call_llm(endpoint_key: str, text: str, pretty: bool) -> str:
+    async def llm_stream_generator(
+        endpoint_key: str, text: str = "test"
+    ) -> AsyncGenerator[str, None]:
         text = (text or "").strip()
         if not text:
-            return "Please enter some text."
+            yield "Please enter some text."
 
-        url = ENDPOINTS[endpoint_key]
-        payload = {"messages": [{"role": "user", "content": text}]}
+        url = ENDPOINTS.get(endpoint_key, ENDPOINTS["default"])
+        payload = {"messages": [{"role": "user", "content": text}], "stream": True}
         headers = {
             "CF-Access-Client-Id": API_KEY_ID,
             "CF-Access-Client-Secret": API_KEY_SECRET,
             "Content-Type": "application/json",
         }
 
-        try:
-            async with httpx.AsyncClient(timeout=60) as client:
-                resp = await client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            return f"Request failed: {e!r}"
+        timeout = httpx.Timeout(connect=20, read=None, write=20, pool=20)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream("POST", url, headers=headers, json=payload) as r:
+                r.raise_for_status()
+                async for line in r.aiter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+                    data = line[6:].strip()
+                    if data == "[DONE]":
+                        break
 
-        if pretty:
-            return json.dumps(data, indent=2)
+                    # Parse vendor schema (OpenAI: choices[0].delta.content)
+                    obj = json.loads(data)
+                    delta = obj.get("choices", [{}])[0].get("delta", {})
+                    chunk = delta.get("content")
+                    if chunk:
+                        yield chunk
 
-        content = (
-            data.get("choices", [{}])[0]
-            .get("message", {})
-            .get("content", "<no content>")
-        )
-        return content
+    md = ui.MarkdownStream("streamOutput")
 
     @reactive.effect
     @reactive.event(input.send)
-    def _run_task():
-        _call_llm(input.endpoint(), input.text(), input.pretty())
-
-    @output
-    @render.ui
-    def responseBox():
-        status = _call_llm.status()
-        if status == "running":
-            return ui.markdown("_Processing…_")
-        if status == "error":
-            # Optional: show the exception detail
-            err = _call_llm.error()
-            return ui.markdown(f"**Request failed.**\n\n```\n{err}\n```")
-
-        result = _call_llm.result()
-        if result is None:
-            return ui.markdown("_Ready._")
-
-        # If pretty was selected, result is JSON text; render as code block.
-        if input.pretty():
-            return ui.markdown(f"```json\n{result}\n```")
-
-        # Otherwise assume Markdown/plain text from the LLM.
-        return ui.markdown(result)
+    async def _():
+        await md.stream(
+            llm_stream_generator(endpoint_key=input.endpoint(), text=input.text())
+        )
 
 
 app = App(app_ui, server)
