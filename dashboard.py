@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from typing import AsyncGenerator
 
 import httpx
@@ -40,6 +41,7 @@ app_ui = ui.page_fluid(
 
 
 def server(input, output, session):
+    last_runtime = reactive.Value(None)
     run_info = reactive.Value(None)
     send_button_state = reactive.Value("ready")
 
@@ -52,7 +54,7 @@ def server(input, output, session):
         text = (text or "Hello! What model are you?").strip()
         if not text:
             yield ""
-
+        now = time.time()
         send_button_state.set("busy")
 
         url = ENDPOINTS.get(endpoint_key, ENDPOINTS["default"])
@@ -137,6 +139,7 @@ def server(input, output, session):
                         content = str(content)
                     yield content
 
+        last_runtime.set(time.time() - now)
         send_button_state.set("ready")
 
     md = ui.MarkdownStream("streamOutput")
@@ -162,11 +165,14 @@ def server(input, output, session):
             ui.update_task_button("send", state="ready")
 
     @render.ui
-    @reactive.event(run_info)
+    @reactive.event(run_info, last_runtime)
     def outputStats():
         info = run_info.get()
         if not info:
-            return ui.div()
+            rt = last_runtime.get()
+            return ui.markdown(
+                f"total runtime (sec): {rt:.2f}" if rt is not None else ""
+            )
 
         # Helper to format numbers
         def fmt(v):
@@ -191,7 +197,7 @@ def server(input, output, session):
     def responseBox():
         return ui.card(
             ui.output_markdown_stream("streamOutput", auto_scroll=input.autoScroll()),
-            height="90vh",
+            height="92vh",
         )
 
 
