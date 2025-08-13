@@ -1,4 +1,8 @@
 import json
+import logging
+from typing import Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class SSEAccumulator:
@@ -26,3 +30,32 @@ class SSEAccumulator:
 
     def text(self) -> str | None:
         return "".join(self._parts) if self._parts else None
+
+
+def extract_assistant_text(resp_json: Dict) -> Optional[str]:
+    """Extract assistant text from response JSON (OpenAI-style)."""
+    ch0 = (resp_json.get("choices") or [None])[0] or {}
+    # New-style
+    if isinstance(ch0.get("message"), dict):
+        return ch0["message"].get("content")
+    # v0/legacy fallback
+    return ch0.get("text")
+
+
+def create_error_sse_message(error_type: str, **kwargs) -> bytes:
+    """Create SSE error message."""
+    data = {"type": f"proxy.{error_type}", **kwargs}
+    msg = f"data: {json.dumps(data)}\n\n"
+    return msg.encode("utf-8")
+
+
+def filter_unsafe_headers(headers: Dict[str, str]) -> Dict[str, str]:
+    """Filter out headers that shouldn't be passed through."""
+    unsafe_headers = {
+        "content-encoding",
+        "transfer-encoding",
+        "connection",
+        "host",
+        "content-length",
+    }
+    return {k: v for k, v in headers.items() if k.lower() not in unsafe_headers}
