@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import uuid
 from typing import AsyncGenerator
 
 import httpx
@@ -50,8 +51,15 @@ app_ui = ui.page_fluid(
         ),
         ui.layout_columns(
             ui.card(
+                ui.input_text(
+                    "convoID", "Conversation ID", placeholder="Enter or generate"
+                ),
+                ui.input_action_button("generateConvoID", "Generate"),
                 ui.input_text_area(
-                    "text", "Input text", rows=8, placeholder="Type here…"
+                    "text",
+                    "Input text",
+                    rows=8,
+                    placeholder="Type message here to send",
                 ),
                 ui.input_task_button("send", "Send", auto_reset=False),
                 ui.output_ui("outputStats"),
@@ -72,6 +80,12 @@ def server(input, output, session):
     # Enable dynamic theme switching
     shinyswatch.theme_picker_server()
 
+    @reactive.Effect
+    @reactive.event(input.generateConvoID)
+    def _generate_convo_id():
+        new_uuid = str(uuid.uuid4().hex[:12])
+        ui.update_text("convoID", value=new_uuid, session=session)
+
     # Logout
     @reactive.Effect
     @reactive.event(input.logout)
@@ -83,6 +97,7 @@ def server(input, output, session):
         text: str,
         stream: bool = True,
         output_json: bool = False,
+        convo_id: str = None,
     ) -> AsyncGenerator[str, None]:
         text = (text or "Hello! What model are you?").strip()
         if not text:
@@ -97,6 +112,8 @@ def server(input, output, session):
             "CF-Access-Client-Secret": API_KEY_SECRET,
             "Content-Type": "application/json",
         }
+        if convo_id:
+            headers["X-Convo-ID"] = convo_id
         timeout = httpx.Timeout(connect=5, read=None, write=5, pool=10)
 
         if stream:
@@ -186,6 +203,7 @@ def server(input, output, session):
                 text=input.text(),
                 stream=input.stream(),
                 output_json=input.outputJSON(),
+                convo_id=input.convoID() if input.convoID() else None,
             )
         )
 
