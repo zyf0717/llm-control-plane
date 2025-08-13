@@ -4,6 +4,7 @@ import time
 from typing import AsyncGenerator
 
 import httpx
+import shinyswatch
 from dotenv import load_dotenv
 from shiny import App, reactive, render, ui
 
@@ -18,12 +19,34 @@ ENDPOINTS = {
 }
 
 app_ui = ui.page_fluid(
+    ui.tags.style(
+        """
+        /* Make the sidebar independently scrollable */
+        .sidebar {
+            max-height: 100vh;
+            overflow-y: auto;
+            position: sticky;
+            top: 0;
+            background: inherit;
+        }
+        """
+    ),
     ui.page_sidebar(
         ui.sidebar(
+            ui.tags.script(
+                """
+                Shiny.addCustomMessageHandler("logout", function(_) {
+                    window.location.href = "https://llm-dashboard.paperclips.dev/cdn-cgi/access/logout";
+                });
+                """
+            ),
             ui.input_select("endpoint", "Endpoint", choices=list(ENDPOINTS.keys())),
             ui.input_checkbox("stream", "Streaming", True),
             ui.input_checkbox("autoScroll", "Auto-scroll", True),
             ui.input_checkbox("outputJSON", "JSON", False),
+            shinyswatch.theme_picker_ui(),
+            ui.hr(),
+            ui.input_action_button("logout", "Logout"),
         ),
         ui.layout_columns(
             ui.card(
@@ -37,6 +60,7 @@ app_ui = ui.page_fluid(
             col_widths=[3, 9],
         ),
     ),
+    theme=shinyswatch.theme.flatly,
 )
 
 
@@ -44,6 +68,15 @@ def server(input, output, session):
     last_runtime = reactive.Value(None)
     run_info = reactive.Value(None)
     send_button_state = reactive.Value("ready")
+
+    # Enable dynamic theme switching
+    shinyswatch.theme_picker_server()
+
+    # Logout
+    @reactive.Effect
+    @reactive.event(input.logout)
+    async def _():
+        await session.send_custom_message("logout", {})
 
     async def llm_stream_generator(
         endpoint_key: str,
