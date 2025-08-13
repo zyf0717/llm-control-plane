@@ -21,6 +21,7 @@ app_ui = ui.page_fluid(
         ui.sidebar(
             ui.input_select("endpoint", "Endpoint", choices=list(ENDPOINTS.keys())),
             ui.input_checkbox("stream", "Streaming", True),
+            ui.input_checkbox("autoScroll", "Auto-scroll", True),
             ui.input_checkbox("outputJSON", "JSON", False),
         ),
         ui.layout_columns(
@@ -28,10 +29,10 @@ app_ui = ui.page_fluid(
                 ui.input_text_area(
                     "text", "Input text", rows=8, placeholder="Type here…"
                 ),
-                ui.input_task_button("send", "Send"),
+                ui.input_task_button("send", "Send", auto_reset=False),
                 ui.output_ui("outputStats"),
             ),
-            ui.card(ui.output_markdown_stream("streamOutput", auto_scroll=False)),
+            ui.output_ui("responseBox"),
             col_widths=[3, 9],
         ),
     ),
@@ -40,6 +41,7 @@ app_ui = ui.page_fluid(
 
 def server(input, output, session):
     run_info = reactive.Value(None)
+    send_button_state = reactive.Value("ready")
 
     async def llm_stream_generator(
         endpoint_key: str,
@@ -51,6 +53,8 @@ def server(input, output, session):
         if not text:
             yield ""
 
+        send_button_state.set("busy")
+
         url = ENDPOINTS.get(endpoint_key, ENDPOINTS["default"])
         payload = {"messages": [{"role": "user", "content": text}]}
         headers = {
@@ -59,6 +63,7 @@ def server(input, output, session):
             "Content-Type": "application/json",
         }
         timeout = httpx.Timeout(connect=5, read=None, write=5, pool=10)
+
         if stream:
             payload["stream"] = True
             async with httpx.AsyncClient(timeout=timeout) as client:
@@ -132,6 +137,8 @@ def server(input, output, session):
                         content = str(content)
                     yield content
 
+        send_button_state.set("ready")
+
     md = ui.MarkdownStream("streamOutput")
 
     @reactive.effect
@@ -146,8 +153,17 @@ def server(input, output, session):
             )
         )
 
+    @reactive.effect
+    def _():
+        status = send_button_state.get()
+        if status == "busy":
+            ui.update_task_button("send", state="busy")
+        else:
+            ui.update_task_button("send", state="ready")
+
     @render.ui
-    async def outputStats():
+    @reactive.event(run_info)
+    def outputStats():
         info = run_info.get()
         if not info:
             return ui.div()
@@ -169,6 +185,14 @@ def server(input, output, session):
 
         md = "<br>".join(sections)  # extra spacing between sections
         return ui.markdown(md)
+
+    @render.ui
+    @reactive.event(input.send)
+    def responseBox():
+        return ui.card(
+            ui.output_markdown_stream("streamOutput", auto_scroll=input.autoScroll()),
+            height="90vh",
+        )
 
 
 app = App(app_ui, server)
