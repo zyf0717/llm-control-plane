@@ -2,7 +2,6 @@
 Test suite for the LLM Control Plane proxy functionality.
 """
 
-import asyncio
 import json
 import time
 from unittest.mock import AsyncMock, Mock, patch

@@ -3,7 +3,6 @@ Integration tests for the LLM Control Plane proxy.
 These tests require actual network connectivity and may be slower.
 """
 
-import asyncio
 import os
 from unittest.mock import patch
 
