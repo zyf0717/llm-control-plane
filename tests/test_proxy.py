@@ -21,8 +21,8 @@ from proxy import (
     get_available_endpoint,
     get_target_endpoint,
     parse_and_inject_history,
-    prepare_headers,
 )
+from utils import HeaderManager
 
 
 @pytest.fixture
@@ -228,10 +228,10 @@ class TestHeaderPreparation:
 
     def test_prepare_headers(self, mock_request):
         """Test header preparation with API keys."""
-        with patch("proxy.filter_unsafe_headers") as mock_filter:
+        with patch("utils.filter_unsafe_headers") as mock_filter:
             mock_filter.return_value = {"content-type": "application/json"}
 
-            result = prepare_headers(mock_request)
+            result = HeaderManager.prepare_upstream_headers(mock_request)
 
             expected = {
                 "content-type": "application/json",

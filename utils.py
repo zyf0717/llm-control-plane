@@ -1,6 +1,9 @@
 import json
 import logging
+import os
 from typing import Dict, Optional
+
+from fastapi import Request
 
 logger = logging.getLogger(__name__)
 
@@ -59,3 +62,56 @@ def filter_unsafe_headers(headers: Dict[str, str]) -> Dict[str, str]:
         "content-length",
     }
     return {k: v for k, v in headers.items() if k.lower() not in unsafe_headers}
+
+
+class HeaderManager:
+    """Centralized header management for the proxy."""
+
+    @staticmethod
+    def create_auth_headers() -> Dict[str, str]:
+        """Create authentication headers for upstream requests."""
+        return {
+            "CF-Access-Client-Id": os.getenv("API_KEY_ID"),
+            "CF-Access-Client-Secret": os.getenv("API_KEY_SECRET"),
+        }
+
+    @staticmethod
+    def prepare_upstream_headers(
+        request: Request, for_streaming: bool = False
+    ) -> Dict[str, str]:
+        """Prepare headers for upstream requests."""
+        headers = filter_unsafe_headers(dict(request.headers))
+        headers.update(HeaderManager.create_auth_headers())
+
+        if for_streaming:
+            # Remove content-length for streaming and set proper accept header
+            headers.pop("content-length", None)
+            headers["Accept"] = "text/event-stream"
+
+        return headers
+
+    @staticmethod
+    def create_response_headers(
+        source_headers: Optional[Dict] = None,
+        convo_id: Optional[str] = None,
+        for_streaming: bool = False,
+    ) -> Dict[str, str]:
+        """Create safe response headers."""
+        if source_headers:
+            headers = filter_unsafe_headers(source_headers)
+        else:
+            headers = {}
+
+        if for_streaming:
+            headers.update(
+                {
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                }
+            )
+
+        if convo_id:
+            headers["X-Convo-ID"] = convo_id
+
+        return headers

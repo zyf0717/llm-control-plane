@@ -39,9 +39,6 @@ class TestRealEndpointHealth:
         assert result is False
 
     @pytest.mark.asyncio
-    @pytest.mark.skipif(
-        not os.getenv("RUN_ENDPOINT_TESTS"), reason="Set RUN_ENDPOINT_TESTS=1 to run"
-    )
     async def test_configured_endpoints(self):
         """Test health of actual configured endpoints (requires environment setup)."""
         results = {}

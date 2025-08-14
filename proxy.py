@@ -11,15 +11,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import Response, StreamingResponse
 
 from utils import (
+    HeaderManager,
     SSEAccumulator,
     create_error_sse_message,
     extract_assistant_text,
-    filter_unsafe_headers,
 )
 
 load_dotenv()
-API_KEY_ID = os.getenv("API_KEY_ID")
-API_KEY_SECRET = os.getenv("API_KEY_SECRET")
 GPT_OSS_20B_API_URL = os.getenv("GPT_OSS_20B_API_URL")
 QWEN_3_4B_API_URL = os.getenv("QWEN_3_4B_API_URL")
 
@@ -56,10 +54,7 @@ async def check_endpoint_health(endpoint_url: str, timeout: float = 5.0) -> bool
 
     # Cache miss or expired, perform actual check
     try:
-        headers = {
-            "CF-Access-Client-Id": API_KEY_ID,
-            "CF-Access-Client-Secret": API_KEY_SECRET,
-        }
+        headers = HeaderManager.create_auth_headers()
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
             response = await client.get(endpoint_url, headers=headers)
             # Consider 2xx and 4xx as healthy (4xx means auth/client issues, not server down)
@@ -106,14 +101,6 @@ async def get_available_endpoint(path: str) -> str:
     # If all else fails, return the default (let it fail downstream)
     logger.error("All endpoints appear to be offline, using default")
     return DEFAULT_ENDPOINT
-
-
-def prepare_headers(request: Request) -> Dict[str, str]:
-    """Prepare headers for upstream request."""
-    headers = filter_unsafe_headers(dict(request.headers))
-    headers["CF-Access-Client-Id"] = API_KEY_ID
-    headers["CF-Access-Client-Secret"] = API_KEY_SECRET
-    return headers
 
 
 def parse_and_inject_history(
@@ -178,14 +165,6 @@ def log_response_info(resp_json: Dict) -> Optional[str]:
     return assistant_text
 
 
-def create_safe_headers(resp_headers: Dict, convo_id: Optional[str]) -> Dict[str, str]:
-    """Create safe response headers."""
-    safe_headers = filter_unsafe_headers(resp_headers)
-    if convo_id:
-        safe_headers["X-Convo-ID"] = convo_id
-    return safe_headers
-
-
 @app.get("/health")
 async def health_check():
     """Health check endpoint that also reports endpoint statuses."""
@@ -221,16 +200,14 @@ async def custom_endpoints(path: str, request: Request):
 async def handle_streaming_response(
     request: Request,
     target_endpoint: str,
-    headers: Dict[str, str],
     body: bytes,
     convo_id: Optional[str],
 ) -> StreamingResponse:
     """Handle streaming response proxying."""
     timeout = httpx.Timeout(connect=20, read=None, write=20, pool=20)
-    upstream_headers = {
-        k: v for k, v in headers.items() if k.lower() not in {"content-length", "host"}
-    }
-    upstream_headers["Accept"] = "text/event-stream"
+    upstream_headers = HeaderManager.prepare_upstream_headers(
+        request, for_streaming=True
+    )
 
     acc = SSEAccumulator()
 
@@ -262,34 +239,29 @@ async def handle_streaming_response(
             except Exception:
                 pass  # Don't let history failures affect client stream
 
-    resp_headers = {
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-        "X-Accel-Buffering": "no",
-    }
-    if convo_id:
-        resp_headers["X-Convo-ID"] = convo_id
-
     return StreamingResponse(
         stream_response(),
         media_type="text/event-stream",
-        headers=resp_headers,
+        headers=HeaderManager.create_response_headers(
+            convo_id=convo_id, for_streaming=True
+        ),
     )
 
 
 async def handle_non_streaming_response(
     request: Request,
     target_endpoint: str,
-    headers: Dict[str, str],
     body: bytes,
     convo_id: Optional[str],
 ) -> Response:
     """Handle non-streaming response proxying."""
+    upstream_headers = HeaderManager.prepare_upstream_headers(request)
+
     async with httpx.AsyncClient() as client:
         resp = await client.request(
             method=request.method,
             url=target_endpoint,
-            headers=headers,
+            headers=upstream_headers,
             content=body if body else None,
             params=dict(request.query_params),
             timeout=120,
@@ -308,20 +280,17 @@ async def handle_non_streaming_response(
         return Response(
             content=resp.content,
             status_code=resp.status_code,
-            headers=create_safe_headers(dict(resp.headers), convo_id),
+            headers=HeaderManager.create_response_headers(dict(resp.headers), convo_id),
         )
 
 
 async def proxy_with_context(path: str, request: Request):
     """Main proxy handler with conversation context."""
-    headers = prepare_headers(request)
     target_endpoint = await get_available_endpoint(path)
 
     # Parse request body and inject conversation history
     body = await request.body()
     convo_id = request.headers.get("X-Convo-ID")
-    if convo_id:
-        headers["X-Convo-ID"] = convo_id
 
     body, is_streaming = parse_and_inject_history(body, convo_id)
 
@@ -338,10 +307,8 @@ async def proxy_with_context(path: str, request: Request):
     )
 
     if is_streaming:
-        return await handle_streaming_response(
-            request, target_endpoint, headers, body, convo_id
-        )
+        return await handle_streaming_response(request, target_endpoint, body, convo_id)
     else:
         return await handle_non_streaming_response(
-            request, target_endpoint, headers, body, convo_id
+            request, target_endpoint, body, convo_id
         )

@@ -34,7 +34,14 @@ def mock_environment_variables():
             "proxy.API_KEY_SECRET", test_env["API_KEY_SECRET"]
         ), patch("proxy.GPT_OSS_20B_API_URL", test_env["GPT_OSS_20B_API_URL"]), patch(
             "proxy.QWEN_3_4B_API_URL", test_env["QWEN_3_4B_API_URL"]
-        ):
+        ), patch(
+            "utils.os.getenv"
+        ) as mock_getenv:
+            # Mock os.getenv for HeaderManager
+            def getenv_side_effect(key, default=None):
+                return test_env.get(key, default)
+
+            mock_getenv.side_effect = getenv_side_effect
             yield
 
 
