@@ -20,18 +20,35 @@ ENDPOINTS = {
 }
 
 app_ui = ui.page_fluid(
-    # ui.tags.style(
-    #     """
-    #     /* Make the sidebar independently scrollable */
-    #     .sidebar {
-    #         max-height: 100vh;
-    #         overflow-y: auto;
-    #         position: sticky;
-    #         top: 0;
-    #         background: inherit;
-    #     }
-    #     """
-    # ),
+    ui.tags.script(
+        """
+            document.addEventListener('DOMContentLoaded', () => {
+                const ta = document.getElementById('userTextInput');
+                const btn = document.getElementById('send');
+                if (!ta || !btn) return;
+
+                ta.addEventListener('keydown', (e) => {
+                    if (e.isComposing) return; // IME
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    btn.click();
+                    }
+                });
+            });
+        """
+    ),
+    ui.tags.style(
+        """
+        /* Make the sidebar independently scrollable */
+        .sidebar {
+            max-height: 100vh;
+            overflow-y: auto;
+            position: sticky;
+            top: 0;
+            background: inherit;
+        }
+        """
+    ),
     ui.page_sidebar(
         ui.sidebar(
             ui.tags.script(
@@ -42,24 +59,31 @@ app_ui = ui.page_fluid(
                 """
             ),
             ui.input_select("endpoint", "Endpoint", choices=list(ENDPOINTS.keys())),
-            ui.input_checkbox("stream", "Streaming", True),
-            ui.input_checkbox("autoScroll", "Auto-scroll", True),
-            ui.input_checkbox("outputJSON", "JSON", False),
+            ui.input_switch("stream", "Streaming", True),
+            ui.input_switch("autoScroll", "Auto-scroll", True),
+            ui.input_switch("outputJSON", "JSON", False),
             shinyswatch.theme_picker_ui(),
             ui.hr(),
             ui.input_action_button("logout", "Logout"),
         ),
         ui.layout_columns(
             ui.card(
-                ui.input_text(
-                    "convoID", "Conversation ID", placeholder="Enter or generate"
+                ui.layout_columns(
+                    ui.input_text(
+                        "convoID",
+                        "",
+                        placeholder="Conversation ID",
+                        width="100%",
+                    ),
+                    ui.input_action_button("generateConvoID", "New"),
+                    col_widths=[7, 5],
                 ),
-                ui.input_action_button("generateConvoID", "Generate"),
                 ui.input_text_area(
-                    "text",
-                    "Input text",
-                    rows=8,
-                    placeholder="Type message here to send",
+                    "userTextInput",
+                    "",
+                    rows=6,
+                    placeholder="Ask anything",
+                    width="100%",
                 ),
                 ui.input_task_button("send", "Send", auto_reset=False),
                 ui.output_ui("outputStats"),
@@ -81,6 +105,31 @@ def server(input, output, session):
     shinyswatch.theme_picker_server()
 
     @reactive.Effect
+    @reactive.event(input.outputJSON)
+    def _():
+        if input.outputJSON():
+            ui.update_switch("stream", value=False)
+            ui.update_switch("autoScroll", value=False)
+
+    @reactive.Effect
+    @reactive.event(input.stream, input.autoScroll)
+    def _():
+        if input.stream() or input.autoScroll():
+            ui.update_switch("outputJSON", value=False)
+
+    @reactive.Effect
+    @reactive.event(input.autoScroll)
+    def _():
+        if input.autoScroll():
+            ui.update_switch("stream", value=True)
+
+    @reactive.Effect
+    @reactive.event(input.stream)
+    def _():
+        if not input.stream():
+            ui.update_switch("autoScroll", value=False)
+
+    @reactive.Effect
     @reactive.event(input.generateConvoID)
     def _generate_convo_id():
         new_uuid = str(uuid.uuid4().hex[:12])
@@ -91,6 +140,11 @@ def server(input, output, session):
     @reactive.event(input.logout)
     async def _():
         await session.send_custom_message("logout", {})
+
+    @reactive.effect
+    @reactive.event(input.send)
+    def _on_send():
+        ui.update_text_area("userTextInput", value="")
 
     async def llm_stream_generator(
         endpoint_key: str,
@@ -200,7 +254,7 @@ def server(input, output, session):
         await md.stream(
             llm_stream_generator(
                 endpoint_key=input.endpoint(),
-                text=input.text(),
+                text=input.userTextInput(),
                 stream=input.stream(),
                 output_json=input.outputJSON(),
                 convo_id=input.convoID() if input.convoID() else None,
@@ -247,8 +301,12 @@ def server(input, output, session):
     @reactive.event(input.send)
     def responseBox():
         return ui.card(
-            ui.output_markdown_stream("streamOutput", auto_scroll=input.autoScroll()),
-            height="92vh",
+            ui.div(
+                ui.output_markdown_stream(
+                    "streamOutput", auto_scroll=input.autoScroll()
+                ),
+                style="max-height:90vh; overflow:auto;",
+            )
         )
 
 
