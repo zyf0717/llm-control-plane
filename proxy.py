@@ -209,6 +209,9 @@ async def handle_streaming_response(
         request, for_streaming=True
     )
 
+    # Prepare streaming options
+    body["stream_options"] = {"include_usage": True}
+
     acc = SSEAccumulator()
 
     async def stream_response():

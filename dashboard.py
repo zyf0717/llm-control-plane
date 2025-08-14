@@ -14,38 +14,48 @@ API_KEY_ID = os.getenv("API_KEY_ID")
 API_KEY_SECRET = os.getenv("API_KEY_SECRET")
 
 ENDPOINTS = {
-    "default": "https://llm.paperclips.dev/gpt-oss-20b-api",
-    "gpt-oss-20b": "https://llm.paperclips.dev/gpt-oss-20b-api",
-    "qwen3-4b": "https://llm.paperclips.dev/qwen3-4b-api",
+    "default": {
+        "rest-api": "https://llm.paperclips.dev/gpt-oss-20b-api",
+        "openai": "https://llm.paperclips.dev/gpt-oss-20b",
+    },
+    "gpt-oss-20b": {
+        "rest-api": "https://llm.paperclips.dev/gpt-oss-20b-api",
+        "openai": "https://llm.paperclips.dev/gpt-oss-20b",
+    },
+    "qwen3-4b": {
+        "rest-api": "https://llm.paperclips.dev/qwen3-4b-api",
+        "openai": "https://llm.paperclips.dev/qwen3-4b",
+    },
 }
 
 app_ui = ui.page_fluid(
     ui.tags.script(
         """
-            document.addEventListener('DOMContentLoaded', () => {
-                const ta = document.getElementById('userTextInput');
-                const btn = document.getElementById('send');
-                if (!ta || !btn) return;
+        document.addEventListener('DOMContentLoaded', () => {
+            const ta = document.getElementById('userTextInput');
+            const btn = document.getElementById('send');
+            if (!ta || !btn) return;
 
-                ta.addEventListener('keydown', (e) => {
-                    if (e.isComposing) return; // IME
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    btn.click();
-                    }
-                });
+            ta.addEventListener('keydown', (e) => {
+                if (e.isComposing) return; // IME
+                if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                btn.click();
+                }
             });
+        });
         """
     ),
     ui.tags.style(
         """
-        /* Make the sidebar independently scrollable */
         .sidebar {
-            max-height: 100vh;
-            overflow-y: auto;
-            position: sticky;
-            top: 0;
-            background: inherit;
+        height: 95dvh;           /* use dynamic vh; falls back to 100vh if unsupported */
+        box-sizing: border-box;   /* include padding/border in the 100dvh */
+        overflow-y: auto;
+        position: sticky;
+        top: 0;
+        background: inherit;
+        display: flow-root;       /* creates a new block formatting context -> no margin collapse */
         }
         """
     ),
@@ -86,10 +96,11 @@ app_ui = ui.page_fluid(
                     width="100%",
                 ),
                 ui.input_task_button("send", "Send", auto_reset=False),
-                ui.output_ui("outputStats"),
+                ui.output_ui("outputRunInfo"),
             ),
             ui.output_ui("responseBox"),
             col_widths=[3, 9],
+            fillable=False,
         ),
     ),
     theme=shinyswatch.theme.flatly,
@@ -159,7 +170,9 @@ def server(input, output, session):
         now = time.time()
         send_button_state.set("busy")
 
-        url = ENDPOINTS.get(endpoint_key, ENDPOINTS["default"])
+        url = ENDPOINTS.get(endpoint_key, ENDPOINTS["default"]).get(
+            "rest-api" if not stream else "openai"
+        )
         payload = {"messages": [{"role": "user", "content": text}]}
         headers = {
             "CF-Access-Client-Id": API_KEY_ID,
@@ -199,14 +212,23 @@ def server(input, output, session):
                             else:
                                 yield pretty
                         else:
-                            delta = obj.get("choices", [{}])[0].get("delta", {})
-                            chunk = delta.get("content")
-                            if chunk:
-                                yield chunk
+                            choices = obj.get("choices")
+                            if isinstance(choices, list) and choices:
+                                delta = choices[0].get("delta", {})
+                                chunk = delta.get("content", "")
+                                if chunk:
+                                    yield chunk
+                    # Optionally, handle the case where choices is missing or empty
                     if output_json and not first:
                         yield "]\n```"
                     if any(
-                        k in obj for k in ("stats", "usage", "model_info", "runtime")
+                        k in obj
+                        for k in (
+                            "stats",
+                            "usage",
+                            "model_info",
+                            "runtime",
+                        )
                     ):
                         combined = {}
                         for key in ("stats", "usage", "model_info", "runtime"):
@@ -271,19 +293,18 @@ def server(input, output, session):
 
     @render.ui
     @reactive.event(run_info, last_runtime)
-    def outputStats():
+    def outputRunInfo():
         info = run_info.get()
-        if not info:
-            rt = last_runtime.get()
-            return ui.markdown(
-                f"total runtime (sec): {rt:.2f}" if rt is not None else ""
-            )
+        runtime = last_runtime.get()
 
         # Helper to format numbers
         def fmt(v):
             return f"{v:.2f}" if isinstance(v, (int, float)) else str(v)
 
         sections = []
+        sections.append(
+            f"total runtime (sec): {runtime:.2f}<br>" if runtime is not None else ""
+        )
         for section_name in ("usage", "stats", "model_info", "runtime"):
             section_data = info.get(section_name)
             if section_data and isinstance(section_data, dict):
@@ -305,8 +326,8 @@ def server(input, output, session):
                 ui.output_markdown_stream(
                     "streamOutput", auto_scroll=input.autoScroll()
                 ),
-                style="max-height:90vh; overflow:auto;",
-            )
+            ),
+            style="height:93dvh; overflow:auto;",
         )
 
 
