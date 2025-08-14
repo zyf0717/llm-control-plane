@@ -248,14 +248,14 @@ class TestConversationHistory:
     def test_parse_and_inject_history_empty_body(self):
         """Test parsing empty request body."""
         result_body, is_streaming = parse_and_inject_history(b"", "test-convo")
-        assert result_body == b""
+        assert result_body is None
         assert is_streaming is False
 
     def test_parse_and_inject_history_invalid_json(self):
         """Test parsing invalid JSON body."""
         invalid_json = b"not json"
         result_body, is_streaming = parse_and_inject_history(invalid_json, "test-convo")
-        assert result_body == invalid_json
+        assert result_body is None
         assert is_streaming is False
 
     def test_parse_and_inject_history_no_messages(self):
@@ -265,7 +265,7 @@ class TestConversationHistory:
 
         result_body, is_streaming = parse_and_inject_history(body, "test-convo")
 
-        assert json.loads(result_body) == body_json
+        assert result_body == body_json
         assert is_streaming is True
 
     def test_parse_and_inject_history_with_messages(self):
@@ -281,9 +281,8 @@ class TestConversationHistory:
         convo_history.clear()
 
         result_body, is_streaming = parse_and_inject_history(body, convo_id)
-        result_json = json.loads(result_body)
 
-        assert result_json["messages"] == body_json["messages"]
+        assert result_body["messages"] == body_json["messages"]
         assert is_streaming is False
         assert convo_id in convo_history
         assert convo_history[convo_id] == body_json["messages"]
@@ -301,13 +300,12 @@ class TestConversationHistory:
         body = json.dumps(body_json).encode()
 
         result_body, is_streaming = parse_and_inject_history(body, convo_id)
-        result_json = json.loads(result_body)
 
         expected_messages = [
             {"role": "assistant", "content": "Hi there!"},
             {"role": "user", "content": "How are you?"},
         ]
-        assert result_json["messages"] == expected_messages
+        assert result_body["messages"] == expected_messages
         assert convo_history[convo_id] == expected_messages
 
 

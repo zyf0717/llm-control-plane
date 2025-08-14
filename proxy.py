@@ -105,15 +105,15 @@ async def get_available_endpoint(path: str) -> str:
 
 def parse_and_inject_history(
     body: bytes, convo_id: Optional[str]
-) -> Tuple[bytes, bool]:
+) -> Tuple[Optional[Dict], bool]:
     """Parse request body and inject conversation history if applicable."""
     if not body:
-        return body, False
+        return None, False
 
     try:
         body_json = json.loads(body)
         if not isinstance(body_json, dict):
-            return body, False
+            return None, False
 
         is_streaming = body_json.get("stream", False)
 
@@ -132,11 +132,11 @@ def parse_and_inject_history(
             # Replace payload messages with full history
             body_json["messages"] = convo_history[convo_id]
 
-        return json.dumps(body_json).encode(), is_streaming
+        return body_json, is_streaming
 
     except Exception:
         logger.warning("Failed to parse request body as JSON")
-        return body, False
+        return None, False
 
 
 def update_conversation_history(convo_id: Optional[str], assistant_text: str) -> None:
@@ -200,7 +200,7 @@ async def custom_endpoints(path: str, request: Request):
 async def handle_streaming_response(
     request: Request,
     target_endpoint: str,
-    body: bytes,
+    body: Optional[Dict],
     convo_id: Optional[str],
 ) -> StreamingResponse:
     """Handle streaming response proxying."""
@@ -218,7 +218,7 @@ async def handle_streaming_response(
                     method=request.method,
                     url=target_endpoint,
                     headers=upstream_headers,
-                    content=body if body else None,
+                    json=body,
                     params=dict(request.query_params),
                 ) as resp:
                     resp.raise_for_status()
@@ -251,7 +251,7 @@ async def handle_streaming_response(
 async def handle_non_streaming_response(
     request: Request,
     target_endpoint: str,
-    body: bytes,
+    body: Optional[Dict],
     convo_id: Optional[str],
 ) -> Response:
     """Handle non-streaming response proxying."""
@@ -262,7 +262,7 @@ async def handle_non_streaming_response(
             method=request.method,
             url=target_endpoint,
             headers=upstream_headers,
-            content=body if body else None,
+            json=body,
             params=dict(request.query_params),
             timeout=120,
         )
@@ -289,10 +289,10 @@ async def proxy_with_context(path: str, request: Request):
     target_endpoint = await get_available_endpoint(path)
 
     # Parse request body and inject conversation history
-    body = await request.body()
+    raw_body = await request.body()
     convo_id = request.headers.get("X-Convo-ID")
 
-    body, is_streaming = parse_and_inject_history(body, convo_id)
+    body, is_streaming = parse_and_inject_history(raw_body, convo_id)
 
     # Check for streaming flag in query params as fallback
     if not is_streaming:
