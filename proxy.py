@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import time
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -24,10 +25,10 @@ QWEN_3_4B_API_URL = os.getenv("QWEN_3_4B_API_URL")
 
 # Endpoint mapping
 ENDPOINT_MAP = {
-    "gpt-oss-20b": f"{GPT_OSS_20B_API_URL}/v1/chat/completions",
     "gpt-oss-20b-api": f"{GPT_OSS_20B_API_URL}/api/v0/chat/completions",
-    "qwen3-4b": f"{QWEN_3_4B_API_URL}/v1/chat/completions",
     "qwen3-4b-api": f"{QWEN_3_4B_API_URL}/api/v0/chat/completions",
+    "gpt-oss-20b": f"{GPT_OSS_20B_API_URL}/v1/chat/completions",
+    "qwen3-4b": f"{QWEN_3_4B_API_URL}/v1/chat/completions",
 }
 DEFAULT_ENDPOINT = f"{GPT_OSS_20B_API_URL}/v1/chat/completions"
 
@@ -38,6 +39,74 @@ app = FastAPI()
 # Simple global store (not persistent across restarts)
 convo_history: Dict[str, List[Dict]] = {}
 
+# Cache for endpoint health checks (endpoint_url -> (is_online, timestamp))
+endpoint_health_cache: Dict[str, Tuple[bool, float]] = {}
+HEALTH_CACHE_TTL = 30  # seconds
+
+
+async def check_endpoint_health(endpoint_url: str, timeout: float = 5.0) -> bool:
+    """Check if an endpoint is healthy by sending a GET request with proper auth headers."""
+    current_time = time.time()
+
+    # Check cache first
+    if endpoint_url in endpoint_health_cache:
+        is_healthy, timestamp = endpoint_health_cache[endpoint_url]
+        if current_time - timestamp < HEALTH_CACHE_TTL:
+            return is_healthy
+
+    # Cache miss or expired, perform actual check
+    try:
+        headers = {
+            "CF-Access-Client-Id": API_KEY_ID,
+            "CF-Access-Client-Secret": API_KEY_SECRET,
+        }
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
+            response = await client.get(endpoint_url, headers=headers)
+            # Consider 2xx and 4xx as healthy (4xx means auth/client issues, not server down)
+            # 5xx means server errors (unhealthy)
+            is_healthy = 200 <= response.status_code < 500
+    except Exception:
+        is_healthy = False
+
+    # Update cache
+    endpoint_health_cache[endpoint_url] = (is_healthy, current_time)
+    return is_healthy
+
+
+def get_target_endpoint(path: str) -> str:
+    """Get the target endpoint URL based on the request path."""
+    # Remove leading slash and get the first path segment
+    clean_path = path.lstrip("/")
+    endpoint_key = clean_path.split("/")[0] if clean_path else ""
+
+    # Return mapped endpoint or default
+    return ENDPOINT_MAP.get(endpoint_key, DEFAULT_ENDPOINT)
+
+
+async def get_available_endpoint(path: str) -> str:
+    """Get an available endpoint, falling back to alternatives if primary is offline."""
+    primary_endpoint = get_target_endpoint(path)
+
+    # First try the primary endpoint
+    if await check_endpoint_health(primary_endpoint):
+        return primary_endpoint
+
+    logger.warning(
+        "Primary endpoint %s is offline, trying alternatives", primary_endpoint
+    )
+
+    # Try other endpoints as fallbacks
+    for endpoint_url in ENDPOINT_MAP.values():
+        if endpoint_url != primary_endpoint and await check_endpoint_health(
+            endpoint_url
+        ):
+            logger.info("Using fallback endpoint: %s", endpoint_url)
+            return endpoint_url
+
+    # If all else fails, return the default (let it fail downstream)
+    logger.error("All endpoints appear to be offline, using default")
+    return DEFAULT_ENDPOINT
+
 
 def prepare_headers(request: Request) -> Dict[str, str]:
     """Prepare headers for upstream request."""
@@ -45,11 +114,6 @@ def prepare_headers(request: Request) -> Dict[str, str]:
     headers["CF-Access-Client-Id"] = API_KEY_ID
     headers["CF-Access-Client-Secret"] = API_KEY_SECRET
     return headers
-
-
-def get_target_endpoint(path: str) -> str:
-    """Get target endpoint URL based on path."""
-    return ENDPOINT_MAP.get(path, DEFAULT_ENDPOINT)
 
 
 def parse_and_inject_history(
@@ -124,7 +188,20 @@ def create_safe_headers(resp_headers: Dict, convo_id: Optional[str]) -> Dict[str
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok"}
+    """Health check endpoint that also reports endpoint statuses."""
+    endpoint_statuses = {}
+
+    # Check status of all configured endpoints
+    for name, url in ENDPOINT_MAP.items():
+        endpoint_statuses[name] = await check_endpoint_health(url, timeout=2.0)
+
+    # Overall health is OK if at least one endpoint is available
+    overall_healthy = any(endpoint_statuses.values())
+
+    return {
+        "status": "ok" if overall_healthy else "degraded",
+        "endpoints": endpoint_statuses,
+    }
 
 
 @app.post("/")
@@ -238,7 +315,7 @@ async def handle_non_streaming_response(
 async def proxy_with_context(path: str, request: Request):
     """Main proxy handler with conversation context."""
     headers = prepare_headers(request)
-    target_endpoint = get_target_endpoint(path)
+    target_endpoint = await get_available_endpoint(path)
 
     # Parse request body and inject conversation history
     body = await request.body()

@@ -20,18 +20,18 @@ ENDPOINTS = {
 }
 
 app_ui = ui.page_fluid(
-    ui.tags.style(
-        """
-        /* Make the sidebar independently scrollable */
-        .sidebar {
-            max-height: 100vh;
-            overflow-y: auto;
-            position: sticky;
-            top: 0;
-            background: inherit;
-        }
-        """
-    ),
+    # ui.tags.style(
+    #     """
+    #     /* Make the sidebar independently scrollable */
+    #     .sidebar {
+    #         max-height: 100vh;
+    #         overflow-y: auto;
+    #         position: sticky;
+    #         top: 0;
+    #         background: inherit;
+    #     }
+    #     """
+    # ),
     ui.page_sidebar(
         ui.sidebar(
             ui.tags.script(
