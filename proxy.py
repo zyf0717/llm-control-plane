@@ -187,6 +187,8 @@ async def list_models():
                             enhanced_model["gpu"] = endpoint_config["gpu"]
                         if "vram" in endpoint_config:
                             enhanced_model["vram"] = endpoint_config["vram"]
+                        if "soc" in endpoint_config:
+                            enhanced_model["soc"] = endpoint_config["soc"]
                         if "cpu" in endpoint_config:
                             enhanced_model["cpu"] = endpoint_config["cpu"]
                         if "ram" in endpoint_config:

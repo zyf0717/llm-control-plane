@@ -139,7 +139,7 @@ def server(input, output, session):
 
     # Reactive values
     available_endpoints = reactive.Value({})
-    models_data = reactive.Value({})
+    endpoint_info = reactive.Value({})
     last_runtime = reactive.Value(None)
     run_info = reactive.Value(None)
     send_button_state = reactive.Value("ready")
@@ -149,7 +149,7 @@ def server(input, output, session):
         endpoints = await fetch_available_endpoints()
         data = await fetch_models_data()
         available_endpoints.set(endpoints)
-        models_data.set(data)
+        endpoint_info.set(data)
 
         # Update the endpoint choices
         endpoint_choices = list(endpoints.keys()) if endpoints else []
@@ -169,6 +169,13 @@ def server(input, output, session):
     @reactive.event(input.refreshEndpoints)
     async def _refresh_endpoints():
         await update_endpoints_and_data()
+
+    # Clear info and runtime when endpoint changes
+    @reactive.Effect
+    @reactive.event(input.endpoint)
+    def _clear_info_on_endpoint_change():
+        run_info.set(None)
+        last_runtime.set(None)
 
     # Enable dynamic theme switching
     shinyswatch.theme_picker_server()
@@ -295,6 +302,10 @@ def server(input, output, session):
                                         choices[0].get("delta", {}).get("content", "")
                                     )
                                     if chunk:
+                                        chunk = chunk.replace(
+                                            "<think>", "*Reasoning*:\n"
+                                        )
+                                        chunk = chunk.replace("</think>", "\n\n---\n\n")
                                         yield chunk
 
                             extract_metadata(obj)
@@ -303,7 +314,9 @@ def server(input, output, session):
                             yield "]\n```"
                 else:
                     # Non-streaming request
-                    resp = await client.post(url, headers=headers, json=payload)
+                    resp = await client.post(
+                        url, headers=headers, json=payload, timeout=timeout
+                    )
                     resp.raise_for_status()
                     data = resp.json()
 
@@ -317,6 +330,8 @@ def server(input, output, session):
                             .get("message", {})
                             .get("content", "")
                         )
+                        content = content.replace("<think>", "*Reasoning*:\n")
+                        content = content.replace("</think>", "\n\n---\n\n")
                         yield str(content)
 
         except Exception as e:
@@ -345,11 +360,11 @@ def server(input, output, session):
         )
 
     @render.ui
-    @reactive.event(run_info, last_runtime, models_data, input.endpoint)
+    @reactive.event(run_info, last_runtime, endpoint_info, input.endpoint)
     def outputRunInfo():
         info = run_info.get()
         runtime = last_runtime.get()
-        telemetry = models_data.get()
+        endpoint_data = endpoint_info.get()
         current_endpoint = input.endpoint()
 
         def fmt(v):
@@ -376,15 +391,15 @@ def server(input, output, session):
                         lines.append(f"{key_name}: {fmt(v)}")
                     sections.append("<br>".join(lines))
 
-        # Current endpoint telemetry from /models endpoint
-        if telemetry and current_endpoint:
+        # Current endpoint info from /models endpoint
+        if endpoint_data and current_endpoint:
             endpoint_models = []
-            for model in telemetry.get("data", []):
+            for model in endpoint_data.get("data", []):
                 if model.get("endpoint") == current_endpoint:
                     endpoint_models.append(model)
 
             if endpoint_models:
-                # Show telemetry for the current endpoint
+                # Show endpoint info for the current endpoint
                 model = endpoint_models[0]  # Use first model for endpoint info
 
                 # Hardware info
