@@ -124,8 +124,19 @@ def log_response_info(resp_json: Dict) -> Optional[str]:
 
 @app.post("/")
 async def root_chat(request: Request):
-    """Route root POST requests directly to chat/completions."""
-    return await proxy_with_context("", request)
+    """Route root POST requests to the first available endpoint."""
+    # Get the first available endpoint from config
+    if not endpoints:
+        raise HTTPException(status_code=503, detail="No endpoints configured")
+
+    first_endpoint = endpoints[0].get("name")
+    if not first_endpoint:
+        raise HTTPException(
+            status_code=503, detail="First endpoint has no name configured"
+        )
+
+    logger.info(f"Routing root request to first available endpoint: {first_endpoint}")
+    return await proxy_with_context(first_endpoint, request)
 
 
 @app.post("/conversations/retrieve")
