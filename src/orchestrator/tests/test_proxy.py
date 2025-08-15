@@ -9,14 +9,14 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from proxy import (
+from ..proxy import (
     app,
     convo_history,
     endpoints,
     get_target_endpoint,
     parse_and_inject_history,
 )
-from utils import HeaderManager
+from ..utils import HeaderManager
 
 
 @pytest.fixture
@@ -50,7 +50,7 @@ class TestEndpointRouting:
         # Mock the endpoints configuration
         mock_endpoints = [{"name": "test-endpoint", "url": "https://test.example.com"}]
 
-        with patch("proxy.endpoints", mock_endpoints):
+        with patch("src.orchestrator.proxy.endpoints", mock_endpoints):
             # Streaming should route to v1/chat/completions
             result = get_target_endpoint("test-endpoint", is_streaming=True)
             assert result == "https://test.example.com/v1/chat/completions"
@@ -60,7 +60,7 @@ class TestEndpointRouting:
         # Mock the endpoints configuration
         mock_endpoints = [{"name": "test-endpoint", "url": "https://test.example.com"}]
 
-        with patch("proxy.endpoints", mock_endpoints):
+        with patch("src.orchestrator.proxy.endpoints", mock_endpoints):
             # Non-streaming should route to api/v0/chat/completions
             result = get_target_endpoint("test-endpoint", is_streaming=False)
             assert result == "https://test.example.com/api/v0/chat/completions"
@@ -68,7 +68,7 @@ class TestEndpointRouting:
     def test_get_target_endpoint_unknown(self):
         """Test endpoint routing for unknown endpoints."""
         # Mock empty endpoints configuration
-        with patch("proxy.endpoints", []):
+        with patch("src.orchestrator.proxy.endpoints", []):
             result = get_target_endpoint("unknown-endpoint")
             assert result is None
 
@@ -77,7 +77,7 @@ class TestEndpointRouting:
         # Mock the endpoints configuration
         mock_endpoints = [{"name": "test-endpoint", "url": "https://test.example.com"}]
 
-        with patch("proxy.endpoints", mock_endpoints):
+        with patch("src.orchestrator.proxy.endpoints", mock_endpoints):
             # Should extract the first part of the path
             result = get_target_endpoint(
                 "test-endpoint/some/subpath", is_streaming=True
@@ -90,7 +90,7 @@ class TestHeaderPreparation:
 
     def test_prepare_headers(self, mock_request):
         """Test header preparation with API keys."""
-        with patch("utils.filter_unsafe_headers") as mock_filter:
+        with patch("src.orchestrator.utils.filter_unsafe_headers") as mock_filter:
             mock_filter.return_value = {"content-type": "application/json"}
 
             result = HeaderManager.prepare_upstream_headers(mock_request)
@@ -214,7 +214,7 @@ class TestModelsEndpoint:
             ]
         }
 
-        with patch("proxy.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
 
@@ -275,7 +275,7 @@ class TestModelsEndpoint:
             "data": [{"id": "working-model", "object": "model", "created": 1234567890}]
         }
 
-        with patch("proxy.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
 
@@ -310,7 +310,7 @@ class TestModelsEndpoint:
 
     def test_list_models_empty_config(self, client):
         """Test models endpoint with empty configuration."""
-        with patch("proxy.endpoints", []):
+        with patch("src.orchestrator.proxy.endpoints", []):
             response = client.get("/models")
 
             assert response.status_code == 200

@@ -47,10 +47,50 @@ async def fetch_available_endpoints():
                     }
                 endpoints[endpoint_name]["models"].append(model)
 
-        return endpoints
+        return endpoints, data  # Return both endpoints and raw data
     except Exception as e:
         print(f"Failed to fetch endpoints: {e}")
-        return {}
+        return {}, {}
+
+
+def create_endpoint_display_choices(endpoints_data):
+    """Create display choices and mapping for endpoint dropdown."""
+    choices = {}
+    mapping = {}
+
+    for endpoint_name, endpoint_data in endpoints_data.items():
+        models = endpoint_data.get("models", [])
+        if models:
+            # Use the first model's name for display
+            model_name = models[0].get("id", "")
+            if model_name:
+                display_name = f"{endpoint_name} ({model_name})"
+                choices[display_name] = endpoint_name
+                mapping[display_name] = endpoint_name
+            else:
+                choices[endpoint_name] = endpoint_name
+                mapping[endpoint_name] = endpoint_name
+        else:
+            choices[endpoint_name] = endpoint_name
+            mapping[endpoint_name] = endpoint_name
+
+    return choices, mapping
+
+
+def get_actual_endpoint_key(display_name, mapping):
+    """Get the actual endpoint key from display name."""
+    return mapping.get(display_name, display_name)
+
+
+def find_model_by_endpoint(endpoint_data, endpoint_key):
+    """Find the first model for a given endpoint."""
+    if not endpoint_data or not endpoint_key:
+        return None
+
+    for model in endpoint_data.get("data", []):
+        if model.get("endpoint") == endpoint_key:
+            return model
+    return None
 
 
 app_ui = ui.page_fluid(
@@ -138,45 +178,26 @@ def server(input, output, session):
     # Reactive values
     available_endpoints = reactive.Value({})
     endpoint_info = reactive.Value({})
-    endpoint_display_mapping = reactive.Value(
-        {}
-    )  # Maps display names to actual endpoint keys
+    endpoint_display_mapping = reactive.Value({})
     last_runtime = reactive.Value(None)
     run_info = reactive.Value(None)
     send_button_state = reactive.Value("ready")
 
     async def update_endpoints_and_data():
         """Helper function to update both endpoints and models data."""
-        endpoints = await fetch_available_endpoints()
-        data = await fetch_models_data()
+        # Fetch data only once and get both endpoints and raw data
+        endpoints, data = await fetch_available_endpoints()
         available_endpoints.set(endpoints)
         endpoint_info.set(data)
 
-        # Update the endpoint choices with model names
-        endpoint_choices = {}
-        display_mapping = {}
-        if endpoints:
-            for endpoint_name, endpoint_data in endpoints.items():
-                models = endpoint_data.get("models", [])
-                if models:
-                    model_name = models[0].get("id", "")
-                    if model_name:
-                        # Format: "Endpoint Name (model/name)"
-                        display_name = f"{endpoint_name} ({model_name})"
-                        endpoint_choices[display_name] = endpoint_name
-                        display_mapping[display_name] = endpoint_name
-                    else:
-                        endpoint_choices[endpoint_name] = endpoint_name
-                        display_mapping[endpoint_name] = endpoint_name
-                else:
-                    endpoint_choices[endpoint_name] = endpoint_name
-                    display_mapping[endpoint_name] = endpoint_name
+        # Create endpoint choices and mapping
+        choices, mapping = create_endpoint_display_choices(endpoints)
+        endpoint_display_mapping.set(mapping)
 
-        endpoint_display_mapping.set(display_mapping)
-        choice_list = list(endpoint_choices.keys()) if endpoint_choices else []
+        choice_list = list(choices.keys())
         ui.update_select(
             "endpoint",
-            choices=endpoint_choices if endpoint_choices else [],
+            choices=choices,
             selected=choice_list[0] if choice_list else None,
         )
 
@@ -371,8 +392,7 @@ def server(input, output, session):
         display_mapping = endpoint_display_mapping.get()
 
         # Get the actual endpoint key from the display name
-        selected_display = input.endpoint()
-        actual_endpoint_key = display_mapping.get(selected_display, selected_display)
+        actual_endpoint_key = get_actual_endpoint_key(input.endpoint(), display_mapping)
 
         await md.stream(
             llm_stream_generator(
@@ -385,19 +405,65 @@ def server(input, output, session):
             )
         )
 
+    def format_hardware_info(model):
+        """Format hardware information for display."""
+        hardware_info = []
+        for key in ["gpu", "vram", "soc", "cpu", "ram"]:
+            value = model.get(key)
+            if value:
+                hardware_info.append(f"{key.upper()}: {value}")
+        return hardware_info
+
+    def format_model_details(model):
+        """Format model details for display."""
+        model_details = []
+
+        # Add the full model name first
+        model_name = model.get("id")
+        if model_name:
+            model_details.append(f"Model: {model_name}")
+
+        # Add other model properties
+        for key in ["arch", "quantization", "compatibility_type", "state"]:
+            value = model.get(key)
+            if value:
+                key_name = key.replace("_", " ").title()
+                model_details.append(f"{key_name}: {value}")
+
+        # Add context information
+        max_ctx = model.get("max_context_length")
+        loaded_ctx = model.get("loaded_context_length")
+        if max_ctx:
+            model_details.append(f"Max Context: {max_ctx:,}")
+        if loaded_ctx:
+            model_details.append(f"Loaded Context: {loaded_ctx:,}")
+
+        return model_details
+
+    def format_response_info(info, fmt_func):
+        """Format response information (usage, stats, runtime) for display."""
+        sections = []
+        for section_name in ("usage", "stats", "runtime"):
+            section_data = info.get(section_name)
+            if section_data and isinstance(section_data, dict):
+                title = section_name.replace("_", " ").title()
+                lines = [f"**{title}**"]
+                for k, v in section_data.items():
+                    key_name = k.replace("_", " ").title()
+                    lines.append(f"{key_name}: {fmt_func(v)}")
+                sections.append("<br>".join(lines))
+        return sections
+
     @render.ui
     @reactive.event(run_info, last_runtime, endpoint_info, input.endpoint)
     def outputRunInfo():
         info = run_info.get()
         runtime = last_runtime.get()
         endpoint_data = endpoint_info.get()
-        current_endpoint_display = input.endpoint()
         display_mapping = endpoint_display_mapping.get()
 
         # Get the actual endpoint key from the display name
-        current_endpoint = display_mapping.get(
-            current_endpoint_display, current_endpoint_display
-        )
+        current_endpoint = get_actual_endpoint_key(input.endpoint(), display_mapping)
 
         def fmt(v):
             """Helper to format numbers and values."""
@@ -413,72 +479,25 @@ def server(input, output, session):
 
         # Request info (usage, stats, model_info, runtime from response)
         if info:
-            for section_name in ("usage", "stats", "runtime"):
-                section_data = info.get(section_name)
-                if section_data and isinstance(section_data, dict):
-                    title = section_name.replace("_", " ").title()
-                    lines = [f"**{title}**"]
-                    for k, v in section_data.items():
-                        key_name = k.replace("_", " ").title()
-                        lines.append(f"{key_name}: {fmt(v)}")
-                    sections.append("<br>".join(lines))
+            sections.extend(format_response_info(info, fmt))
 
         # Current endpoint info from /models endpoint
-        if endpoint_data and current_endpoint:
-            endpoint_models = []
-            for model in endpoint_data.get("data", []):
-                if model.get("endpoint") == current_endpoint:
-                    endpoint_models.append(model)
+        model = find_model_by_endpoint(endpoint_data, current_endpoint)
+        if model:
+            # Hardware info
+            hardware_info = format_hardware_info(model)
+            if hardware_info:
+                sections.append("**Hardware**<br>" + "<br>".join(hardware_info))
 
-            if endpoint_models:
-                # Show endpoint info for the current endpoint
-                model = endpoint_models[0]  # Use first model for endpoint info
+            # Model details
+            model_details = format_model_details(model)
+            if model_details:
+                sections.append("**Model Info**<br>" + "<br>".join(model_details))
 
-                # Hardware info
-                hardware_info = []
-                for key in [
-                    "gpu",
-                    "vram",
-                    "soc",
-                    "cpu",
-                    "ram",
-                ]:
-                    value = model.get(key)
-                    if value:
-                        hardware_info.append(f"{key.upper()}: {value}")
-
-                if hardware_info:
-                    sections.append("**Hardware**<br>" + "<br>".join(hardware_info))
-
-                # Model details
-                model_details = []
-
-                # Add the full model name first
-                model_name = model.get("id")
-                if model_name:
-                    model_details.append(f"Model: {model_name}")
-
-                for key in ["arch", "quantization", "compatibility_type", "state"]:
-                    value = model.get(key)
-                    if value:
-                        key_name = key.replace("_", " ").title()
-                        model_details.append(f"{key_name}: {value}")
-
-                # Context info
-                max_ctx = model.get("max_context_length")
-                loaded_ctx = model.get("loaded_context_length")
-                if max_ctx:
-                    model_details.append(f"Max Context: {max_ctx:,}")
-                if loaded_ctx:
-                    model_details.append(f"Loaded Context: {loaded_ctx:,}")
-
-                if model_details:
-                    sections.append("**Model Info**<br>" + "<br>".join(model_details))
-
-                # # Capabilities
-                # capabilities = model.get("capabilities", [])
-                # if capabilities:
-                #     sections.append(f"**Capabilities**: {', '.join(capabilities)}")
+            # # Capabilities (commented out in original)
+            # capabilities = model.get("capabilities", [])
+            # if capabilities:
+            #     sections.append(f"**Capabilities**: {', '.join(capabilities)}")
 
         if not sections:
             return ui.div()

@@ -10,7 +10,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from proxy import app
+from ..proxy import app
 
 
 @pytest.fixture

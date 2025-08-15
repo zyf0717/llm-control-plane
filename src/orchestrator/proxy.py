@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
-from utils import (
+from .utils import (
     HeaderManager,
     SSEAccumulator,
     create_error_sse_message,

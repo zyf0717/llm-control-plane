@@ -28,7 +28,7 @@ def mock_environment_variables():
 
     with patch.dict(os.environ, test_env, clear=False):
         # Mock os.getenv for HeaderManager
-        with patch("utils.os.getenv") as mock_getenv:
+        with patch("src.orchestrator.utils.os.getenv") as mock_getenv:
 
             def getenv_side_effect(key, default=None):
                 return test_env.get(key, default)
