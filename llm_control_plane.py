@@ -11,7 +11,7 @@ def run_proxy():
 def run_dashboard():
     # If dashboard.py defines an ASGI app named `app`, you can also do:
     # uvicorn.run("src.dashboard.dashboard:app", host="0.0.0.0", port=12341)
-    run_app("src/dashboard/dashboard.py", host="0.0.0.0", port=12341)
+    run_app("src/dashboard/app.py", host="0.0.0.0", port=12341)
 
 
 if __name__ == "__main__":
