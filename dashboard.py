@@ -422,10 +422,10 @@ def server(input, output, session):
                 if model_details:
                     sections.append("**Model Info**<br>" + "<br>".join(model_details))
 
-                # Capabilities
-                capabilities = model.get("capabilities", [])
-                if capabilities:
-                    sections.append(f"**Capabilities**: {', '.join(capabilities)}")
+                # # Capabilities
+                # capabilities = model.get("capabilities", [])
+                # if capabilities:
+                #     sections.append(f"**Capabilities**: {', '.join(capabilities)}")
 
         if not sections:
             return ui.div()
