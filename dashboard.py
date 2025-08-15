@@ -17,38 +17,43 @@ API_KEY_SECRET = os.getenv("API_KEY_SECRET")
 PROXY_BASE_URL = "http://localhost:12340"
 
 
-async def fetch_available_models():
-    """Fetch available models from the proxy /models endpoint."""
+async def fetch_models_data():
+    """Fetch raw models data from the proxy /models endpoint for telemetry."""
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(f"{PROXY_BASE_URL}/models")
             response.raise_for_status()
-            data = response.json()
-
-            # Group models by endpoint
-            endpoints = {}
-            for model in data.get("data", []):
-                endpoint_name = model.get("endpoint")
-                endpoint_url = model.get("endpoint_url")
-                model_id = model.get("id")
-
-                if endpoint_name and endpoint_url and model_id:
-                    if endpoint_name not in endpoints:
-                        endpoints[endpoint_name] = {
-                            "endpoint_url": endpoint_url,
-                            "models": [],
-                        }
-                    endpoints[endpoint_name]["models"].append(model)
-
-            return endpoints
+            return response.json()
     except Exception as e:
-        print(f"Failed to fetch models: {e}")
-        # Fallback to empty dict if proxy is not available
+        print(f"Failed to fetch models data: {e}")
         return {}
 
 
-# Global reactive value to store endpoints
-available_endpoints = reactive.Value({})
+async def fetch_available_endpoints():
+    """Fetch available endpoints grouped by endpoint name."""
+    try:
+        data = await fetch_models_data()
+
+        # Group models by endpoint
+        endpoints = {}
+        for model in data.get("data", []):
+            endpoint_name = model.get("endpoint")
+            endpoint_url = model.get("endpoint_url")
+            model_id = model.get("id")
+
+            if endpoint_name and endpoint_url and model_id:
+                if endpoint_name not in endpoints:
+                    endpoints[endpoint_name] = {
+                        "endpoint_url": endpoint_url,
+                        "models": [],
+                    }
+                endpoints[endpoint_name]["models"].append(model)
+
+        return endpoints
+    except Exception as e:
+        print(f"Failed to fetch endpoints: {e}")
+        return {}
+
 
 app_ui = ui.page_fluid(
     ui.tags.script(
@@ -60,9 +65,9 @@ app_ui = ui.page_fluid(
 
             ta.addEventListener('keydown', (e) => {
                 if (e.isComposing) return; // IME
-                if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                btn.click();
+                if (e.key === 'Enter' && e.shiftKey) {
+                    e.preventDefault();
+                    btn.click();
                 }
             });
         });
@@ -118,7 +123,7 @@ app_ui = ui.page_fluid(
                     placeholder="Ask anything",
                     width="100%",
                 ),
-                ui.input_task_button("send", "Send", auto_reset=False),
+                ui.input_task_button("send", "Send (Shift + Enter)", auto_reset=False),
                 ui.output_ui("outputRunInfo"),
             ),
             ui.output_ui("responseBox"),
@@ -131,15 +136,20 @@ app_ui = ui.page_fluid(
 
 
 def server(input, output, session):
+
+    # Reactive values
+    available_endpoints = reactive.Value({})
+    models_data = reactive.Value({})
     last_runtime = reactive.Value(None)
     run_info = reactive.Value(None)
     send_button_state = reactive.Value("ready")
 
-    # Initialize endpoints on startup
-    @reactive.Effect
-    async def _initialize_endpoints():
-        endpoints = await fetch_available_models()
+    async def update_endpoints_and_data():
+        """Helper function to update both endpoints and models data."""
+        endpoints = await fetch_available_endpoints()
+        data = await fetch_models_data()
         available_endpoints.set(endpoints)
+        models_data.set(data)
 
         # Update the endpoint choices
         endpoint_choices = list(endpoints.keys()) if endpoints else []
@@ -148,66 +158,66 @@ def server(input, output, session):
             choices=endpoint_choices,
             selected=endpoint_choices[0] if endpoint_choices else None,
         )
+
+    # Initialize endpoints on startup
+    @reactive.Effect
+    async def _initialize_endpoints():
+        await update_endpoints_and_data()
 
     # Refresh endpoints when button is clicked
     @reactive.Effect
     @reactive.event(input.refreshEndpoints)
     async def _refresh_endpoints():
-        endpoints = await fetch_available_models()
-        available_endpoints.set(endpoints)
-
-        # Update the endpoint choices
-        endpoint_choices = list(endpoints.keys()) if endpoints else []
-        ui.update_select(
-            "endpoint",
-            choices=endpoint_choices,
-            selected=endpoint_choices[0] if endpoint_choices else None,
-        )
+        await update_endpoints_and_data()
 
     # Enable dynamic theme switching
     shinyswatch.theme_picker_server()
 
+    # Handle UI state changes for switches
     @reactive.Effect
     @reactive.event(input.outputJSON)
-    def _():
+    def _handle_json_toggle():
         if input.outputJSON():
             ui.update_switch("stream", value=False)
             ui.update_switch("autoScroll", value=False)
 
     @reactive.Effect
-    @reactive.event(input.stream, input.autoScroll)
-    def _():
-        if input.stream() or input.autoScroll():
-            ui.update_switch("outputJSON", value=False)
-
-    @reactive.Effect
     @reactive.event(input.autoScroll)
-    def _():
+    def _handle_autoscroll_toggle():
         if input.autoScroll():
+            ui.update_switch("outputJSON", value=False)
             ui.update_switch("stream", value=True)
 
     @reactive.Effect
     @reactive.event(input.stream)
-    def _():
-        if not input.stream():
+    def _handle_stream_toggle():
+        if input.stream():
+            ui.update_switch("outputJSON", value=False)
+        else:
             ui.update_switch("autoScroll", value=False)
 
+    # Utility actions
     @reactive.Effect
     @reactive.event(input.generateConvoID)
     def _generate_convo_id():
         new_uuid = str(uuid.uuid4().hex[:12])
         ui.update_text("convoID", value=new_uuid, session=session)
 
-    # Logout
     @reactive.Effect
     @reactive.event(input.logout)
-    async def _():
+    async def _logout():
         await session.send_custom_message("logout", {})
 
     @reactive.effect
     @reactive.event(input.send)
     def _on_send():
         ui.update_text_area("userTextInput", value="")
+
+    # Update send button state
+    @reactive.effect
+    def _update_send_button():
+        status = send_button_state.get()
+        ui.update_task_button("send", state=status)
 
     async def llm_stream_generator(
         endpoint_key: str,
@@ -220,112 +230,100 @@ def server(input, output, session):
         text = (text or "Hello! What model are you?").strip()
         if not text:
             yield ""
+            return
+
         now = time.time()
         send_button_state.set("busy")
 
-        # Get the selected endpoint info
-        if not endpoints_dict or endpoint_key not in endpoints_dict:
-            yield f"Error: Endpoint '{endpoint_key}' not available"
-            send_button_state.set("ready")
-            return
+        try:
+            # Validate endpoint
+            if not endpoints_dict or endpoint_key not in endpoints_dict:
+                yield f"Error: Endpoint '{endpoint_key}' not available"
+                return
 
-        # Use the proxy URL with the endpoint name as path
-        url = f"{PROXY_BASE_URL}/{endpoint_key}"
+            # Prepare request
+            url = f"{PROXY_BASE_URL}/{endpoint_key}"
+            payload = {"messages": [{"role": "user", "content": text}]}
+            headers = {
+                "CF-Access-Client-Id": API_KEY_ID,
+                "CF-Access-Client-Secret": API_KEY_SECRET,
+                "Content-Type": "application/json",
+            }
+            if convo_id:
+                headers["X-Convo-ID"] = convo_id
+            timeout = httpx.Timeout(connect=5, read=None, write=5, pool=10)
 
-        payload = {"messages": [{"role": "user", "content": text}]}
-        headers = {
-            "CF-Access-Client-Id": API_KEY_ID,
-            "CF-Access-Client-Secret": API_KEY_SECRET,
-            "Content-Type": "application/json",
-        }
-        if convo_id:
-            headers["X-Convo-ID"] = convo_id
-        timeout = httpx.Timeout(connect=5, read=None, write=5, pool=10)
-
-        if stream:
-            payload["stream"] = True
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                async with client.stream(
-                    "POST", url, headers=headers, json=payload
-                ) as r:
-                    r.raise_for_status()
-                    first = True
-                    first_obj = True
-                    async for line in r.aiter_lines():
-                        if not line or not line.startswith("data: "):
-                            continue
-                        data = line[6:].strip()
-                        if data == "[DONE]":
-                            break
-                        obj = json.loads(data)
-                        if output_json:
-                            if first:
-                                yield "```json\n["
-                                first = False
-                                first_obj = True
-                            else:
-                                first_obj = False
-                            pretty = json.dumps(obj, indent=2)
-                            if not first_obj:
-                                yield ",\n" + pretty
-                            else:
-                                yield pretty
-                        else:
-                            choices = obj.get("choices")
-                            if isinstance(choices, list) and choices:
-                                delta = choices[0].get("delta", {})
-                                chunk = delta.get("content", "")
-                                if chunk:
-                                    yield chunk
-                    # Optionally, handle the case where choices is missing or empty
-                    if output_json and not first:
-                        yield "]\n```"
-                    if any(
-                        k in obj
-                        for k in (
-                            "stats",
-                            "usage",
-                            "model_info",
-                            "runtime",
-                        )
-                    ):
-                        combined = {}
-                        for key in ("stats", "usage", "model_info", "runtime"):
-                            if key in obj and isinstance(obj[key], dict):
-                                combined[key] = obj[key]
-                        run_info.set(combined if combined else None)
-                    else:
-                        run_info.set(None)
-
-        else:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.post(url, headers=headers, json=payload)
-                resp.raise_for_status()
-                data = resp.json()
-                if any(k in data for k in ("stats", "usage", "model_info", "runtime")):
+            def extract_metadata(obj):
+                """Extract metadata from response object."""
+                metadata_keys = ("stats", "usage", "model_info", "runtime")
+                if any(k in obj for k in metadata_keys):
                     combined = {}
-                    for key in ("stats", "usage", "model_info", "runtime"):
-                        if key in data and isinstance(data[key], dict):
-                            combined[key] = data[key]
+                    for key in metadata_keys:
+                        if key in obj and isinstance(obj[key], dict):
+                            combined[key] = obj[key]
                     run_info.set(combined if combined else None)
-                else:
-                    run_info.set(None)
-                if output_json:
-                    pretty = json.dumps(data, indent=2)
-                    yield f"```json\n{pretty}\n```"
-                else:
-                    # Non-stream schema uses message.content, not delta.content
-                    content = (
-                        data.get("choices", [{}])[0]
-                        .get("message", {})
-                        .get("content", "")
-                    )
-                    if not isinstance(content, str):
-                        content = str(content)
-                    yield content
 
-        last_runtime.set(time.time() - now)
-        send_button_state.set("ready")
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                if stream:
+                    payload["stream"] = True
+                    async with client.stream(
+                        "POST", url, headers=headers, json=payload
+                    ) as r:
+                        r.raise_for_status()
+                        first = True
+
+                        async for line in r.aiter_lines():
+                            if not line or not line.startswith("data: "):
+                                continue
+                            data = line[6:].strip()
+                            if data == "[DONE]":
+                                break
+
+                            obj = json.loads(data)
+
+                            if output_json:
+                                if first:
+                                    yield "```json\n["
+                                    first = False
+                                yield ("" if first else ",\n") + json.dumps(
+                                    obj, indent=2
+                                )
+                            else:
+                                choices = obj.get("choices", [])
+                                if choices:
+                                    chunk = (
+                                        choices[0].get("delta", {}).get("content", "")
+                                    )
+                                    if chunk:
+                                        yield chunk
+
+                            extract_metadata(obj)
+
+                        if output_json and not first:
+                            yield "]\n```"
+                else:
+                    # Non-streaming request
+                    resp = await client.post(url, headers=headers, json=payload)
+                    resp.raise_for_status()
+                    data = resp.json()
+
+                    extract_metadata(data)
+
+                    if output_json:
+                        yield f"```json\n{json.dumps(data, indent=2)}\n```"
+                    else:
+                        content = (
+                            data.get("choices", [{}])[0]
+                            .get("message", {})
+                            .get("content", "")
+                        )
+                        yield str(content)
+
+        except Exception as e:
+            yield f"Error: {str(e)}"
+        finally:
+            last_runtime.set(time.time() - now)
+            send_button_state.set("ready")
 
     md = ui.MarkdownStream("streamOutput")
 
@@ -346,40 +344,95 @@ def server(input, output, session):
             )
         )
 
-    @reactive.effect
-    def _():
-        status = send_button_state.get()
-        if status == "busy":
-            ui.update_task_button("send", state="busy")
-        else:
-            ui.update_task_button("send", state="ready")
-
     @render.ui
-    @reactive.event(run_info, last_runtime)
+    @reactive.event(run_info, last_runtime, models_data, input.endpoint)
     def outputRunInfo():
         info = run_info.get()
         runtime = last_runtime.get()
+        telemetry = models_data.get()
+        current_endpoint = input.endpoint()
 
-        # Helper to format numbers
         def fmt(v):
-            return f"{v:.2f}" if isinstance(v, (int, float)) else str(v)
+            """Helper to format numbers and values."""
+            if isinstance(v, (int, float)):
+                return f"{v:.2f}" if v != int(v) else str(int(v))
+            return str(v)
 
         sections = []
-        sections.append(
-            f"total runtime (sec): {runtime:.2f}<br>" if runtime is not None else ""
-        )
-        for section_name in ("usage", "stats", "model_info", "runtime"):
-            section_data = info.get(section_name)
-            if section_data and isinstance(section_data, dict):
-                # Heading for section
-                lines = [f"**{section_name.replace('_', ' ').title()}**<br>"]
-                # Each key/value with <br> for clean break
-                for k, v in section_data.items():
-                    lines.append(f"{k.replace('_', ' ')}: {fmt(v)}<br>")
-                sections.append("".join(lines))
 
-        md = "<br>".join(sections)  # extra spacing between sections
-        return ui.markdown(md)
+        # Runtime section
+        if runtime is not None:
+            sections.append(f"**Runtime**: {runtime:.2f}s")
+
+        # Request info (usage, stats, model_info, runtime from response)
+        if info:
+            for section_name in ("usage", "stats", "runtime"):
+                section_data = info.get(section_name)
+                if section_data and isinstance(section_data, dict):
+                    title = section_name.replace("_", " ").title()
+                    lines = [f"**{title}**"]
+                    for k, v in section_data.items():
+                        key_name = k.replace("_", " ").title()
+                        lines.append(f"{key_name}: {fmt(v)}")
+                    sections.append("<br>".join(lines))
+
+        # Current endpoint telemetry from /models endpoint
+        if telemetry and current_endpoint:
+            endpoint_models = []
+            for model in telemetry.get("data", []):
+                if model.get("endpoint") == current_endpoint:
+                    endpoint_models.append(model)
+
+            if endpoint_models:
+                # Show telemetry for the current endpoint
+                model = endpoint_models[0]  # Use first model for endpoint info
+
+                # Hardware info
+                hardware_info = []
+                for key in [
+                    "gpu",
+                    "vram",
+                    "soc",
+                    "cpu",
+                    "ram",
+                ]:
+                    value = model.get(key)
+                    if value:
+                        hardware_info.append(f"{key.upper()}: {value}")
+
+                if hardware_info:
+                    sections.append("**Hardware**<br>" + "<br>".join(hardware_info))
+
+                # Model details
+                model_details = []
+                for key in ["arch", "quantization", "compatibility_type", "state"]:
+                    value = model.get(key)
+                    if value:
+                        key_name = key.replace("_", " ").title()
+                        model_details.append(f"{key_name}: {value}")
+
+                # Context info
+                max_ctx = model.get("max_context_length")
+                loaded_ctx = model.get("loaded_context_length")
+                if max_ctx:
+                    model_details.append(f"Max Context: {max_ctx:,}")
+                if loaded_ctx:
+                    model_details.append(f"Loaded Context: {loaded_ctx:,}")
+
+                if model_details:
+                    sections.append("**Model Info**<br>" + "<br>".join(model_details))
+
+                # Capabilities
+                capabilities = model.get("capabilities", [])
+                if capabilities:
+                    sections.append(f"**Capabilities**: {', '.join(capabilities)}")
+
+        if not sections:
+            return ui.div()
+
+        # Join sections with double line breaks for spacing
+        markdown_content = "<br><br>".join(sections)
+        return ui.markdown(markdown_content)
 
     @render.ui
     @reactive.event(input.send)
@@ -395,6 +448,3 @@ def server(input, output, session):
 
 
 app = App(app_ui, server)
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
