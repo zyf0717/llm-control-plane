@@ -113,61 +113,68 @@ app_ui = ui.page_fluid(
     ),
     ui.tags.style(
         """
+        /* Make the sidebar independently scrollable */
         .sidebar {
-        height: 95dvh;           /* use dynamic vh; falls back to 100vh if unsupported */
-        box-sizing: border-box;   /* include padding/border in the 100dvh */
-        overflow-y: auto;
-        position: sticky;
-        top: 0;
-        background: inherit;
-        display: flow-root;       /* creates a new block formatting context -> no margin collapse */
+            max-height: 100vh;
+            overflow-y: auto;
+            position: sticky;
+            top: 0;
+            background: inherit;
         }
         """
     ),
-    ui.page_sidebar(
-        ui.sidebar(
-            ui.tags.script(
-                """
+    ui.navset_bar(
+        ui.nav_panel(
+            "Convo",
+            ui.page_sidebar(
+                ui.sidebar(
+                    ui.tags.script(
+                        """
                 Shiny.addCustomMessageHandler("logout", function(_) {
                     window.location.href = "https://llm-dashboard.paperclips.dev/cdn-cgi/access/logout";
                 });
                 """
-            ),
-            ui.input_select("endpoint", "Endpoint", choices=[]),
-            ui.input_action_button("refreshEndpoints", "Refresh Endpoints"),
-            ui.input_switch("stream", "Streaming", True),
-            ui.input_switch("autoScroll", "Auto-scroll", True),
-            ui.input_switch("outputJSON", "JSON", False),
-            shinyswatch.theme_picker_ui(),
-            ui.hr(),
-            ui.input_action_button("logout", "Logout"),
-        ),
-        ui.layout_columns(
-            ui.card(
-                ui.layout_columns(
-                    ui.input_text(
-                        "convoID",
-                        "",
-                        placeholder="Conversation ID",
-                        width="100%",
                     ),
-                    ui.input_action_button("generateConvoID", "New"),
-                    col_widths=[7, 5],
+                    ui.input_select("endpoint", "Endpoint", choices=[]),
+                    ui.input_action_button("refreshEndpoints", "Refresh Endpoints"),
+                    ui.input_switch("stream", "Streaming", True),
+                    ui.input_switch("autoScroll", "Auto-scroll", True),
+                    ui.input_switch("outputJSON", "JSON", False),
+                    shinyswatch.theme_picker_ui(),
+                    ui.hr(),
+                    ui.input_action_button("logout", "Logout"),
                 ),
-                ui.input_text_area(
-                    "userTextInput",
-                    "",
-                    rows=6,
-                    placeholder="Ask anything",
-                    width="100%",
+                ui.layout_columns(
+                    ui.card(
+                        ui.layout_columns(
+                            ui.input_text(
+                                "convoID",
+                                "",
+                                placeholder="Conversation ID",
+                                width="100%",
+                            ),
+                            ui.input_action_button("generateConvoID", "New"),
+                            col_widths=[7, 5],
+                        ),
+                        ui.input_text_area(
+                            "userTextInput",
+                            "",
+                            rows=6,
+                            placeholder="Ask anything",
+                            width="100%",
+                        ),
+                        ui.input_task_button(
+                            "send", "Send (Shift + Enter)", auto_reset=False
+                        ),
+                        ui.output_ui("outputRunInfo"),
+                    ),
+                    ui.output_ui("responseBox"),
+                    col_widths=[3, 9],
+                    fillable=False,
                 ),
-                ui.input_task_button("send", "Send (Shift + Enter)", auto_reset=False),
-                ui.output_ui("outputRunInfo"),
             ),
-            ui.output_ui("responseBox"),
-            col_widths=[3, 9],
-            fillable=False,
         ),
+        title="LLM Control Plane",
     ),
     theme=shinyswatch.theme.flatly,
 )
@@ -510,12 +517,7 @@ def server(input, output, session):
     @reactive.event(input.send)
     def responseBox():
         return ui.card(
-            ui.div(
-                ui.output_markdown_stream(
-                    "streamOutput", auto_scroll=input.autoScroll()
-                ),
-            ),
-            style="height:93dvh; overflow:auto;",
+            ui.output_markdown_stream("streamOutput", auto_scroll=input.autoScroll()),
         )
 
 

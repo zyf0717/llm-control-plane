@@ -128,6 +128,42 @@ async def root_chat(request: Request):
     return await proxy_with_context("", request)
 
 
+@app.post("/conversations/retrieve")
+async def retrieve_conversation(request: Request):
+    """Retrieve a conversation in its entirety based on conversation ID."""
+    try:
+        body = await request.json()
+        convo_id = body.get("convo_id")
+
+        if not convo_id:
+            raise HTTPException(
+                status_code=400, detail="Missing required field: convo_id"
+            )
+
+        if convo_id not in convo_history:
+            raise HTTPException(
+                status_code=404, detail=f"Conversation with ID '{convo_id}' not found"
+            )
+
+        convo = convo_history[convo_id]
+
+        return {
+            "convo_id": convo_id,
+            "messages": convo,
+            "message_count": len(convo),
+            "retrieved_at": datetime.now().isoformat(),
+        }
+
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+    except Exception as e:
+        logger.error(f"Error retrieving conversation: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error while retrieving conversation",
+        )
+
+
 @app.get("/models")
 async def list_models():
     """List all available models from configured endpoints with additional metadata."""
