@@ -70,10 +70,16 @@ class HeaderManager:
     @staticmethod
     def create_auth_headers() -> Dict[str, str]:
         """Create authentication headers for upstream requests."""
-        return {
-            "CF-Access-Client-Id": os.getenv("API_KEY_ID"),
-            "CF-Access-Client-Secret": os.getenv("API_KEY_SECRET"),
-        }
+        headers = {}
+        api_key_id = os.getenv("API_KEY_ID")
+        api_key_secret = os.getenv("API_KEY_SECRET")
+
+        if api_key_id:
+            headers["CF-Access-Client-Id"] = api_key_id
+        if api_key_secret:
+            headers["CF-Access-Client-Secret"] = api_key_secret
+
+        return headers
 
     @staticmethod
     def prepare_upstream_headers(

@@ -211,3 +211,6 @@ cron.sh
 
 # nohup
 nohup.out
+
+# config
+config.yaml

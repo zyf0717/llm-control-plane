@@ -13,20 +13,42 @@ load_dotenv()
 API_KEY_ID = os.getenv("API_KEY_ID")
 API_KEY_SECRET = os.getenv("API_KEY_SECRET")
 
-ENDPOINTS = {
-    "default": {
-        "rest-api": "https://llm.paperclips.dev/gpt-oss-20b-api",
-        "openai": "https://llm.paperclips.dev/gpt-oss-20b",
-    },
-    "gpt-oss-20b": {
-        "rest-api": "https://llm.paperclips.dev/gpt-oss-20b-api",
-        "openai": "https://llm.paperclips.dev/gpt-oss-20b",
-    },
-    "qwen3-4b": {
-        "rest-api": "https://llm.paperclips.dev/qwen3-4b-api",
-        "openai": "https://llm.paperclips.dev/qwen3-4b",
-    },
-}
+# URL for the proxy service
+PROXY_BASE_URL = "http://localhost:12340"
+
+
+async def fetch_available_models():
+    """Fetch available models from the proxy /models endpoint."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{PROXY_BASE_URL}/models")
+            response.raise_for_status()
+            data = response.json()
+
+            # Group models by endpoint
+            endpoints = {}
+            for model in data.get("data", []):
+                endpoint_name = model.get("endpoint")
+                endpoint_url = model.get("endpoint_url")
+                model_id = model.get("id")
+
+                if endpoint_name and endpoint_url and model_id:
+                    if endpoint_name not in endpoints:
+                        endpoints[endpoint_name] = {
+                            "endpoint_url": endpoint_url,
+                            "models": [],
+                        }
+                    endpoints[endpoint_name]["models"].append(model)
+
+            return endpoints
+    except Exception as e:
+        print(f"Failed to fetch models: {e}")
+        # Fallback to empty dict if proxy is not available
+        return {}
+
+
+# Global reactive value to store endpoints
+available_endpoints = reactive.Value({})
 
 app_ui = ui.page_fluid(
     ui.tags.script(
@@ -68,7 +90,8 @@ app_ui = ui.page_fluid(
                 });
                 """
             ),
-            ui.input_select("endpoint", "Endpoint", choices=list(ENDPOINTS.keys())),
+            ui.input_select("endpoint", "Endpoint", choices=[]),
+            ui.input_action_button("refreshEndpoints", "Refresh Endpoints"),
             ui.input_switch("stream", "Streaming", True),
             ui.input_switch("autoScroll", "Auto-scroll", True),
             ui.input_switch("outputJSON", "JSON", False),
@@ -111,6 +134,35 @@ def server(input, output, session):
     last_runtime = reactive.Value(None)
     run_info = reactive.Value(None)
     send_button_state = reactive.Value("ready")
+
+    # Initialize endpoints on startup
+    @reactive.Effect
+    async def _initialize_endpoints():
+        endpoints = await fetch_available_models()
+        available_endpoints.set(endpoints)
+
+        # Update the endpoint choices
+        endpoint_choices = list(endpoints.keys()) if endpoints else []
+        ui.update_select(
+            "endpoint",
+            choices=endpoint_choices,
+            selected=endpoint_choices[0] if endpoint_choices else None,
+        )
+
+    # Refresh endpoints when button is clicked
+    @reactive.Effect
+    @reactive.event(input.refreshEndpoints)
+    async def _refresh_endpoints():
+        endpoints = await fetch_available_models()
+        available_endpoints.set(endpoints)
+
+        # Update the endpoint choices
+        endpoint_choices = list(endpoints.keys()) if endpoints else []
+        ui.update_select(
+            "endpoint",
+            choices=endpoint_choices,
+            selected=endpoint_choices[0] if endpoint_choices else None,
+        )
 
     # Enable dynamic theme switching
     shinyswatch.theme_picker_server()
@@ -160,6 +212,7 @@ def server(input, output, session):
     async def llm_stream_generator(
         endpoint_key: str,
         text: str,
+        endpoints_dict: dict,
         stream: bool = True,
         output_json: bool = False,
         convo_id: str = None,
@@ -170,9 +223,15 @@ def server(input, output, session):
         now = time.time()
         send_button_state.set("busy")
 
-        url = ENDPOINTS.get(endpoint_key, ENDPOINTS["default"]).get(
-            "rest-api" if not stream else "openai"
-        )
+        # Get the selected endpoint info
+        if not endpoints_dict or endpoint_key not in endpoints_dict:
+            yield f"Error: Endpoint '{endpoint_key}' not available"
+            send_button_state.set("ready")
+            return
+
+        # Use the proxy URL with the endpoint name as path
+        url = f"{PROXY_BASE_URL}/{endpoint_key}"
+
         payload = {"messages": [{"role": "user", "content": text}]}
         headers = {
             "CF-Access-Client-Id": API_KEY_ID,
@@ -273,10 +332,14 @@ def server(input, output, session):
     @reactive.effect
     @reactive.event(input.send)
     async def _():
+        # Read reactive values outside the extended task
+        current_endpoints = available_endpoints.get()
+
         await md.stream(
             llm_stream_generator(
                 endpoint_key=input.endpoint(),
                 text=input.userTextInput(),
+                endpoints_dict=current_endpoints,
                 stream=input.stream(),
                 output_json=input.outputJSON(),
                 convo_id=input.convoID() if input.convoID() else None,
@@ -332,3 +395,6 @@ def server(input, output, session):
 
 
 app = App(app_ui, server)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000)

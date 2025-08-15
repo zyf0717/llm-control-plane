@@ -24,16 +24,12 @@ def mock_environment_variables():
     test_env = {
         "API_KEY_ID": "test-api-key-id",
         "API_KEY_SECRET": "test-api-secret",
-        "GPT_OSS_20B_API_URL": "https://test-gpt.example.com",
-        "QWEN_3_4B_API_URL": "https://test-qwen.example.com",
     }
 
     with patch.dict(os.environ, test_env, clear=False):
-        # Also patch the imported variables in the proxy module
-        with patch("proxy.GPT_OSS_20B_API_URL", test_env["GPT_OSS_20B_API_URL"]), patch(
-            "proxy.QWEN_3_4B_API_URL", test_env["QWEN_3_4B_API_URL"]
-        ), patch("utils.os.getenv") as mock_getenv:
-            # Mock os.getenv for HeaderManager
+        # Mock os.getenv for HeaderManager
+        with patch("utils.os.getenv") as mock_getenv:
+
             def getenv_side_effect(key, default=None):
                 return test_env.get(key, default)
 
