@@ -5,17 +5,10 @@ Test suite for the LLM Control Plane proxy functionality.
 import json
 from unittest.mock import AsyncMock, Mock, patch
 
-import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from ..proxy import (
-    app,
-    convo_history,
-    endpoints,
-    get_target_endpoint,
-    parse_and_inject_history,
-)
+from ..proxy import app, convo_history, get_target_endpoint, parse_and_inject_history
 from ..utils import HeaderManager
 
 
