@@ -12,9 +12,7 @@ from shiny import App, reactive, render, ui
 load_dotenv()
 API_KEY_ID = os.getenv("API_KEY_ID")
 API_KEY_SECRET = os.getenv("API_KEY_SECRET")
-
-# URL for the proxy service
-PROXY_BASE_URL = "http://localhost:12340"
+PROXY_BASE_URL = os.getenv("PROXY_BASE_URL")
 
 
 async def fetch_models_data():
@@ -140,6 +138,9 @@ def server(input, output, session):
     # Reactive values
     available_endpoints = reactive.Value({})
     endpoint_info = reactive.Value({})
+    endpoint_display_mapping = reactive.Value(
+        {}
+    )  # Maps display names to actual endpoint keys
     last_runtime = reactive.Value(None)
     run_info = reactive.Value(None)
     send_button_state = reactive.Value("ready")
@@ -151,12 +152,32 @@ def server(input, output, session):
         available_endpoints.set(endpoints)
         endpoint_info.set(data)
 
-        # Update the endpoint choices
-        endpoint_choices = list(endpoints.keys()) if endpoints else []
+        # Update the endpoint choices with model names
+        endpoint_choices = {}
+        display_mapping = {}
+        if endpoints:
+            for endpoint_name, endpoint_data in endpoints.items():
+                models = endpoint_data.get("models", [])
+                if models:
+                    model_name = models[0].get("id", "")
+                    if model_name:
+                        # Format: "Endpoint Name (model/name)"
+                        display_name = f"{endpoint_name} ({model_name})"
+                        endpoint_choices[display_name] = endpoint_name
+                        display_mapping[display_name] = endpoint_name
+                    else:
+                        endpoint_choices[endpoint_name] = endpoint_name
+                        display_mapping[endpoint_name] = endpoint_name
+                else:
+                    endpoint_choices[endpoint_name] = endpoint_name
+                    display_mapping[endpoint_name] = endpoint_name
+
+        endpoint_display_mapping.set(display_mapping)
+        choice_list = list(endpoint_choices.keys()) if endpoint_choices else []
         ui.update_select(
             "endpoint",
-            choices=endpoint_choices,
-            selected=endpoint_choices[0] if endpoint_choices else None,
+            choices=endpoint_choices if endpoint_choices else [],
+            selected=choice_list[0] if choice_list else None,
         )
 
     # Initialize endpoints on startup
@@ -302,10 +323,10 @@ def server(input, output, session):
                                         choices[0].get("delta", {}).get("content", "")
                                     )
                                     if chunk:
+                                        chunk = chunk.replace("<think>", "<em>")
                                         chunk = chunk.replace(
-                                            "<think>", "*Reasoning*:\n"
+                                            "</think>", "</em>\n\n---\n\n"
                                         )
-                                        chunk = chunk.replace("</think>", "\n\n---\n\n")
                                         yield chunk
 
                             extract_metadata(obj)
@@ -330,8 +351,8 @@ def server(input, output, session):
                             .get("message", {})
                             .get("content", "")
                         )
-                        content = content.replace("<think>", "*Reasoning*:\n")
-                        content = content.replace("</think>", "\n\n---\n\n")
+                        content = content.replace("<think>", "<em>")
+                        content = content.replace("</think>", "</em>\n\n---\n\n")
                         yield str(content)
 
         except Exception as e:
@@ -347,10 +368,15 @@ def server(input, output, session):
     async def _():
         # Read reactive values outside the extended task
         current_endpoints = available_endpoints.get()
+        display_mapping = endpoint_display_mapping.get()
+
+        # Get the actual endpoint key from the display name
+        selected_display = input.endpoint()
+        actual_endpoint_key = display_mapping.get(selected_display, selected_display)
 
         await md.stream(
             llm_stream_generator(
-                endpoint_key=input.endpoint(),
+                endpoint_key=actual_endpoint_key,
                 text=input.userTextInput(),
                 endpoints_dict=current_endpoints,
                 stream=input.stream(),
@@ -365,7 +391,13 @@ def server(input, output, session):
         info = run_info.get()
         runtime = last_runtime.get()
         endpoint_data = endpoint_info.get()
-        current_endpoint = input.endpoint()
+        current_endpoint_display = input.endpoint()
+        display_mapping = endpoint_display_mapping.get()
+
+        # Get the actual endpoint key from the display name
+        current_endpoint = display_mapping.get(
+            current_endpoint_display, current_endpoint_display
+        )
 
         def fmt(v):
             """Helper to format numbers and values."""
@@ -420,6 +452,12 @@ def server(input, output, session):
 
                 # Model details
                 model_details = []
+
+                # Add the full model name first
+                model_name = model.get("id")
+                if model_name:
+                    model_details.append(f"Model: {model_name}")
+
                 for key in ["arch", "quantization", "compatibility_type", "state"]:
                     value = model.get(key)
                     if value:
