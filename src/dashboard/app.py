@@ -135,8 +135,11 @@ app_ui = ui.page_fluid(
                 });
                 """
                     ),
-                    ui.input_select("endpoint", "Endpoint", choices=[]),
-                    ui.input_action_button("refreshEndpoints", "Refresh Endpoints"),
+                    ui.layout_columns(
+                        ui.input_select("endpoint", "", choices=[]),
+                        ui.input_action_button("refreshEndpoints", "⟳"),
+                        col_widths=[9, 3],
+                    ),
                     ui.input_switch("stream", "Streaming", True),
                     ui.input_switch("autoScroll", "Auto-scroll", True),
                     ui.input_switch("outputJSON", "JSON", False),
@@ -174,6 +177,7 @@ app_ui = ui.page_fluid(
                 ),
             ),
         ),
+        ui.nav_panel("History"),
         title="LLM Control Plane",
     ),
     theme=shinyswatch.theme.flatly,
