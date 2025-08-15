@@ -289,7 +289,8 @@ async def handle_non_streaming_response(
 
 async def proxy_with_context(path: str, request: Request):
     """Main proxy handler with conversation context."""
-    target_endpoint = await get_available_endpoint(path)
+    # target_endpoint = await get_available_endpoint(path)  # To-do: ping the models endpoint
+    target_endpoint = ENDPOINT_MAP.get(path, DEFAULT_ENDPOINT)
 
     # Parse request body and inject conversation history
     raw_body = await request.body()
