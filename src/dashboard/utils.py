@@ -1,4 +1,12 @@
+import os
+from pathlib import Path
+
 import httpx
+from dotenv import load_dotenv
+
+# Load .env from project root (two levels up from this file)
+load_dotenv()
+PROXY_BASE_URL = os.getenv("PROXY_BASE_URL")
 
 
 async def fetch_models_data():
@@ -76,4 +84,6 @@ def find_model_by_endpoint(endpoint_data, endpoint_key):
     for model in endpoint_data.get("data", []):
         if model.get("endpoint") == endpoint_key:
             return model
+    return None
+    return None
     return None

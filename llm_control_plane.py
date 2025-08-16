@@ -1,7 +1,8 @@
 import threading
 
 import uvicorn
-from shiny import run_app
+
+from src.dashboard.app import app
 
 
 def run_proxy():
@@ -9,9 +10,7 @@ def run_proxy():
 
 
 def run_dashboard():
-    # If dashboard.py defines an ASGI app named `app`, you can also do:
-    # uvicorn.run("src.dashboard.dashboard:app", host="0.0.0.0", port=12341)
-    run_app("src/dashboard/app.py", host="0.0.0.0", port=12341)
+    app.run(host="0.0.0.0", port=12341)
 
 
 if __name__ == "__main__":
