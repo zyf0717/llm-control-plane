@@ -2,6 +2,7 @@ import json
 import os
 import time
 import uuid
+from datetime import datetime
 from typing import AsyncGenerator
 
 import httpx
@@ -9,7 +10,6 @@ import shinyswatch
 from dotenv import load_dotenv
 from shiny import reactive, render, ui
 
-# Load .env from project root (same as utils.py)
 load_dotenv()
 API_KEY_ID = os.getenv("API_KEY_ID")
 API_KEY_SECRET = os.getenv("API_KEY_SECRET")
@@ -18,6 +18,7 @@ PROXY_BASE_URL = os.getenv("PROXY_BASE_URL")
 from .utils import (
     create_endpoint_display_choices,
     fetch_available_endpoints,
+    fetch_convo_history,
     find_model_by_endpoint,
     get_actual_endpoint_key,
 )
@@ -361,4 +362,50 @@ def server(input, output, session):
     def responseBox():
         return ui.card(
             ui.output_markdown_stream("streamOutput", auto_scroll=input.autoScroll()),
+        )
+
+    # Add a reactive value to track history refresh needs
+    history_refresh_trigger = reactive.Value(0)
+
+    # Trigger history refresh when messages are sent
+    @reactive.Effect
+    @reactive.event(input.send)
+    def _trigger_history_refresh():
+        # Increment the trigger to force history refresh after sending messages
+        history_refresh_trigger.set(history_refresh_trigger.get() + 1)
+
+    # Trigger history refresh when refresh button is clicked
+    @reactive.Effect
+    @reactive.event(input.refreshHistory)
+    def _manual_history_refresh():
+        # Increment the trigger to force history refresh
+        history_refresh_trigger.set(history_refresh_trigger.get() + 1)
+
+    @render.ui
+    @reactive.event(input.convoID, history_refresh_trigger)
+    async def historyBox():
+        # Only fetch if conversation ID is provided
+        if not input.convoID():
+            return ui.card(
+                ui.markdown(
+                    "**No conversation ID provided**\n\nEnter a conversation ID to view history."
+                ),
+            )
+
+        convo_history = await fetch_convo_history(input.convoID())
+
+        # Handle empty or error responses
+        if not convo_history:
+            return ui.card(
+                ui.markdown(
+                    f"**No history found for conversation: {input.convoID()}**\n\nThis conversation may not exist or has no messages."
+                ),
+            )
+
+        # Add timestamp to show when history was last refreshed
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        return ui.card(
+            ui.markdown(f"**Conversation History** *(refreshed at {timestamp})*"),
+            ui.markdown(f"```json\n{json.dumps(convo_history, indent=2)}\n```"),
         )

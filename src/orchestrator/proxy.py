@@ -158,12 +158,7 @@ async def retrieve_conversation(request: Request):
 
         convo = convo_history[convo_id]
 
-        return {
-            "convo_id": convo_id,
-            "messages": convo,
-            "message_count": len(convo),
-            "retrieved_at": datetime.now().isoformat(),
-        }
+        return convo
 
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON in request body")

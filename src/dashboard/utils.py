@@ -85,5 +85,17 @@ def find_model_by_endpoint(endpoint_data, endpoint_key):
         if model.get("endpoint") == endpoint_key:
             return model
     return None
-    return None
-    return None
+
+
+async def fetch_convo_history(convo_id):
+    """Fetch conversation history for a given convo_id."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{PROXY_BASE_URL}/conversations/retrieve", json={"convo_id": convo_id}
+            )
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        print(f"Failed to fetch conversation history: {e}")
+        return {}

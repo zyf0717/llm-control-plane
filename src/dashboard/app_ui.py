@@ -86,7 +86,14 @@ app_ui = ui.page_fluid(
             ),
         ),
         ui.nav_panel("Multi-Node"),
-        ui.nav_panel("History"),
+        ui.nav_panel(
+            "History",
+            ui.layout_columns(
+                ui.input_action_button("refreshHistory", "Refresh History"),
+                col_widths=[3],
+            ),
+            ui.output_ui("historyBox"),
+        ),
         title="LLM Control Plane",
     ),
     theme=shinyswatch.theme.flatly,
