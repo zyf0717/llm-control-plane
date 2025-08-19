@@ -195,7 +195,10 @@ async def smart_route(request: Request):
 
         # Route to the selected endpoint
         return await proxy_with_context(
-            decision.endpoint, request, extra_headers=routing_headers
+            decision.endpoint,
+            request,
+            extra_headers=routing_headers,
+            _skip_history_injection=True,
         )
 
     except HTTPException:
@@ -450,14 +453,25 @@ async def handle_non_streaming_response(
 
 
 async def proxy_with_context(
-    path: str, request: Request, extra_headers: Dict[str, str] = None
+    path: str,
+    request: Request,
+    extra_headers: Dict[str, str] = None,
+    _skip_history_injection: bool = False,
 ):
     """Main proxy handler with conversation context."""
     # Parse request body and inject conversation history first
     raw_body = await request.body()
     convo_id = request.headers.get("X-Convo-ID")
 
-    body, is_streaming = parse_and_inject_history(raw_body, convo_id)
+    # Skip history injection if this is a recursive call (e.g., from smart/auto routing)
+    if _skip_history_injection:
+        try:
+            body = json.loads(raw_body) if raw_body else {}
+            is_streaming = body.get("stream", False)
+        except json.JSONDecodeError:
+            body, is_streaming = None, False
+    else:
+        body, is_streaming = parse_and_inject_history(raw_body, convo_id)
 
     # Check for streaming flag in query params as fallback
     if not is_streaming:
@@ -529,7 +543,10 @@ async def proxy_with_context(
 
             # Route to the selected endpoint
             return await proxy_with_context(
-                decision.endpoint, request, extra_headers=routing_headers
+                decision.endpoint,
+                request,
+                extra_headers=routing_headers,
+                _skip_history_injection=True,
             )
 
         except HTTPException:

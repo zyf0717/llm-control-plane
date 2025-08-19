@@ -148,13 +148,13 @@ class TestReasoningRouter:
         assert simple_decision.endpoint == "Test Endpoint"
         assert complex_decision.endpoint == "Test Endpoint"
 
-    def test_extract_vram_gb(self, reasoning_router):
+    def test_extract_gb(self, reasoning_router):
         """Test VRAM extraction from strings."""
-        assert reasoning_router._extract_vram_gb("16GB") == 16
-        assert reasoning_router._extract_vram_gb("12GB") == 12
-        assert reasoning_router._extract_vram_gb("32 GB") == 32
-        assert reasoning_router._extract_vram_gb(None) == 0
-        assert reasoning_router._extract_vram_gb("unknown") == 0
+        assert reasoning_router._extract_gb("16GB") == 16
+        assert reasoning_router._extract_gb("12GB") == 12
+        assert reasoning_router._extract_gb("32 GB") == 32
+        assert reasoning_router._extract_gb(None) == 0
+        assert reasoning_router._extract_gb("unknown") == 0
 
     @pytest.mark.asyncio
     async def test_llm_classification_success(
