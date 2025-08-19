@@ -5,17 +5,26 @@ app_ui = ui.page_fluid(
     ui.tags.script(
         """
         document.addEventListener('DOMContentLoaded', () => {
-            const ta = document.getElementById('userTextInput');
-            const btn = document.getElementById('send');
-            if (!ta || !btn) return;
+        const ta  = document.getElementById('userTextInput');
+        const btn = document.getElementById('send');
+        if (!ta || !btn) return;
 
+        // Simple touch detection
+        const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0 || matchMedia('(pointer: coarse)').matches;
+
+        // Hint virtual keyboards appropriately
+        ta.setAttribute('enterkeyhint', isTouch ? 'enter' : 'send');
+
+        // Desktop only: Enter sends (Shift+Enter = newline)
+        if (!isTouch) {
             ta.addEventListener('keydown', (e) => {
-                if (e.isComposing) return; // IME
-                if (e.key === 'Enter' && e.shiftKey) {
-                    e.preventDefault();
-                    btn.click();
-                }
+            if (e.isComposing) return; // IME safety
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                btn.click();
+            }
             });
+        }
         });
         """
     ),
@@ -74,9 +83,7 @@ app_ui = ui.page_fluid(
                             placeholder="Ask anything",
                             width="100%",
                         ),
-                        ui.input_task_button(
-                            "send", "Send (Shift + Enter)", auto_reset=False
-                        ),
+                        ui.input_task_button("send", "Send", auto_reset=False),
                         ui.output_ui("outputRunInfo"),
                     ),
                     ui.output_ui("responseBox"),
