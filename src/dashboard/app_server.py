@@ -136,13 +136,18 @@ def server(input, output, session):
         send_button_state.set("busy")
 
         try:
-            # Validate endpoint
-            if not endpoints_dict or endpoint_key not in endpoints_dict:
-                yield f"Error: Endpoint '{endpoint_key}' not available"
-                return
+            # Handle smart routing differently - no need to validate endpoint exists
+            if endpoint_key == "smart":
+                # Smart routing endpoint - always available
+                url = f"{PROXY_BASE_URL}/smart"
+            else:
+                # Validate regular endpoint
+                if not endpoints_dict or endpoint_key not in endpoints_dict:
+                    yield f"Error: Endpoint '{endpoint_key}' not available"
+                    return
+                url = f"{PROXY_BASE_URL}/{endpoint_key}"
 
             # Prepare request
-            url = f"{PROXY_BASE_URL}/{endpoint_key}"
             payload = {"messages": [{"role": "user", "content": text}]}
             headers = {
                 "CF-Access-Client-Id": API_KEY_ID,
@@ -153,15 +158,28 @@ def server(input, output, session):
                 headers["X-Convo-ID"] = convo_id
             timeout = httpx.Timeout(connect=5, read=None, write=5, pool=10)
 
-            def extract_metadata(obj):
-                """Extract metadata from response object."""
+            def extract_metadata(obj, response_headers=None):
+                """Extract metadata from response object and headers."""
                 metadata_keys = ("stats", "usage", "model_info", "runtime")
-                if any(k in obj for k in metadata_keys):
-                    combined = {}
-                    for key in metadata_keys:
-                        if key in obj and isinstance(obj[key], dict):
-                            combined[key] = obj[key]
-                    run_info.set(combined if combined else None)
+                combined = {}
+
+                # Extract standard metadata
+                for key in metadata_keys:
+                    if key in obj and isinstance(obj[key], dict):
+                        combined[key] = obj[key]
+
+                # Extract routing information from headers (for smart routing)
+                if response_headers and endpoint_key == "smart":
+                    routing_info = {}
+                    for header_name, header_value in response_headers.items():
+                        if header_name.lower().startswith("x-route-"):
+                            key = header_name.lower().replace("x-route-", "")
+                            routing_info[key] = header_value
+
+                    if routing_info:
+                        combined["routing"] = routing_info
+
+                run_info.set(combined if combined else None)
 
             async with httpx.AsyncClient(timeout=timeout) as client:
                 if stream:
@@ -171,6 +189,9 @@ def server(input, output, session):
                     ) as r:
                         r.raise_for_status()
                         first = True
+
+                        # Extract routing info from headers once
+                        extract_metadata({}, dict(r.headers))
 
                         async for line in r.aiter_lines():
                             if not line or not line.startswith("data: "):
@@ -213,7 +234,7 @@ def server(input, output, session):
                     resp.raise_for_status()
                     data = resp.json()
 
-                    extract_metadata(data)
+                    extract_metadata(data, dict(resp.headers))
 
                     if output_json:
                         yield f"```json\n{json.dumps(data, indent=2)}\n```"
@@ -327,6 +348,23 @@ def server(input, output, session):
         # Runtime section
         if runtime is not None:
             sections.append(f"**Runtime**: {runtime:.2f}s")
+
+        # Routing information (for smart routing)
+        if info and "routing" in info:
+            routing = info["routing"]
+            routing_lines = ["**Smart Routing Decision**"]
+
+            if "decision" in routing:
+                routing_lines.append(f"Selected: {routing['decision']}")
+            if "confidence" in routing:
+                confidence = float(routing["confidence"])
+                routing_lines.append(f"Confidence: {confidence:.1%}")
+            if "reason" in routing:
+                routing_lines.append(f"Reason: {routing['reason']}")
+            if "strategy" in routing:
+                routing_lines.append(f"Strategy: {routing['strategy']}")
+
+            sections.append("<br>".join(routing_lines))
 
         # Request info (usage, stats, model_info, runtime from response)
         if info:

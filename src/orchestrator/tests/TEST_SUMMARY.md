@@ -30,6 +30,10 @@ The LLM Control Plane has a comprehensive pytest-based test suite covering all m
   - Endpoint selection based on task complexity
   - Hardware-based endpoint fallback
   - VRAM extraction from endpoint configurations
+  - **LLM-based classification** using Mac Mini endpoint for intelligent routing
+  - **Graceful fallback** from LLM classification to pattern matching
+  - **Mocked LLM responses** for testing classification accuracy
+  - **Authentication handling** with Cloudflare Access headers
 
 - **TestLLMRouter**: Tests for main router orchestration
   - Route request handling for simple and complex tasks
@@ -78,14 +82,15 @@ The test suite covers:
 - **Core Proxy Functionality**: All existing proxy features
 - **Intelligent Routing**: Complete LLM router system including:
   - Pattern-based reasoning detection
+  - **LLM-based classification** using Mac Mini for enhanced accuracy
   - Hardware-aware endpoint selection
   - Strategy-based routing framework
-  - Error handling and fallbacks
+  - Error handling and fallbacks with graceful degradation
 - **Smart Endpoint**: New `/smart` endpoint with full integration
 - **Data Structures**: All routing-related classes and enums
 
 ## Status
 
-- **28 tests passing** ✅ (19 router tests + 9 smart routing tests)
+- **45 tests passing** ✅ (22 router tests + 9 smart routing tests + 14 proxy tests + 1 integration test)
 - **0 failures** ✅
-- **Full test coverage** of routing functionality ✅
+- **Full test coverage** of routing functionality including LLM classification ✅

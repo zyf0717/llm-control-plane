@@ -237,6 +237,21 @@ async def list_models():
             logger.warning(f"No URL configured for endpoint {endpoint_name}")
             continue
 
+        # Handle "Auto" endpoint specially - it's a routing mechanism, not a model endpoint
+        if endpoint_name == "Auto":
+            # Add Auto as a special routing option
+            auto_model = {
+                "id": "auto-router",
+                "object": "model",
+                "created": int(datetime.now().timestamp()),
+                "owned_by": "llm-control-plane",
+                "endpoint": endpoint_name,
+                "endpoint_url": endpoint_url,
+                "description": "Intelligent routing to best available endpoint",
+            }
+            available_models.append(auto_model)
+            continue
+
         try:
             # Send GET request to /api/v0/models endpoint
             models_url = f"{endpoint_url}/api/v0/models"
@@ -346,8 +361,11 @@ async def handle_streaming_response(
                         acc.feed(chunk)
                         yield chunk
         except httpx.HTTPStatusError as e:
+            # For streaming responses, we can't access response.text
+            # Use a generic error message with status code
+            detail = f"HTTP {e.response.status_code} error from upstream"
             yield create_error_sse_message(
-                "error", status=e.response.status_code, detail=e.response.text
+                "error", status=e.response.status_code, detail=detail
             )
         except Exception as e:
             yield create_error_sse_message("error", detail=repr(e))
@@ -428,6 +446,64 @@ async def proxy_with_context(
     # Check for streaming flag in query params as fallback
     if not is_streaming:
         is_streaming = request.query_params.get("stream") in {"true", "1"}
+
+    # Check if this is an Auto/smart routing request
+    clean_path = path.lstrip("/")
+    endpoint_key = clean_path.split("/")[0] if clean_path else ""
+
+    if endpoint_key == "Auto":
+        # Handle Auto endpoint with smart routing
+        try:
+            if not body or not isinstance(body, dict):
+                raise HTTPException(
+                    status_code=400, detail="Invalid request body for Auto routing"
+                )
+
+            # Extract text from messages for analysis
+            messages = body.get("messages", [])
+            if not messages:
+                raise HTTPException(
+                    status_code=400, detail="No messages provided for Auto routing"
+                )
+
+            # Get the latest user message for routing analysis
+            user_messages = [msg for msg in messages if msg.get("role") == "user"]
+            if not user_messages:
+                raise HTTPException(
+                    status_code=400, detail="No user messages found for Auto routing"
+                )
+
+            latest_message = user_messages[-1].get("content", "")
+
+            # Use LLM router to determine best endpoint
+            router = get_router()
+            decision = await router.route_request(latest_message)
+
+            # Add routing metadata to response headers
+            routing_headers = {
+                "X-Route-Decision": decision.endpoint,
+                "X-Route-Confidence": str(decision.confidence),
+                "X-Route-Reason": decision.reason,
+                "X-Route-Strategy": decision.strategy.value,
+            }
+            if extra_headers:
+                routing_headers.update(extra_headers)
+
+            # Log routing decision
+            logger.info(
+                f"Auto routing: {decision.endpoint} (confidence: {decision.confidence:.2f}) - {decision.reason}"
+            )
+
+            # Route to the selected endpoint
+            return await proxy_with_context(
+                decision.endpoint, request, extra_headers=routing_headers
+            )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Auto routing failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Auto routing error: {str(e)}")
 
     # Get target endpoint based on streaming preference
     target_endpoint = get_target_endpoint(path, is_streaming)

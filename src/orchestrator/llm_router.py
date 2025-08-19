@@ -5,17 +5,18 @@ Determines the most appropriate endpoint based on request characteristics.
 Currently supports reasoning detection with extensible framework for future routing logic.
 """
 
-import json
 import logging
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 import httpx
 import yaml
+
+from .utils import HeaderManager
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,10 @@ class ReasoningRouter(BaseRouter):
     ]
 
     def __init__(
-        self, lightweight_endpoint: str = None, reasoning_endpoint: str = None
+        self,
+        lightweight_endpoint: str = None,
+        reasoning_endpoint: str = None,
+        use_llm_classification: bool = True,
     ):
         """
         Initialize reasoning router.
@@ -106,6 +110,7 @@ class ReasoningRouter(BaseRouter):
         Args:
             lightweight_endpoint: Name of lightweight model for classification
             reasoning_endpoint: Name of reasoning-capable model for complex tasks
+            use_llm_classification: Whether to use LLM for classification (vs pattern matching)
         """
         self.lightweight_endpoint = (
             lightweight_endpoint or "Mac Mini"
@@ -113,12 +118,108 @@ class ReasoningRouter(BaseRouter):
         self.reasoning_endpoint = (
             reasoning_endpoint or "HRPC-CISR HPC"
         )  # Default to most powerful
+        self.use_llm_classification = use_llm_classification
 
-    async def should_route(self, text: str, **kwargs) -> bool:
+    async def _classify_with_llm(
+        self, text: str, endpoints: List[EndpointConfig]
+    ) -> Optional[bool]:
+        """Use lightweight LLM to classify if reasoning is needed."""
+        try:
+            # Find the lightweight endpoint
+            lightweight_ep = self._find_endpoint_by_name(
+                endpoints, self.lightweight_endpoint
+            )
+            if not lightweight_ep:
+                logger.warning(
+                    "Lightweight endpoint not found, falling back to pattern matching"
+                )
+                return None
+
+            # Prepare the classification prompt
+            classification_prompt = f"""Analyze the following user request and determine if it requires complex reasoning, step-by-step thinking, problem-solving, or chain-of-thought processing.
+
+User request: "{text}"
+
+Consider these factors:
+- Does it ask for analysis, reasoning, or problem-solving?
+- Does it require step-by-step thinking?
+- Does it involve calculations, logic, or complex explanations?
+- Is it asking "how" or "why" questions that need detailed reasoning?
+
+Respond with only "YES" if complex reasoning is required, or "NO" if it's a simple task.
+
+Response:"""
+
+            # Make request to lightweight endpoint
+            endpoint_url = f"{lightweight_ep.url}/api/v0/chat/completions"
+
+            payload = {
+                "messages": [{"role": "user", "content": classification_prompt}],
+                "model": "classification",
+                "max_tokens": 10,
+                "temperature": 0.1,  # Low temperature for consistent classification
+                "stream": False,
+            }
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # Create authentication headers
+                headers = HeaderManager.create_auth_headers()
+                headers["Content-Type"] = "application/json"
+
+                # Debug logging
+                logger.debug(f"Making LLM classification request to: {endpoint_url}")
+                logger.debug(f"Headers: {headers}")
+
+                response = await client.post(
+                    endpoint_url, json=payload, headers=headers
+                )
+                response.raise_for_status()
+
+                result = response.json()
+                if "choices" in result and result["choices"]:
+                    content = (
+                        result["choices"][0]
+                        .get("message", {})
+                        .get("content", "")
+                        .strip()
+                        .upper()
+                    )
+
+                    if "YES" in content:
+                        return True
+                    elif "NO" in content:
+                        return False
+                    else:
+                        logger.warning(
+                            f"Unexpected LLM classification response: {content}"
+                        )
+                        return None
+
+        except Exception as e:
+            logger.warning(
+                f"LLM classification failed: {e}, falling back to pattern matching"
+            )
+            return None
+
+        return None
+
+    async def should_route(
+        self, text: str, endpoints: List[EndpointConfig] = None, **kwargs
+    ) -> bool:
         """Check if text indicates reasoning is needed."""
+        # Try LLM classification first if enabled and endpoints available
+        if self.use_llm_classification and endpoints:
+            llm_result = await self._classify_with_llm(text, endpoints)
+            if llm_result is not None:
+                logger.info(
+                    f"LLM classification: {'reasoning' if llm_result else 'simple'} task"
+                )
+                return llm_result
+
+        # Fallback to pattern-based classification
         text_lower = text.lower()
 
-        # Quick pattern-based check first
+        # Quick pattern-based check
         for pattern in self.REASONING_PATTERNS:
             if re.search(pattern, text_lower, re.IGNORECASE):
                 return True
@@ -128,14 +229,13 @@ class ReasoningRouter(BaseRouter):
             if keyword in text_lower:
                 return True
 
-        # For ambiguous cases, could use lightweight LLM (not implemented yet)
         return False
 
     async def select_endpoint(
         self, text: str, endpoints: List[EndpointConfig], **kwargs
     ) -> RouteDecision:
         """Select endpoint based on reasoning requirements."""
-        needs_reasoning = await self.should_route(text)
+        needs_reasoning = await self.should_route(text, endpoints=endpoints)
 
         if needs_reasoning:
             # Find the most powerful endpoint for reasoning
@@ -145,10 +245,18 @@ class ReasoningRouter(BaseRouter):
             if not target_endpoint:
                 target_endpoint = self._select_most_powerful(endpoints)
 
+            # Higher confidence when using LLM classification
+            confidence = 0.9 if self.use_llm_classification else 0.8
+            reason = (
+                "Complex reasoning task detected (LLM classified)"
+                if self.use_llm_classification
+                else "Complex reasoning task detected"
+            )
+
             return RouteDecision(
                 endpoint=target_endpoint.name,
-                confidence=0.8,
-                reason="Complex reasoning task detected",
+                confidence=confidence,
+                reason=reason,
                 strategy=RouteStrategy.REASONING,
             )
         else:
@@ -159,10 +267,18 @@ class ReasoningRouter(BaseRouter):
             if not target_endpoint:
                 target_endpoint = self._select_fastest(endpoints)
 
+            # Higher confidence when using LLM classification
+            confidence = 0.85 if self.use_llm_classification else 0.7
+            reason = (
+                "Simple task, using efficient endpoint (LLM classified)"
+                if self.use_llm_classification
+                else "Simple task, using efficient endpoint"
+            )
+
             return RouteDecision(
                 endpoint=target_endpoint.name,
-                confidence=0.7,
-                reason="Simple task, using efficient endpoint",
+                confidence=confidence,
+                reason=reason,
                 strategy=RouteStrategy.REASONING,
             )
 
@@ -207,11 +323,18 @@ class ReasoningRouter(BaseRouter):
 class LLMRouter:
     """Main LLM router that orchestrates different routing strategies."""
 
-    def __init__(self, config_path: str = "config.yaml"):
+    def __init__(
+        self, config_path: str = "config.yaml", use_llm_classification: bool = True
+    ):
         """Initialize the router with configuration."""
         self.config_path = Path(config_path)
         self.endpoints = self._load_endpoints()
-        self.routers = {RouteStrategy.REASONING: ReasoningRouter()}
+        self.use_llm_classification = use_llm_classification
+        self.routers = {
+            RouteStrategy.REASONING: ReasoningRouter(
+                use_llm_classification=use_llm_classification
+            )
+        }
         self.default_strategy = RouteStrategy.REASONING
 
     def _load_endpoints(self) -> List[EndpointConfig]:
@@ -294,12 +417,18 @@ class LLMRouter:
 _router_instance = None
 
 
-def get_router() -> LLMRouter:
+def get_router(use_llm_classification: bool = True) -> LLMRouter:
     """Get the global router instance."""
     global _router_instance
     if _router_instance is None:
-        _router_instance = LLMRouter()
+        _router_instance = LLMRouter(use_llm_classification=use_llm_classification)
     return _router_instance
+
+
+def reset_router():
+    """Reset the global router instance (useful for testing)."""
+    global _router_instance
+    _router_instance = None
 
 
 async def route_text(

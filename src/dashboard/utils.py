@@ -1,3 +1,4 @@
+import logging
 import os
 from pathlib import Path
 
@@ -26,13 +27,25 @@ async def fetch_available_endpoints():
     try:
         data = await fetch_models_data()
 
+        # data: Raw response from /models endpoint with structure:
+        #   {
+        #     "data": [
+        #       {
+        #         "id": "model-name",           # Model identifier (e.g., "llama-3.1-8b")
+        #         "endpoint": "endpoint-name",  # Endpoint name (e.g., "Mac Mini")
+        #         "endpoint_url": "http://...", # Full URL to the endpoint
+        #         ...                          # Additional model metadata
+        #       },
+        #       ...
+        #     ]
+        #   }
+
         # Group models by endpoint
         endpoints = {}
         for model in data.get("data", []):
             endpoint_name = model.get("endpoint")
             endpoint_url = model.get("endpoint_url")
             model_id = model.get("id")
-
             if endpoint_name and endpoint_url and model_id:
                 if endpoint_name not in endpoints:
                     endpoints[endpoint_name] = {
@@ -40,10 +53,11 @@ async def fetch_available_endpoints():
                         "models": [],
                     }
                 endpoints[endpoint_name]["models"].append(model)
-
+        logging.info(f"Fetched endpoints: {endpoints}")
+        logging.info(f"Raw data: {data}")
         return endpoints, data  # Return both endpoints and raw data
     except Exception as e:
-        print(f"Failed to fetch endpoints: {e}")
+        logging.error(f"Failed to fetch endpoints: {e}")
         return {}, {}
 
 
