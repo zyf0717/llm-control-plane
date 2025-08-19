@@ -289,34 +289,26 @@ Response:"""
         return next((ep for ep in endpoints if ep.name == name), None)
 
     def _select_most_powerful(self, endpoints: List[EndpointConfig]) -> EndpointConfig:
-        """Select the most powerful endpoint based on GPU/hardware."""
-        # Prefer NVIDIA GPUs with high VRAM
-        nvidia_endpoints = [
-            ep for ep in endpoints if ep.gpu and "nvidia" in ep.gpu.lower()
-        ]
-        if nvidia_endpoints:
-            return max(nvidia_endpoints, key=lambda ep: self._extract_vram_gb(ep.vram))
-
-        # Fallback to first endpoint
-        return endpoints[0] if endpoints else None
+        """Select the most powerful endpoint based on memory capacity."""
+        return max(endpoints, key=self._get_memory_gb, default=None)
 
     def _select_fastest(self, endpoints: List[EndpointConfig]) -> EndpointConfig:
-        """Select the fastest endpoint (Apple Silicon preferred for speed)."""
-        # Prefer Apple Silicon for speed
-        apple_endpoints = [
-            ep for ep in endpoints if ep.soc and "apple" in ep.soc.lower()
-        ]
-        if apple_endpoints:
-            return apple_endpoints[0]
+        """Select the fastest endpoint (smallest model/least VRAM)."""
+        return min(endpoints, key=self._get_memory_gb, default=None)
 
-        # Fallback to first endpoint
-        return endpoints[0] if endpoints else None
+    def _get_memory_gb(self, endpoint: EndpointConfig) -> int:
+        """Get memory in GB: VRAM for GPU endpoints, RAM for SOC endpoints."""
+        # Use RAM for SOC-based endpoints (Apple Silicon, etc.)
+        if endpoint.soc:
+            return self._extract_gb(endpoint.ram)
+        # Use VRAM for GPU-based endpoints
+        return self._extract_gb(endpoint.vram)
 
-    def _extract_vram_gb(self, vram_str: Optional[str]) -> int:
-        """Extract VRAM in GB from string."""
-        if not vram_str:
+    def _extract_gb(self, memory_str: Optional[str]) -> int:
+        """Extract memory in GB from string."""
+        if not memory_str:
             return 0
-        match = re.search(r"(\d+)", vram_str)
+        match = re.search(r"(\d+)", memory_str)
         return int(match.group(1)) if match else 0
 
 

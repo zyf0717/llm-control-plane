@@ -126,6 +126,7 @@ def server(input, output, session):
         stream: bool = True,
         output_json: bool = False,
         convo_id: str = None,
+        current_routing_info: dict = None,
     ) -> AsyncGenerator[str, None]:
         text = (text or "Hello! What model are you?").strip()
         if not text:
@@ -158,10 +159,19 @@ def server(input, output, session):
                 headers["X-Convo-ID"] = convo_id
             timeout = httpx.Timeout(connect=5, read=None, write=5, pool=10)
 
-            def extract_metadata(obj, response_headers=None):
+            # Use passed routing info instead of reading reactive source
+            routing_info_holder = {"routing": current_routing_info or {}}
+
+            def extract_metadata(
+                obj, response_headers=None, preserve_routing_from=None
+            ):
                 """Extract metadata from response object and headers."""
                 metadata_keys = ("stats", "usage", "model_info", "runtime")
                 combined = {}
+
+                # Preserve existing routing info if provided
+                if preserve_routing_from and "routing" in preserve_routing_from:
+                    combined["routing"] = preserve_routing_from["routing"]
 
                 # Extract standard metadata
                 for key in metadata_keys:
@@ -169,7 +179,20 @@ def server(input, output, session):
                         combined[key] = obj[key]
 
                 # Extract routing information from headers (for smart routing)
-                if response_headers and endpoint_key == "smart":
+                # Check if this is an auto-routing request
+                is_auto_routing = (
+                    endpoint_key == "smart"
+                    or endpoint_key == "Auto"
+                    or (
+                        response_headers
+                        and any(
+                            h.lower().startswith("x-route-")
+                            for h in response_headers.keys()
+                        )
+                    )
+                )
+
+                if response_headers and is_auto_routing:
                     routing_info = {}
                     for header_name, header_value in response_headers.items():
                         if header_name.lower().startswith("x-route-"):
@@ -178,6 +201,8 @@ def server(input, output, session):
 
                     if routing_info:
                         combined["routing"] = routing_info
+                        # Store routing info for later use
+                        routing_info_holder["routing"] = routing_info
 
                 run_info.set(combined if combined else None)
 
@@ -222,7 +247,10 @@ def server(input, output, session):
                                         )
                                         yield chunk
 
-                            extract_metadata(obj)
+                            # Use the stored routing info
+                            extract_metadata(
+                                obj, preserve_routing_from=routing_info_holder
+                            )
 
                         if output_json and not first:
                             yield "]\n```"
@@ -248,7 +276,18 @@ def server(input, output, session):
                         content = content.replace("</think>", "</em>\n\n---\n\n")
                         yield str(content)
 
+        except httpx.HTTPStatusError as e:
+            yield f"HTTP Error {e.response.status_code}: {e.response.text}"
+        except httpx.RequestError as e:
+            yield f"Request Error: {str(e)}"
         except Exception as e:
+            # Log the full error for debugging
+            print(
+                f"Unexpected error in llm_stream_generator: {type(e).__name__}: {str(e)}"
+            )
+            import traceback
+
+            traceback.print_exc()
             yield f"Error: {str(e)}"
         finally:
             last_runtime.set(time.time() - now)
@@ -262,6 +301,7 @@ def server(input, output, session):
         # Read reactive values outside the extended task
         current_endpoints = available_endpoints.get()
         display_mapping = endpoint_display_mapping.get()
+        current_run_info = run_info.get() or {}
 
         # Get the actual endpoint key from the display name
         actual_endpoint_key = get_actual_endpoint_key(input.endpoint(), display_mapping)
@@ -274,16 +314,28 @@ def server(input, output, session):
                 stream=input.stream(),
                 output_json=input.outputJSON(),
                 convo_id=input.convoID() if input.convoID() else None,
+                current_routing_info=current_run_info.get("routing", {}),
             )
         )
 
-    def format_hardware_info(model):
+    def format_hardware_info(model, routing_info=None):
         """Format hardware information for display."""
         hardware_info = []
-        for key in ["gpu", "vram", "soc", "cpu", "ram"]:
-            value = model.get(key)
-            if value:
-                hardware_info.append(f"{key.upper()}: {value}")
+
+        # Use routing hardware info if available (from smart routing)
+        if routing_info:
+            for key in ["gpu", "vram", "soc", "cpu", "ram"]:
+                value = routing_info.get(key)
+                if value:
+                    hardware_info.append(f"{key.upper()}: {value}")
+
+        # If no routing info or routing info was incomplete, fallback to model hardware info
+        if not hardware_info and model:
+            for key in ["gpu", "vram", "soc", "cpu", "ram"]:
+                value = model.get(key)
+                if value:
+                    hardware_info.append(f"{key.upper()}: {value}")
+
         return hardware_info
 
     def format_model_details(model):
@@ -350,8 +402,10 @@ def server(input, output, session):
             sections.append(f"**Runtime**: {runtime:.2f}s")
 
         # Routing information (for smart routing)
+        routing_info = None
         if info and "routing" in info:
             routing = info["routing"]
+            routing_info = routing  # Store for hardware info use
             routing_lines = ["**Smart Routing Decision**"]
 
             if "decision" in routing:
@@ -371,19 +425,43 @@ def server(input, output, session):
             sections.extend(format_response_info(info, fmt))
 
         # Current endpoint info from /models endpoint
-        model = find_model_by_endpoint(endpoint_data, current_endpoint)
+        # For Auto/smart routing: always use the routed endpoint when available
+        # For manual selection: use the selected endpoint
+        endpoint_for_model_info = current_endpoint
+
+        # If we have routing info, prioritize the routed endpoint
+        if routing_info and "decision" in routing_info:
+            endpoint_for_model_info = routing_info["decision"]
+
+        model = find_model_by_endpoint(endpoint_data, endpoint_for_model_info)
+
+        # Fallback: if no model found and we have routing info, try the routed endpoint directly
+        if not model and routing_info and "decision" in routing_info:
+            model = find_model_by_endpoint(endpoint_data, routing_info["decision"])
+
+        # Additional fallback: for manual auto selection, try to find any non-auto model
+        if not model and current_endpoint == "Auto":
+            # Find the first real endpoint model (not auto-router)
+            for test_model in endpoint_data.get("data", []):
+                if (
+                    test_model.get("endpoint") != "Auto"
+                    and test_model.get("id") != "auto-router"
+                ):
+                    model = test_model
+                    break
+
         if model:
-            # Hardware info
-            hardware_info = format_hardware_info(model)
+            # Hardware info - use routing info if available, otherwise use model info
+            hardware_info = format_hardware_info(model, routing_info)
             if hardware_info:
                 sections.append("**Hardware**<br>" + "<br>".join(hardware_info))
 
             # Model details
             model_details = format_model_details(model)
             if model_details:
-                sections.append("**Model Info**<br>" + "<br>".join(model_details))
-
-            # # Capabilities (commented out in original)
+                sections.append(
+                    "**Model Info**<br>" + "<br>".join(model_details)
+                )  # # Capabilities (commented out in original)
             # capabilities = model.get("capabilities", [])
             # if capabilities:
             #     sections.append(f"**Capabilities**: {', '.join(capabilities)}")

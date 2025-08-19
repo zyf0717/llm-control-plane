@@ -164,6 +164,9 @@ async def smart_route(request: Request):
         router = get_router()
         decision = await router.route_request(latest_message)
 
+        # Get endpoint configuration for hardware info
+        selected_endpoint_config = router.get_endpoint_by_name(decision.endpoint)
+
         # Add routing metadata to response headers
         routing_headers = {
             "X-Route-Decision": decision.endpoint,
@@ -171,6 +174,19 @@ async def smart_route(request: Request):
             "X-Route-Reason": decision.reason,
             "X-Route-Strategy": decision.strategy.value,
         }
+
+        # Add endpoint hardware info to headers
+        if selected_endpoint_config:
+            if selected_endpoint_config.gpu:
+                routing_headers["X-Route-GPU"] = selected_endpoint_config.gpu
+            if selected_endpoint_config.vram:
+                routing_headers["X-Route-VRAM"] = selected_endpoint_config.vram
+            if selected_endpoint_config.soc:
+                routing_headers["X-Route-SOC"] = selected_endpoint_config.soc
+            if selected_endpoint_config.cpu:
+                routing_headers["X-Route-CPU"] = selected_endpoint_config.cpu
+            if selected_endpoint_config.ram:
+                routing_headers["X-Route-RAM"] = selected_endpoint_config.ram
 
         # Log routing decision
         logger.info(
@@ -479,6 +495,9 @@ async def proxy_with_context(
             router = get_router()
             decision = await router.route_request(latest_message)
 
+            # Get endpoint configuration for hardware info
+            selected_endpoint_config = router.get_endpoint_by_name(decision.endpoint)
+
             # Add routing metadata to response headers
             routing_headers = {
                 "X-Route-Decision": decision.endpoint,
@@ -486,6 +505,20 @@ async def proxy_with_context(
                 "X-Route-Reason": decision.reason,
                 "X-Route-Strategy": decision.strategy.value,
             }
+
+            # Add endpoint hardware info to headers
+            if selected_endpoint_config:
+                if selected_endpoint_config.gpu:
+                    routing_headers["X-Route-GPU"] = selected_endpoint_config.gpu
+                if selected_endpoint_config.vram:
+                    routing_headers["X-Route-VRAM"] = selected_endpoint_config.vram
+                if selected_endpoint_config.soc:
+                    routing_headers["X-Route-SOC"] = selected_endpoint_config.soc
+                if selected_endpoint_config.cpu:
+                    routing_headers["X-Route-CPU"] = selected_endpoint_config.cpu
+                if selected_endpoint_config.ram:
+                    routing_headers["X-Route-RAM"] = selected_endpoint_config.ram
+
             if extra_headers:
                 routing_headers.update(extra_headers)
 
