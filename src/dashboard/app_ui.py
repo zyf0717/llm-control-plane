@@ -89,8 +89,8 @@ app_ui = ui.page_fluid(
         ui.nav_panel(
             "History",
             ui.layout_columns(
-                ui.input_action_button("refreshHistory", "Refresh History"),
-                col_widths=[3],
+                ui.input_action_button("refreshHistory", "Refresh"),
+                col_widths=[2],
             ),
             ui.output_ui("historyBox"),
         ),

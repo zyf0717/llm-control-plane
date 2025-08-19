@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
+from .llm_router import RouteStrategy, get_router
 from .utils import (
     HeaderManager,
     SSEAccumulator,
@@ -139,6 +140,58 @@ async def root_chat(request: Request):
     return await proxy_with_context(first_endpoint, request)
 
 
+@app.post("/smart")
+async def smart_route(request: Request):
+    """Intelligently route requests based on content analysis."""
+    try:
+        # Parse request body to extract messages
+        raw_body = await request.body()
+        body_json = json.loads(raw_body) if raw_body else {}
+
+        # Extract text from messages for analysis
+        messages = body_json.get("messages", [])
+        if not messages:
+            raise HTTPException(status_code=400, detail="No messages provided")
+
+        # Get the latest user message for routing analysis
+        user_messages = [msg for msg in messages if msg.get("role") == "user"]
+        if not user_messages:
+            raise HTTPException(status_code=400, detail="No user messages found")
+
+        latest_message = user_messages[-1].get("content", "")
+
+        # Use LLM router to determine best endpoint
+        router = get_router()
+        decision = await router.route_request(latest_message)
+
+        # Add routing metadata to response headers
+        routing_headers = {
+            "X-Route-Decision": decision.endpoint,
+            "X-Route-Confidence": str(decision.confidence),
+            "X-Route-Reason": decision.reason,
+            "X-Route-Strategy": decision.strategy.value,
+        }
+
+        # Log routing decision
+        logger.info(
+            f"Smart routing: {decision.endpoint} (confidence: {decision.confidence:.2f}) - {decision.reason}"
+        )
+
+        # Route to the selected endpoint
+        return await proxy_with_context(
+            decision.endpoint, request, extra_headers=routing_headers
+        )
+
+    except HTTPException:
+        # Re-raise HTTPExceptions to let FastAPI handle them properly
+        raise
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+    except Exception as e:
+        logger.error(f"Smart routing failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Smart routing error: {str(e)}")
+
+
 @app.post("/conversations/retrieve")
 async def retrieve_conversation(request: Request):
     """Retrieve a conversation in its entirety based on conversation ID."""
@@ -265,6 +318,7 @@ async def handle_streaming_response(
     target_endpoint: str,
     body: Optional[Dict],
     convo_id: Optional[str],
+    extra_headers: Dict[str, str] = None,
 ) -> StreamingResponse:
     """Handle streaming response proxying."""
     timeout = httpx.Timeout(connect=20, read=None, write=20, pool=20)
@@ -305,12 +359,16 @@ async def handle_streaming_response(
             except Exception:
                 pass  # Don't let history failures affect client stream
 
+    response_headers = HeaderManager.create_response_headers(
+        convo_id=convo_id, for_streaming=True
+    )
+    if extra_headers:
+        response_headers.update(extra_headers)
+
     return StreamingResponse(
         stream_response(),
         media_type="text/event-stream",
-        headers=HeaderManager.create_response_headers(
-            convo_id=convo_id, for_streaming=True
-        ),
+        headers=response_headers,
     )
 
 
@@ -319,6 +377,7 @@ async def handle_non_streaming_response(
     target_endpoint: str,
     body: Optional[Dict],
     convo_id: Optional[str],
+    extra_headers: Dict[str, str] = None,
 ) -> Response:
     """Handle non-streaming response proxying."""
     upstream_headers = HeaderManager.prepare_upstream_headers(request)
@@ -343,14 +402,22 @@ async def handle_non_streaming_response(
         # Update conversation history
         update_conversation_history(convo_id, assistant_text)
 
+        response_headers = HeaderManager.create_response_headers(
+            dict(resp.headers), convo_id
+        )
+        if extra_headers:
+            response_headers.update(extra_headers)
+
         return Response(
             content=resp.content,
             status_code=resp.status_code,
-            headers=HeaderManager.create_response_headers(dict(resp.headers), convo_id),
+            headers=response_headers,
         )
 
 
-async def proxy_with_context(path: str, request: Request):
+async def proxy_with_context(
+    path: str, request: Request, extra_headers: Dict[str, str] = None
+):
     """Main proxy handler with conversation context."""
     # Parse request body and inject conversation history first
     raw_body = await request.body()
@@ -379,8 +446,10 @@ async def proxy_with_context(path: str, request: Request):
     )
 
     if is_streaming:
-        return await handle_streaming_response(request, target_endpoint, body, convo_id)
+        return await handle_streaming_response(
+            request, target_endpoint, body, convo_id, extra_headers
+        )
     else:
         return await handle_non_streaming_response(
-            request, target_endpoint, body, convo_id
+            request, target_endpoint, body, convo_id, extra_headers
         )
