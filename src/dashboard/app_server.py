@@ -364,6 +364,25 @@ def server(input, output, session):
 
         return model_details
 
+    def format_all_available_models(endpoint_data):
+        """Format all available models for display when Auto is selected."""
+        models_list = []
+
+        if not endpoint_data or "data" not in endpoint_data:
+            return []
+
+        # Get all models (excluding auto-router)
+        for model in endpoint_data["data"]:
+            endpoint = model.get("endpoint")
+            if endpoint and endpoint != "Auto" and model.get("id") != "auto-router":
+                # Format detailed model information
+                model_details = format_model_details(model)
+                if model_details:
+                    models_list.extend(model_details)
+                    models_list.append("")  # Add spacing between models
+
+        return models_list
+
     def format_response_info(info, fmt_func):
         """Format response information (usage, stats, runtime) for display."""
         sections = []
@@ -406,7 +425,7 @@ def server(input, output, session):
         if info and "routing" in info:
             routing = info["routing"]
             routing_info = routing  # Store for hardware info use
-            routing_lines = ["**Smart Routing Decision**"]
+            routing_lines = ["**Auto Routing Decision**"]
 
             if "decision" in routing:
                 routing_lines.append(f"Selected: {routing['decision']}")
@@ -439,16 +458,24 @@ def server(input, output, session):
         if not model and routing_info and "decision" in routing_info:
             model = find_model_by_endpoint(endpoint_data, routing_info["decision"])
 
-        # Additional fallback: for manual auto selection, try to find any non-auto model
-        if not model and current_endpoint == "Auto":
+        # Additional fallback: for manual auto/smart selection, try to find any non-auto model
+        if not model and current_endpoint in ["Auto", "smart"]:
             # Find the first real endpoint model (not auto-router)
             for test_model in endpoint_data.get("data", []):
                 if (
-                    test_model.get("endpoint") != "Auto"
+                    test_model.get("endpoint") not in ["Auto", "smart"]
                     and test_model.get("id") != "auto-router"
                 ):
                     model = test_model
                     break
+
+        if (
+            current_endpoint in ["Auto", "smart"]
+            and not routing_info
+            and model
+            and model.get("id") == "auto-router"
+        ):
+            model = None  # Clear the auto-router model so we show all models instead
 
         if model:
             # Hardware info - use routing info if available, otherwise use model info
@@ -459,12 +486,15 @@ def server(input, output, session):
             # Model details
             model_details = format_model_details(model)
             if model_details:
+                sections.append("**Model Info**<br>" + "<br>".join(model_details))
+
+        # Special case: when Auto/smart routing is selected without routing decision, show all available models
+        elif (current_endpoint in ["Auto", "smart"]) and not routing_info:
+            all_models = format_all_available_models(endpoint_data)
+            if all_models:
                 sections.append(
-                    "**Model Info**<br>" + "<br>".join(model_details)
-                )  # # Capabilities (commented out in original)
-            # capabilities = model.get("capabilities", [])
-            # if capabilities:
-            #     sections.append(f"**Capabilities**: {', '.join(capabilities)}")
+                    "**Available Models (Auto-mode)**<br><br>" + "<br>".join(all_models)
+                )
 
         if not sections:
             return ui.div()
