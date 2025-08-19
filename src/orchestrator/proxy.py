@@ -144,11 +144,27 @@ async def root_chat(request: Request):
 async def smart_route(request: Request):
     """Intelligently route requests based on content analysis."""
     try:
-        # Parse request body to extract messages
+        # Step 1: Add to history first - parse request body and inject conversation history
         raw_body = await request.body()
-        body_json = json.loads(raw_body) if raw_body else {}
+        convo_id = request.headers.get("X-Convo-ID")
 
-        # Extract text from messages for analysis
+        # Handle empty body case
+        if not raw_body:
+            raise HTTPException(status_code=400, detail="No messages provided")
+
+        # Handle invalid JSON case
+        try:
+            test_json = json.loads(raw_body)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+
+        # Inject history to get the full conversation context
+        body_json, is_streaming = parse_and_inject_history(raw_body, convo_id)
+
+        if not body_json or not isinstance(body_json, dict):
+            raise HTTPException(status_code=400, detail="Invalid request body")
+
+        # Step 2: Extract only the latest user message for classification
         messages = body_json.get("messages", [])
         if not messages:
             raise HTTPException(status_code=400, detail="No messages provided")
@@ -160,7 +176,7 @@ async def smart_route(request: Request):
 
         latest_message = user_messages[-1].get("content", "")
 
-        # Use LLM router to determine best endpoint
+        # Use LLM router to determine best endpoint (using only latest message)
         router = get_router()
         decision = await router.route_request(latest_message)
 
@@ -193,12 +209,12 @@ async def smart_route(request: Request):
             f"Smart routing: {decision.endpoint} (confidence: {decision.confidence:.2f}) - {decision.reason}"
         )
 
-        # Route to the selected endpoint
+        # Step 3: Route the entire conversation (with full history) to the selected endpoint
         return await proxy_with_context(
             decision.endpoint,
             request,
             extra_headers=routing_headers,
-            _skip_history_injection=True,
+            _enriched_body=body_json,
         )
 
     except HTTPException:
@@ -457,21 +473,29 @@ async def proxy_with_context(
     request: Request,
     extra_headers: Dict[str, str] = None,
     _skip_history_injection: bool = False,
+    _enriched_body: Dict = None,
 ):
     """Main proxy handler with conversation context."""
-    # Parse request body and inject conversation history first
-    raw_body = await request.body()
-    convo_id = request.headers.get("X-Convo-ID")
 
-    # Skip history injection if this is a recursive call (e.g., from smart/auto routing)
-    if _skip_history_injection:
-        try:
-            body = json.loads(raw_body) if raw_body else {}
-            is_streaming = body.get("stream", False)
-        except json.JSONDecodeError:
-            body, is_streaming = None, False
+    # Step 3: Use pre-enriched body if provided (contains full conversation history)
+    if _enriched_body is not None:
+        body = _enriched_body
+        is_streaming = body.get("stream", False)
+        convo_id = request.headers.get("X-Convo-ID")
     else:
-        body, is_streaming = parse_and_inject_history(raw_body, convo_id)
+        # Parse request body and inject conversation history first
+        raw_body = await request.body()
+        convo_id = request.headers.get("X-Convo-ID")
+
+        # Skip history injection if this is a recursive call (e.g., from smart/auto routing)
+        if _skip_history_injection:
+            try:
+                body = json.loads(raw_body) if raw_body else {}
+                is_streaming = body.get("stream", False)
+            except json.JSONDecodeError:
+                body, is_streaming = None, False
+        else:
+            body, is_streaming = parse_and_inject_history(raw_body, convo_id)
 
     # Check for streaming flag in query params as fallback
     if not is_streaming:
@@ -546,7 +570,7 @@ async def proxy_with_context(
                 decision.endpoint,
                 request,
                 extra_headers=routing_headers,
-                _skip_history_injection=True,
+                _enriched_body=body,
             )
 
         except HTTPException:
