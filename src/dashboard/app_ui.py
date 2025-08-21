@@ -70,7 +70,7 @@ app_ui = ui.page_fluid(
                             ui.input_text(
                                 "convoID",
                                 "",
-                                placeholder="Conversation ID",
+                                placeholder="Convo ID",
                                 width="100%",
                             ),
                             ui.input_action_button("generateConvoID", "New"),

@@ -425,7 +425,7 @@ def server(input, output, session):
         if info and "routing" in info:
             routing = info["routing"]
             routing_info = routing  # Store for hardware info use
-            routing_lines = ["**Auto Routing Decision**"]
+            routing_lines = ["**Auto-Routing Decision**"]
 
             if "decision" in routing:
                 routing_lines.append(f"Selected: {routing['decision']}")
