@@ -60,8 +60,15 @@ app_ui = ui.page_fluid(
                     ui.input_switch("stream", "Streaming", True),
                     ui.input_switch("autoScroll", "Auto-scroll", True),
                     ui.input_switch("outputJSON", "JSON", False),
-                    shinyswatch.theme_picker_ui(),
+                    ui.input_select(
+                        "reasoningEffort",
+                        "Reasoning",
+                        choices={"low": "Low", "medium": "Medium", "high": "High"},
+                        selected="low",
+                    ),
+                    ui.input_switch("outputReasoning", "Show reasoning", False),
                     ui.hr(),
+                    shinyswatch.theme_picker_ui(),
                     ui.input_action_button("logout", "Logout"),
                 ),
                 ui.layout_columns(

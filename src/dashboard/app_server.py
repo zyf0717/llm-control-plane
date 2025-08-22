@@ -125,6 +125,8 @@ def server(input, output, session):
         endpoints_dict: dict,
         stream: bool = True,
         output_json: bool = False,
+        reasoning_effort: str = "low",
+        output_reasoning: bool = False,
         convo_id: str = None,
         current_routing_info: dict = None,
     ) -> AsyncGenerator[str, None]:
@@ -149,7 +151,12 @@ def server(input, output, session):
                 url = f"{PROXY_BASE_URL}/{endpoint_key}"
 
             # Prepare request
-            payload = {"messages": [{"role": "user", "content": text}]}
+            payload = {
+                "messages": [
+                    {"role": "system", "content": f"Reasoning: {reasoning_effort}"},
+                    {"role": "user", "content": text},
+                ]
+            }
             headers = {
                 "CF-Access-Client-Id": API_KEY_ID,
                 "CF-Access-Client-Secret": API_KEY_SECRET,
@@ -267,11 +274,21 @@ def server(input, output, session):
                     if output_json:
                         yield f"```json\n{json.dumps(data, indent=2)}\n```"
                     else:
+                        if output_reasoning:
+                            # GPT-style
+                            reasoning = (
+                                data.get("choices", [{}])[0]
+                                .get("message", {})
+                                .get("reasoning", "")
+                            )
+                            if reasoning:
+                                yield f"<em>{str(reasoning)}</em>\n\n---\n\n"
                         content = (
                             data.get("choices", [{}])[0]
                             .get("message", {})
                             .get("content", "")
                         )
+                        # DeepSeek models use <think> tags for reasoning/CoT
                         content = content.replace("<think>", "<em>")
                         content = content.replace("</think>", "</em>\n\n---\n\n")
                         yield str(content)
@@ -313,6 +330,8 @@ def server(input, output, session):
                 endpoints_dict=current_endpoints,
                 stream=input.stream(),
                 output_json=input.outputJSON(),
+                reasoning_effort=input.reasoningEffort(),
+                output_reasoning=input.outputReasoning(),
                 convo_id=input.convoID() if input.convoID() else None,
                 current_routing_info=current_run_info.get("routing", {}),
             )
