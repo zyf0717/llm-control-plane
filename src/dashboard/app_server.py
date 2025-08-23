@@ -155,7 +155,7 @@ def server(input, output, session):
                 "messages": [
                     {
                         "role": "system",
-                        "content": f"Reasoning: {reasoning_effort}\n Valid channels: analysis, final.",
+                        "content": f"Reasoning: {reasoning_effort}\nValid channels: analysis, final.\nPut internal thinking in analysis; put the user-facing answer in final.",
                     },
                     {"role": "user", "content": text},
                 ]
