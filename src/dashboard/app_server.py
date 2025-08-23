@@ -537,10 +537,10 @@ def server(input, output, session):
         return ui.markdown(markdown_content)
 
     @render.ui
-    @reactive.event(input.send)
     def responseBox():
         return ui.card(
             ui.output_markdown_stream("streamOutput", auto_scroll=input.autoScroll()),
+            height="88vh",
         )
 
     # Add a reactive value to track history refresh needs
