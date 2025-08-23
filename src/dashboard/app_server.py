@@ -20,7 +20,6 @@ from .utils import (
     fetch_available_endpoints,
     fetch_convo_history,
     find_model_by_endpoint,
-    get_actual_endpoint_key,
 )
 
 
@@ -33,6 +32,7 @@ def server(input, output, session):
     last_runtime = reactive.Value(None)
     run_info = reactive.Value(None)
     send_button_state = reactive.Value("ready")
+    info_accordion_open = reactive.Value(True)  # Track accordion state
 
     async def update_endpoints_and_data():
         """Helper function to update both endpoints and models data."""
@@ -118,6 +118,14 @@ def server(input, output, session):
     def _update_send_button():
         status = send_button_state.get()
         ui.update_task_button("send", state=status)
+
+    # Track accordion state changes
+    @reactive.Effect
+    @reactive.event(input.info_accordion)
+    def _track_accordion_state():
+        # Update our reactive value when user manually toggles accordion
+        is_open = "info_panel" in (input.info_accordion() or [])
+        info_accordion_open.set(is_open)
 
     async def llm_stream_generator(
         endpoint_key: str,
@@ -325,8 +333,7 @@ def server(input, output, session):
         current_run_info = run_info.get() or {}
 
         # Get the actual endpoint key from the display name
-        actual_endpoint_key = get_actual_endpoint_key(input.endpoint(), display_mapping)
-
+        actual_endpoint_key = display_mapping.get(input.endpoint())
         await md.stream(
             llm_stream_generator(
                 endpoint_key=actual_endpoint_key,
@@ -396,13 +403,10 @@ def server(input, output, session):
 
         # Get all models (excluding auto-router)
         for model in endpoint_data["data"]:
-            endpoint = model.get("endpoint")
-            if endpoint and endpoint != "Auto" and model.get("id") != "auto-router":
-                # Format detailed model information
-                model_details = format_model_details(model)
-                if model_details:
-                    models_list.extend(model_details)
-                    models_list.append("")  # Add spacing between models
+            model_details = format_model_details(model)
+            if model_details:
+                models_list.extend(model_details)
+                models_list.append("")  # Add spacing between models
 
         return models_list
 
@@ -421,15 +425,28 @@ def server(input, output, session):
         return sections
 
     @render.ui
-    @reactive.event(run_info, last_runtime, endpoint_info, input.endpoint)
     def outputRunInfo():
+        # Create static accordion structure - this only renders once
+        return ui.accordion(
+            ui.accordion_panel(
+                "Model & System Information",
+                ui.output_ui("info_content"),  # Dynamic content goes here
+                value="info_panel",
+            ),
+            id="info_accordion",
+            open=[],  # Start collapsed, user can expand as needed
+        )
+
+    @render.ui
+    @reactive.event(run_info, last_runtime, endpoint_info, input.endpoint)
+    def info_content():
         info = run_info.get()
         runtime = last_runtime.get()
         endpoint_data = endpoint_info.get()
         display_mapping = endpoint_display_mapping.get()
 
         # Get the actual endpoint key from the display name
-        current_endpoint = get_actual_endpoint_key(input.endpoint(), display_mapping)
+        current_endpoint = display_mapping.get(input.endpoint())
 
         def fmt(v):
             """Helper to format numbers and values."""
@@ -471,7 +488,7 @@ def server(input, output, session):
             sections.extend(format_response_info(info, fmt))
 
         # Current endpoint info from /models endpoint
-        # For Auto/smart routing: always use the routed endpoint when available
+        # For Auto/smart routing: show all pre-run, use the routed endpoint post-run
         # For manual selection: use the selected endpoint
         endpoint_for_model_info = current_endpoint
 
@@ -485,26 +502,15 @@ def server(input, output, session):
         if not model and routing_info and "decision" in routing_info:
             model = find_model_by_endpoint(endpoint_data, routing_info["decision"])
 
-        # Additional fallback: for manual auto/smart selection, try to find any non-auto model
-        if not model and current_endpoint in ["Auto", "smart"]:
-            # Find the first real endpoint model (not auto-router)
-            for test_model in endpoint_data.get("data", []):
-                if (
-                    test_model.get("endpoint") not in ["Auto", "smart"]
-                    and test_model.get("id") != "auto-router"
-                ):
-                    model = test_model
-                    break
-
-        if (
-            current_endpoint in ["Auto", "smart"]
-            and not routing_info
-            and model
-            and model.get("id") == "auto-router"
-        ):
-            model = None  # Clear the auto-router model so we show all models instead
-
-        if model:
+        # Special handling for Auto/smart endpoints when no routing decision has been made
+        if current_endpoint in ["Auto", "smart"] and not routing_info:
+            # For Auto/smart without routing decision, always show all available models
+            all_models = format_all_available_models(endpoint_data)
+            if all_models:
+                sections.append(
+                    "**Available Models (Auto-mode)**<br><br>" + "<br>".join(all_models)
+                )
+        elif model:
             # Hardware info - use routing info if available, otherwise use model info
             hardware_info = format_hardware_info(model, routing_info)
             if hardware_info:
@@ -515,12 +521,12 @@ def server(input, output, session):
             if model_details:
                 sections.append("**Model Info**<br>" + "<br>".join(model_details))
 
-        # Special case: when Auto/smart routing is selected without routing decision, show all available models
-        elif (current_endpoint in ["Auto", "smart"]) and not routing_info:
+        # Fallback: when no specific model is found and no routing decision, show all available models
+        elif not model and not routing_info:
             all_models = format_all_available_models(endpoint_data)
             if all_models:
                 sections.append(
-                    "**Available Models (Auto-mode)**<br><br>" + "<br>".join(all_models)
+                    "**Available Models**<br><br>" + "<br>".join(all_models)
                 )
 
         if not sections:

@@ -108,11 +108,6 @@ def create_endpoint_display_choices(endpoints_data):
     return choices, mapping
 
 
-def get_actual_endpoint_key(display_name, mapping):
-    """Get the actual endpoint key from display name."""
-    return mapping.get(display_name, display_name)
-
-
 def find_model_by_endpoint(endpoint_data, endpoint_key):
     """Find the first model for a given endpoint."""
     if not endpoint_data or not endpoint_key:

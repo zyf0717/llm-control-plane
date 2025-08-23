@@ -64,6 +64,7 @@ app_ui = ui.page_fluid(
                         "reasoningEffort",
                         "Reasoning",
                         choices={
+                            "none": "None",
                             "low": "Low",
                             "medium": "Medium",
                             "high": "High",
