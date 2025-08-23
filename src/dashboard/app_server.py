@@ -153,7 +153,10 @@ def server(input, output, session):
             # Prepare request
             payload = {
                 "messages": [
-                    {"role": "system", "content": f"Reasoning: {reasoning_effort}"},
+                    {
+                        "role": "system",
+                        "content": f"Reasoning: {reasoning_effort}\n Valid channels: analysis, final.",
+                    },
                     {"role": "user", "content": text},
                 ]
             }
@@ -220,10 +223,11 @@ def server(input, output, session):
                         "POST", url, headers=headers, json=payload
                     ) as r:
                         r.raise_for_status()
-                        first = True
 
                         # Extract routing info from headers once
                         extract_metadata({}, dict(r.headers))
+
+                        reasoning_chunk_found = False
 
                         async for line in r.aiter_lines():
                             if not line or not line.startswith("data: "):
@@ -234,33 +238,40 @@ def server(input, output, session):
 
                             obj = json.loads(data)
 
-                            if output_json:
-                                if first:
-                                    yield "```json\n["
-                                    first = False
-                                yield ("" if first else ",\n") + json.dumps(
-                                    obj, indent=2
-                                )
-                            else:
-                                choices = obj.get("choices", [])
-                                if choices:
-                                    chunk = (
-                                        choices[0].get("delta", {}).get("content", "")
+                            choices = obj.get("choices", [])
+                            if choices:
+                                if output_reasoning:
+                                    reasoning_chunk = (
+                                        choices[0].get("delta", {}).get("reasoning", "")
                                     )
-                                    if chunk:
-                                        chunk = chunk.replace("<think>", "<em>")
-                                        chunk = chunk.replace(
-                                            "</think>", "</em>\n\n---\n\n"
-                                        )
-                                        yield chunk
+                                    if reasoning_chunk:
+                                        if reasoning_chunk_found is False:
+                                            reasoning_chunk_found = True
+                                            yield "<em>"
+                                        yield reasoning_chunk
+
+                                content_chunk = (
+                                    choices[0].get("delta", {}).get("content", "")
+                                )
+                                if content_chunk:
+                                    if reasoning_chunk_found:
+                                        yield "</em>\n\n---\n\n"
+                                        reasoning_chunk_found = False
+
+                                    # Legacy: <think> tags for reasoning/CoT
+                                    content_chunk = content_chunk.replace(
+                                        "<think>", "<em>"
+                                    )
+                                    content_chunk = content_chunk.replace(
+                                        "</think>", "</em>\n\n---\n\n"
+                                    )
+                                    yield content_chunk
 
                             # Use the stored routing info
                             extract_metadata(
                                 obj, preserve_routing_from=routing_info_holder
                             )
 
-                        if output_json and not first:
-                            yield "]\n```"
                 else:
                     # Non-streaming request
                     resp = await client.post(
@@ -288,7 +299,7 @@ def server(input, output, session):
                             .get("message", {})
                             .get("content", "")
                         )
-                        # DeepSeek models use <think> tags for reasoning/CoT
+                        # Legacy: <think> tags for reasoning/CoT
                         content = content.replace("<think>", "<em>")
                         content = content.replace("</think>", "</em>\n\n---\n\n")
                         yield str(content)

@@ -66,7 +66,7 @@ app_ui = ui.page_fluid(
                         choices={"low": "Low", "medium": "Medium", "high": "High"},
                         selected="low",
                     ),
-                    ui.input_switch("outputReasoning", "Show reasoning", False),
+                    ui.input_switch("outputReasoning", "Show reasoning", True),
                     ui.hr(),
                     shinyswatch.theme_picker_ui(),
                     ui.input_action_button("logout", "Logout"),
