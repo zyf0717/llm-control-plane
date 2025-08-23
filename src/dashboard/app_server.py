@@ -125,7 +125,7 @@ def server(input, output, session):
         endpoints_dict: dict,
         stream: bool = True,
         output_json: bool = False,
-        reasoning_effort: str = "low",
+        # reasoning_effort: str = "low",
         output_reasoning: bool = False,
         convo_id: str = None,
         current_routing_info: dict = None,
@@ -153,12 +153,12 @@ def server(input, output, session):
             # Prepare request
             payload = {
                 "messages": [
-                    {
-                        "role": "system",
-                        "content": f"Reasoning: {reasoning_effort}\nValid channels: analysis, final.\nPut internal thinking in analysis; put the user-facing answer in final.",
-                    },
+                    # {
+                    #     "role": "system",
+                    #     "content": f"Reasoning: {reasoning_effort}\nValid channels: analysis, final.\nPut internal thinking in analysis; put the user-facing answer in final.",
+                    # },
                     {"role": "user", "content": text},
-                ]
+                ],
             }
             headers = {
                 "CF-Access-Client-Id": API_KEY_ID,
@@ -219,6 +219,7 @@ def server(input, output, session):
             async with httpx.AsyncClient(timeout=timeout) as client:
                 if stream:
                     payload["stream"] = True
+                    payload["stream_options"] = {"include_usage": True}
                     async with client.stream(
                         "POST", url, headers=headers, json=payload
                     ) as r:
@@ -341,7 +342,7 @@ def server(input, output, session):
                 endpoints_dict=current_endpoints,
                 stream=input.stream(),
                 output_json=input.outputJSON(),
-                reasoning_effort=input.reasoningEffort(),
+                # reasoning_effort=input.reasoningEffort(),
                 output_reasoning=input.outputReasoning(),
                 convo_id=input.convoID() if input.convoID() else None,
                 current_routing_info=current_run_info.get("routing", {}),
