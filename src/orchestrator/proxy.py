@@ -2,7 +2,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import httpx
 import yaml
@@ -18,221 +18,281 @@ from .utils import (
     extract_assistant_text,
 )
 
-# Load environment variables
+# Configuration
 load_dotenv()
-
 CONFIG_FILE = Path("config.yaml")
-with CONFIG_FILE.open("r", encoding="utf-8") as f:
-    config = yaml.safe_load(f) or {}
-
+config = yaml.safe_load(CONFIG_FILE.open("r", encoding="utf-8")) or {}
 endpoints = config.get("endpoints", [])
 
-
+# Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+# FastAPI app
 app = FastAPI()
 
-# Simple global store (not persistent across restarts)
+# Global conversation store
 convo_history: Dict[str, List[Dict]] = {}
 
 
-def get_target_endpoint(path: str, is_streaming: bool = False) -> str:
-    """Get the target endpoint URL based on the request path and streaming preference."""
-    # Remove leading slash and get the first path segment
-    clean_path = path.lstrip("/")
-    endpoint_key = clean_path.split("/")[0] if clean_path else ""
+class RequestProcessor:
+    """Handles request processing, history management, and routing logic."""
 
-    # Find the matching endpoint in config.yaml
-    for endpoint_config in endpoints:
-        endpoint_name = endpoint_config.get("name")
-        if endpoint_name == endpoint_key:
-            endpoint_url = endpoint_config.get("url")
-            if endpoint_url:
-                # Route based on streaming preference
-                if is_streaming:
-                    # OpenAI-style streaming endpoint with telemetrics
-                    return f"{endpoint_url}/v1/chat/completions"
-                else:
-                    # Non-streaming API endpoint
-                    return f"{endpoint_url}/api/v0/chat/completions"
+    @staticmethod
+    def get_endpoint_url(path: str, is_streaming: bool = False) -> Optional[str]:
+        """Get target endpoint URL based on path and streaming preference."""
+        endpoint_key = path.lstrip("/").split("/")[0] if path else ""
 
-    # If no endpoint found, return None and let the caller handle the error
-    logger.warning(f"No endpoint found for path: {path}")
-    return None
+        for endpoint_config in endpoints:
+            if endpoint_config.get("name") == endpoint_key:
+                base_url = endpoint_config.get("url")
+                if base_url:
+                    suffix = (
+                        "/v1/chat/completions"
+                        if is_streaming
+                        else "/api/v0/chat/completions"
+                    )
+                    return f"{base_url}{suffix}"
 
+        logger.warning(f"No endpoint found for path: {path}")
+        return None
 
-def enrich_request_with_history(request: Request) -> Dict:
-    """Enrich request with conversation history and reasoning effort."""
-    # Get conversation ID and reasoning effort from headers
-    convo_id = request.headers.get("X-Convo-ID")
-    reasoning_effort = request.headers.get("X-Reasoning-Effort", "").lower()
+    @staticmethod
+    async def prepare_request(request: Request) -> Dict:
+        """Parse and enrich request with conversation history and reasoning."""
 
-    # Only use valid reasoning levels, skip "none"
-    if reasoning_effort not in ["low", "medium", "high"]:
-        reasoning_effort = None
+        # Cache raw body
+        if not hasattr(request, "_body"):
+            request._body = await request.body()
 
-    # Parse request body
-    try:
+        # Return cached enriched body if available
         if hasattr(request, "_enriched_body"):
-            # Already enriched, return as-is
             return request._enriched_body
 
-        body_json = json.loads(request._body) if hasattr(request, "_body") else {}
-        if not isinstance(body_json, dict):
-            return body_json
-    except (json.JSONDecodeError, AttributeError):
-        return {}
+        # Parse request
+        try:
+            body = json.loads(request._body) if request._body else {}
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    # Inject history if messages exist and convo_id provided
-    if "messages" in body_json and isinstance(body_json["messages"], list) and convo_id:
-        if convo_id not in convo_history:
-            convo_history[convo_id] = []
+        if not isinstance(body, dict):
+            return body
 
-        # Append new messages to history
-        convo_history[convo_id].extend(body_json["messages"])
+        # Get headers
+        convo_id = request.headers.get("X-Convo-ID")
+        reasoning_effort = request.headers.get("X-Reasoning-Effort", "").lower()
+        reasoning_effort = (
+            reasoning_effort if reasoning_effort in ["low", "medium", "high"] else None
+        )
 
-        # Use full conversation history
-        all_messages = convo_history[convo_id].copy()
-    else:
-        # No conversation history, use current messages
-        all_messages = body_json.get("messages", []).copy()
+        # Handle conversation history
+        messages = body.get("messages", [])
+        if convo_id and messages:
+            if convo_id not in convo_history:
+                convo_history[convo_id] = []
+            convo_history[convo_id].extend(messages)
+            messages = convo_history[convo_id].copy()
 
-    # Handle reasoning effort injection/replacement
-    if all_messages:
-        # Always remove any existing reasoning system message first
-        if (
-            all_messages
-            and all_messages[0].get("role") == "system"
-            and "Reasoning:" in all_messages[0].get("content", "")
-        ):
-            # Remove the old reasoning message
-            all_messages.pop(0)
-            # Also update the stored conversation history
-            if convo_id and convo_id in convo_history:
-                convo_history[convo_id] = all_messages
+        # Handle reasoning effort
+        if messages:
+            # Remove existing reasoning message
+            if (
+                messages
+                and messages[0].get("role") == "system"
+                and "Reasoning:" in messages[0].get("content", "")
+            ):
+                messages.pop(0)
+                if convo_id:
+                    convo_history[convo_id] = messages
 
-        # Now inject the new reasoning if provided
+            # Add new reasoning if provided
+            if reasoning_effort:
+                reasoning_msg = {
+                    "role": "system",
+                    "content": f"Reasoning: {reasoning_effort}",
+                }
+                messages.insert(0, reasoning_msg)
+                if convo_id:
+                    convo_history[convo_id] = messages
+                logger.info(f"✅ Applied reasoning: {reasoning_effort}")
+
+        # Update body
+        body["messages"] = messages
         if reasoning_effort:
-            reasoning_msg = {
-                "role": "system",
-                "content": f"Reasoning: {reasoning_effort}",
-            }
-            all_messages.insert(0, reasoning_msg)
+            body["reasoning_effort"] = reasoning_effort
 
-            # Update the conversation history to include new reasoning
-            if convo_id and convo_id in convo_history:
-                convo_history[convo_id] = all_messages
+        # Cache and return
+        request._enriched_body = body
+        return body
 
-            # Log for debugging
-            logger.info(
-                f"✅ Reasoning effort '{reasoning_effort}' applied to conversation (replaced previous)"
+    @staticmethod
+    def update_history(convo_id: Optional[str], assistant_text: str) -> None:
+        """Update conversation history with assistant response."""
+        if assistant_text and convo_id and convo_id in convo_history:
+            convo_history[convo_id].append(
+                {"role": "assistant", "content": assistant_text}
             )
-            logger.info(f"📨 Reasoning message: {reasoning_msg}")
-        else:
-            logger.info("❌ No reasoning effort provided or invalid value")
-
-    # Update the request body with the complete message history
-    body_json["messages"] = all_messages
-
-    # Also add reasoning_effort
-    if reasoning_effort:
-        body_json["reasoning_effort"] = reasoning_effort
-
-    # Cache the enriched body on the request object
-    request._enriched_body = body_json
-
-    return body_json
 
 
-def update_conversation_history(convo_id: Optional[str], assistant_text: str) -> None:
-    """Update conversation history with assistant response."""
-    if assistant_text and convo_id and convo_history.get(convo_id) is not None:
-        convo_history[convo_id].append({"role": "assistant", "content": assistant_text})
+class ProxyHandler:
+    """Handles HTTP proxying to upstream endpoints."""
+
+    @staticmethod
+    async def stream_response(
+        request: Request,
+        target_url: str,
+        body: Dict,
+        convo_id: str,
+        extra_headers: Dict = None,
+    ) -> StreamingResponse:
+        """Handle streaming response."""
+        timeout = httpx.Timeout(connect=20, read=None, write=20, pool=20)
+        headers = HeaderManager.prepare_upstream_headers(request, for_streaming=True)
+        body["stream_options"] = {"include_usage": True}
+
+        acc = SSEAccumulator()
+
+        async def stream():
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    async with client.stream(
+                        "POST", target_url, headers=headers, json=body
+                    ) as resp:
+                        resp.raise_for_status()
+                        async for chunk in resp.aiter_bytes():
+                            acc.feed(chunk)
+                            yield chunk
+            except httpx.HTTPStatusError as e:
+                yield create_error_sse_message(
+                    "error",
+                    status=e.response.status_code,
+                    detail=f"HTTP {e.response.status_code}",
+                )
+            except Exception as e:
+                yield create_error_sse_message("error", detail=str(e))
+            finally:
+                try:
+                    RequestProcessor.update_history(convo_id, acc.text())
+                except Exception:
+                    pass
+
+        response_headers = HeaderManager.create_response_headers(
+            convo_id=convo_id, for_streaming=True
+        )
+        if extra_headers:
+            response_headers.update(extra_headers)
+
+        return StreamingResponse(
+            stream(), media_type="text/event-stream", headers=response_headers
+        )
+
+    @staticmethod
+    async def non_stream_response(
+        request: Request,
+        target_url: str,
+        body: Dict,
+        convo_id: str,
+        extra_headers: Dict = None,
+    ) -> Response:
+        """Handle non-streaming response."""
+        headers = HeaderManager.prepare_upstream_headers(request)
+
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(target_url, headers=headers, json=body)
+
+            # Extract assistant text for history
+            assistant_text = None
+            try:
+                resp_json = resp.json()
+                assistant_text = extract_assistant_text(resp_json)
+                if "model" in resp_json:
+                    logger.info(f"Response model: {resp_json['model']}")
+            except Exception:
+                logger.info(f"Response: {resp.text[-500:]}")
+
+            RequestProcessor.update_history(convo_id, assistant_text)
+
+            response_headers = HeaderManager.create_response_headers(
+                dict(resp.headers), convo_id
+            )
+            if extra_headers:
+                response_headers.update(extra_headers)
+
+            return Response(resp.content, resp.status_code, response_headers)
 
 
-def log_response_info(resp_json: Dict) -> Optional[str]:
-    """Log response information and extract assistant text."""
-    # Standard logs
-    if "created" in resp_json:
-        ts = datetime.fromtimestamp(resp_json["created"])
-        logger.info("Response created: %s", ts)
-    if "model" in resp_json:
-        logger.info("Response model: %s", resp_json["model"])
-    if "usage" in resp_json:
-        logger.info("Usage: %s", resp_json["usage"])
+##########  Core Proxy Function ##########
+async def proxy_request(
+    path: str, request: Request, extra_headers: Dict = None
+) -> Response:
+    """Main proxy handler - simplified and clean."""
+    # Prepare request with history and reasoning
+    body = await RequestProcessor.prepare_request(request)
+    is_streaming = body.get("stream", False) or request.query_params.get("stream") in {
+        "true",
+        "1",
+    }
+    convo_id = request.headers.get("X-Convo-ID")
 
-    assistant_text = extract_assistant_text(resp_json)
+    # Get target endpoint
+    target_url = RequestProcessor.get_endpoint_url(path, is_streaming)
+    if not target_url:
+        raise HTTPException(status_code=404, detail=f"Endpoint not found: {path}")
 
-    finish_reason = (resp_json.get("choices") or [{}])[0].get("finish_reason")
-    if finish_reason:
-        logger.info("Finish reason: %s", finish_reason)
+    logger.info(
+        f"Proxying {request.method} {request.url.path} to {target_url} (streaming: {is_streaming})"
+    )
 
-    return assistant_text
+    # Route to appropriate handler
+    if is_streaming:
+        return await ProxyHandler.stream_response(
+            request, target_url, body, convo_id, extra_headers
+        )
+    else:
+        return await ProxyHandler.non_stream_response(
+            request, target_url, body, convo_id, extra_headers
+        )
 
 
+##########  API Endpoints ##########
 @app.post("/")
 async def root_chat(request: Request):
-    """Route root POST requests to the first available endpoint."""
-    # Get the first available endpoint from config
+    """Route to first available endpoint."""
     if not endpoints:
         raise HTTPException(status_code=503, detail="No endpoints configured")
 
     first_endpoint = endpoints[0].get("name")
     if not first_endpoint:
-        raise HTTPException(
-            status_code=503, detail="First endpoint has no name configured"
-        )
+        raise HTTPException(status_code=503, detail="Invalid endpoint configuration")
 
-    logger.info(f"Routing root request to first available endpoint: {first_endpoint}")
-    return await proxy_with_context(first_endpoint, request)
+    logger.info(f"Routing root request to: {first_endpoint}")
+    return await proxy_request(first_endpoint, request)
 
 
 @app.post("/smart")
 async def smart_route(request: Request):
-    """Intelligently route requests based on content analysis."""
+    """Smart routing based on content analysis."""
     try:
-        # Step 1: Store raw body and inject conversation history
-        raw_body = await request.body()
-        request._body = raw_body  # Cache for later use
+        # Prepare request
+        body = await RequestProcessor.prepare_request(request)
+        messages = body.get("messages", [])
 
-        convo_id = request.headers.get("X-Convo-ID")
-
-        # Handle empty body case
-        if not raw_body:
-            raise HTTPException(status_code=400, detail="No messages provided")
-
-        # Handle invalid JSON case
-        try:
-            json.loads(raw_body)
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid JSON in request body")
-
-        # Enrich request with conversation history
-        body_json = enrich_request_with_history(request)
-
-        if not body_json or not isinstance(body_json, dict):
-            raise HTTPException(status_code=400, detail="Invalid request body")
-
-        # Step 2: Extract only the latest user message for classification
-        messages = body_json.get("messages", [])
         if not messages:
             raise HTTPException(status_code=400, detail="No messages provided")
 
-        # Get the latest user message for routing analysis
+        # Get latest user message for routing
         user_messages = [msg for msg in messages if msg.get("role") == "user"]
         if not user_messages:
             raise HTTPException(status_code=400, detail="No user messages found")
 
         latest_message = user_messages[-1].get("content", "")
 
-        # Use LLM router to determine best endpoint (using only latest message)
+        # Route using LLM router
         router = get_router()
         decision = await router.route_request(latest_message)
+        endpoint_config = router.get_endpoint_by_name(decision.endpoint)
 
-        # Get endpoint configuration for hardware info
-        selected_endpoint_config = router.get_endpoint_by_name(decision.endpoint)
-
-        # Add routing metadata to response headers
+        # Build routing headers
         routing_headers = {
             "X-Route-Decision": decision.endpoint,
             "X-Route-Confidence": str(decision.confidence),
@@ -240,36 +300,21 @@ async def smart_route(request: Request):
             "X-Route-Strategy": decision.strategy.value,
         }
 
-        # Add endpoint hardware info to headers
-        if selected_endpoint_config:
-            if selected_endpoint_config.gpu:
-                routing_headers["X-Route-GPU"] = selected_endpoint_config.gpu
-            if selected_endpoint_config.vram:
-                routing_headers["X-Route-VRAM"] = selected_endpoint_config.vram
-            if selected_endpoint_config.soc:
-                routing_headers["X-Route-SOC"] = selected_endpoint_config.soc
-            if selected_endpoint_config.cpu:
-                routing_headers["X-Route-CPU"] = selected_endpoint_config.cpu
-            if selected_endpoint_config.ram:
-                routing_headers["X-Route-RAM"] = selected_endpoint_config.ram
+        # Add hardware info
+        if endpoint_config:
+            for attr in ["gpu", "vram", "soc", "cpu", "ram"]:
+                value = getattr(endpoint_config, attr, None)
+                if value:
+                    routing_headers[f"X-Route-{attr.upper()}"] = value
 
-        # Log routing decision
         logger.info(
             f"Smart routing: {decision.endpoint} (confidence: {decision.confidence:.2f}) - {decision.reason}"
         )
 
-        # Step 3: Route the entire conversation (with full history) to the selected endpoint
-        return await proxy_with_context(
-            decision.endpoint,
-            request,
-            extra_headers=routing_headers,
-        )
+        return await proxy_request(decision.endpoint, request, routing_headers)
 
     except HTTPException:
-        # Re-raise HTTPExceptions to let FastAPI handle them properly
         raise
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
     except Exception as e:
         logger.error(f"Smart routing failed: {e}")
         raise HTTPException(status_code=500, detail=f"Smart routing error: {str(e)}")
@@ -277,290 +322,104 @@ async def smart_route(request: Request):
 
 @app.post("/conversations/retrieve")
 async def retrieve_conversation(request: Request):
-    """Retrieve a conversation in its entirety based on conversation ID."""
+    """Retrieve conversation history."""
     try:
         body = await request.json()
         convo_id = body.get("convo_id")
 
         if not convo_id:
-            raise HTTPException(
-                status_code=400, detail="Missing required field: convo_id"
-            )
+            raise HTTPException(status_code=400, detail="Missing convo_id")
 
         if convo_id not in convo_history:
             raise HTTPException(
-                status_code=404, detail=f"Conversation with ID '{convo_id}' not found"
+                status_code=404, detail=f"Conversation '{convo_id}' not found"
             )
 
-        convo = convo_history[convo_id]
-
-        return convo
+        return convo_history[convo_id]
 
     except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+        raise HTTPException(status_code=400, detail="Invalid JSON")
     except Exception as e:
         logger.error(f"Error retrieving conversation: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Internal server error while retrieving conversation",
-        )
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/models")
 async def list_models():
-    """List all available models from configured endpoints with additional metadata."""
-    available_models = []
+    """List all available models with metadata."""
+    models = []
 
-    # Iterate through all configured endpoints
     for endpoint_config in endpoints:
-        endpoint_name = endpoint_config.get("name", "unknown")
-        endpoint_url = endpoint_config.get("url")
+        name = endpoint_config.get("name", "unknown")
+        url = endpoint_config.get("url")
 
-        if not endpoint_url:
-            logger.warning(f"No URL configured for endpoint {endpoint_name}")
+        if not url:
+            logger.warning(f"No URL for endpoint: {name}")
             continue
 
-        # Handle "Auto" endpoint specially - it's a routing mechanism, not a model endpoint
-        if endpoint_name == "Auto":
-            # Add Auto as a special routing option
-            auto_model = {
-                "id": "auto-router",
-                "object": "model",
-                "created": int(datetime.now().timestamp()),
-                "owned_by": "llm-control-plane",
-                "endpoint": endpoint_name,
-                "endpoint_url": endpoint_url,
-                "description": "Intelligent routing to best available endpoint",
-            }
-            available_models.append(auto_model)
+        # Special handling for Auto endpoint
+        if name == "Auto":
+            models.append(
+                {
+                    "id": "auto-router",
+                    "object": "model",
+                    "created": int(datetime.now().timestamp()),
+                    "owned_by": "llm-control-plane",
+                    "endpoint": name,
+                    "endpoint_url": url,
+                    "description": "Intelligent routing to best available endpoint",
+                }
+            )
             continue
 
+        # Fetch models from endpoint
         try:
-            # Send GET request to /api/v0/models endpoint
-            models_url = f"{endpoint_url}/api/v0/models"
+            models_url = f"{url}/api/v0/models"
             headers = HeaderManager.create_auth_headers()
 
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(models_url, headers=headers)
-                response.raise_for_status()
+                resp = await client.get(models_url, headers=headers)
+                resp.raise_for_status()
 
-                models_data = response.json()
+                data = resp.json()
+                remote_models = data.get(
+                    "data", data.get("models", data if isinstance(data, list) else [])
+                )
 
-                # Extract models from response (handle both direct list and nested object)
-                if isinstance(models_data, dict) and "data" in models_data:
-                    remote_models = models_data["data"]
-                elif isinstance(models_data, dict) and "models" in models_data:
-                    remote_models = models_data["models"]
-                elif isinstance(models_data, list):
-                    remote_models = models_data
-                else:
-                    logger.warning(
-                        f"Unexpected models response format from {endpoint_name}"
-                    )
-                    continue
-
-                # Process each model and inject additional metadata
                 for model in remote_models:
                     if isinstance(model, dict):
-                        # Create enhanced model object with OpenAI-compatible fields
                         enhanced_model = {
-                            "id": model.get("id", f"unknown-{endpoint_name}"),
+                            "id": model.get("id", f"unknown-{name}"),
                             "object": "model",
                             "created": model.get(
                                 "created", int(datetime.now().timestamp())
                             ),
-                            "owned_by": model.get("owned_by", endpoint_name),
-                            # Inject additional metadata from config
-                            "endpoint": endpoint_name,
-                            "endpoint_url": endpoint_url,
+                            "owned_by": model.get("owned_by", name),
+                            "endpoint": name,
+                            "endpoint_url": url,
                         }
 
-                        # Add hardware specs if available in config
-                        if "gpu" in endpoint_config:
-                            enhanced_model["gpu"] = endpoint_config["gpu"]
-                        if "vram" in endpoint_config:
-                            enhanced_model["vram"] = endpoint_config["vram"]
-                        if "soc" in endpoint_config:
-                            enhanced_model["soc"] = endpoint_config["soc"]
-                        if "cpu" in endpoint_config:
-                            enhanced_model["cpu"] = endpoint_config["cpu"]
-                        if "ram" in endpoint_config:
-                            enhanced_model["ram"] = endpoint_config["ram"]
+                        # Add hardware specs
+                        for hw in ["gpu", "vram", "soc", "cpu", "ram"]:
+                            if hw in endpoint_config:
+                                enhanced_model[hw] = endpoint_config[hw]
 
-                        # Preserve any additional fields from the original model response
-                        for key, value in model.items():
-                            if key not in enhanced_model:
-                                enhanced_model[key] = value
+                        # Preserve original fields
+                        for k, v in model.items():
+                            if k not in enhanced_model:
+                                enhanced_model[k] = v
 
-                        available_models.append(enhanced_model)
+                        models.append(enhanced_model)
 
         except httpx.HTTPError as e:
-            logger.warning(
-                f"Failed to fetch models from {endpoint_name} ({endpoint_url}): {e}"
-            )
+            logger.warning(f"Failed to fetch models from {name}: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error fetching models from {endpoint_name}: {e}")
+            logger.error(f"Error fetching models from {name}: {e}")
 
-    # Return in OpenAI-compatible format
-    return {"object": "list", "data": available_models}
+    return {"object": "list", "data": models}
 
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def custom_endpoints(path: str, request: Request):
     """Handle all other endpoints."""
-    return await proxy_with_context(path, request)
-
-
-async def handle_streaming_response(
-    request: Request,
-    target_endpoint: str,
-    body: Optional[Dict],
-    convo_id: Optional[str],
-    extra_headers: Dict[str, str] = None,
-) -> StreamingResponse:
-    """Handle streaming response proxying."""
-    timeout = httpx.Timeout(connect=20, read=None, write=20, pool=20)
-    upstream_headers = HeaderManager.prepare_upstream_headers(
-        request, for_streaming=True
-    )
-
-    # Prepare streaming options
-    body["stream_options"] = {"include_usage": True}
-
-    acc = SSEAccumulator()
-
-    async def stream_response():
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                async with client.stream(
-                    method=request.method,
-                    url=target_endpoint,
-                    headers=upstream_headers,
-                    json=body,
-                    params=dict(request.query_params),
-                ) as resp:
-                    resp.raise_for_status()
-                    async for chunk in resp.aiter_bytes():
-                        acc.feed(chunk)
-                        yield chunk
-        except httpx.HTTPStatusError as e:
-            # For streaming responses, we can't access response.text
-            # Use a generic error message with status code
-            detail = f"HTTP {e.response.status_code} error from upstream"
-            yield create_error_sse_message(
-                "error", status=e.response.status_code, detail=detail
-            )
-        except Exception as e:
-            yield create_error_sse_message("error", detail=repr(e))
-        finally:
-            # Update conversation history with assembled response
-            try:
-                assembled = acc.text()
-                update_conversation_history(convo_id, assembled)
-            except Exception:
-                pass  # Don't let history failures affect client stream
-
-    response_headers = HeaderManager.create_response_headers(
-        convo_id=convo_id, for_streaming=True
-    )
-    if extra_headers:
-        response_headers.update(extra_headers)
-
-    return StreamingResponse(
-        stream_response(),
-        media_type="text/event-stream",
-        headers=response_headers,
-    )
-
-
-async def handle_non_streaming_response(
-    request: Request,
-    target_endpoint: str,
-    body: Optional[Dict],
-    convo_id: Optional[str],
-    extra_headers: Dict[str, str] = None,
-) -> Response:
-    """Handle non-streaming response proxying."""
-    upstream_headers = HeaderManager.prepare_upstream_headers(request)
-
-    async with httpx.AsyncClient() as client:
-        resp = await client.request(
-            method=request.method,
-            url=target_endpoint,
-            headers=upstream_headers,
-            json=body,
-            params=dict(request.query_params),
-            timeout=120,
-        )
-
-        assistant_text = None
-        try:
-            resp_json = resp.json()
-            assistant_text = log_response_info(resp_json)
-        except Exception:
-            logger.info("Response: %s", resp.text[-500:])
-
-        # Update conversation history
-        update_conversation_history(convo_id, assistant_text)
-
-        response_headers = HeaderManager.create_response_headers(
-            dict(resp.headers), convo_id
-        )
-        if extra_headers:
-            response_headers.update(extra_headers)
-
-        return Response(
-            content=resp.content,
-            status_code=resp.status_code,
-            headers=response_headers,
-        )
-
-
-async def proxy_with_context(
-    path: str,
-    request: Request,
-    extra_headers: Dict[str, str] = None,
-):
-    """Main proxy handler with conversation context."""
-
-    # Get enriched body from request (handles conversation history and reasoning)
-    if not hasattr(request, "_body"):
-        # Store raw body for processing
-        raw_body = await request.body()
-        request._body = raw_body
-
-    # Get enriched body with conversation history
-    body = enrich_request_with_history(request)
-    is_streaming = body.get("stream", False)
-
-    # Check for streaming flag in query params as fallback
-    if not is_streaming:
-        is_streaming = request.query_params.get("stream") in {"true", "1"}
-
-    # Get conversation ID for history tracking
-    convo_id = request.headers.get("X-Convo-ID")
-
-    # Get target endpoint based on streaming preference
-    target_endpoint = get_target_endpoint(path, is_streaming)
-
-    if not target_endpoint:
-        raise HTTPException(
-            status_code=404, detail=f"Endpoint not found for path: {path}"
-        )
-
-    logger.info(
-        "Proxying %s %s to %s (streaming: %s)",
-        request.method,
-        request.url.path,
-        target_endpoint,
-        is_streaming,
-    )
-
-    if is_streaming:
-        return await handle_streaming_response(
-            request, target_endpoint, body, convo_id, extra_headers
-        )
-    else:
-        return await handle_non_streaming_response(
-            request, target_endpoint, body, convo_id, extra_headers
-        )
+    return await proxy_request(path, request)
