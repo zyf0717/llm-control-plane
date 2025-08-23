@@ -60,18 +60,9 @@ class RequestProcessor:
     @staticmethod
     async def prepare_request(request: Request) -> Dict:
         """Parse and enrich request with conversation history and reasoning."""
-
-        # Cache raw body
-        if not hasattr(request, "_body"):
-            request._body = await request.body()
-
-        # Return cached enriched body if available
-        if hasattr(request, "_enriched_body"):
-            return request._enriched_body
-
         # Parse request
         try:
-            body = json.loads(request._body) if request._body else {}
+            body = json.loads(await request.body()) if request.body() else {}
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="Invalid JSON")
 
@@ -121,8 +112,6 @@ class RequestProcessor:
         if reasoning_effort:
             body["reasoning_effort"] = reasoning_effort
 
-        # Cache and return
-        request._enriched_body = body
         return body
 
     @staticmethod
