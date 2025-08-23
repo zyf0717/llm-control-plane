@@ -61,40 +61,87 @@ def get_target_endpoint(path: str, is_streaming: bool = False) -> str:
     return None
 
 
-def parse_and_inject_history(
-    body: bytes, convo_id: Optional[str]
-) -> Tuple[Optional[Dict], bool]:
-    """Parse request body and inject conversation history if applicable."""
-    if not body:
-        return None, False
+def enrich_request_with_history(request: Request) -> Dict:
+    """Enrich request with conversation history and reasoning effort."""
+    # Get conversation ID and reasoning effort from headers
+    convo_id = request.headers.get("X-Convo-ID")
+    reasoning_effort = request.headers.get("X-Reasoning-Effort", "").lower()
 
+    # Only use valid reasoning levels, skip "none"
+    if reasoning_effort not in ["low", "medium", "high"]:
+        reasoning_effort = None
+
+    # Parse request body
     try:
-        body_json = json.loads(body)
+        if hasattr(request, "_enriched_body"):
+            # Already enriched, return as-is
+            return request._enriched_body
+
+        body_json = json.loads(request._body) if hasattr(request, "_body") else {}
         if not isinstance(body_json, dict):
-            return None, False
+            return body_json
+    except (json.JSONDecodeError, AttributeError):
+        return {}
 
-        is_streaming = body_json.get("stream", False)
+    # Inject history if messages exist and convo_id provided
+    if "messages" in body_json and isinstance(body_json["messages"], list) and convo_id:
+        if convo_id not in convo_history:
+            convo_history[convo_id] = []
 
-        # Inject history if messages exist and convo_id provided
+        # Append new messages to history
+        convo_history[convo_id].extend(body_json["messages"])
+
+        # Use full conversation history
+        all_messages = convo_history[convo_id].copy()
+    else:
+        # No conversation history, use current messages
+        all_messages = body_json.get("messages", []).copy()
+
+    # Handle reasoning effort injection/replacement
+    if all_messages:
+        # Always remove any existing reasoning system message first
         if (
-            "messages" in body_json
-            and isinstance(body_json["messages"], list)
-            and convo_id
+            all_messages
+            and all_messages[0].get("role") == "system"
+            and "Reasoning:" in all_messages[0].get("content", "")
         ):
-            if convo_id not in convo_history:
-                convo_history[convo_id] = []
+            # Remove the old reasoning message
+            all_messages.pop(0)
+            # Also update the stored conversation history
+            if convo_id and convo_id in convo_history:
+                convo_history[convo_id] = all_messages
 
-            # Append new messages to history
-            convo_history[convo_id].extend(body_json["messages"])
+        # Now inject the new reasoning if provided
+        if reasoning_effort:
+            reasoning_msg = {
+                "role": "system",
+                "content": f"Reasoning: {reasoning_effort}",
+            }
+            all_messages.insert(0, reasoning_msg)
 
-            # Replace payload messages with full history
-            body_json["messages"] = convo_history[convo_id]
+            # Update the conversation history to include new reasoning
+            if convo_id and convo_id in convo_history:
+                convo_history[convo_id] = all_messages
 
-        return body_json, is_streaming
+            # Log for debugging
+            logger.info(
+                f"✅ Reasoning effort '{reasoning_effort}' applied to conversation (replaced previous)"
+            )
+            logger.info(f"📨 Reasoning message: {reasoning_msg}")
+        else:
+            logger.info("❌ No reasoning effort provided or invalid value")
 
-    except Exception:
-        logger.warning("Failed to parse request body as JSON")
-        return None, False
+    # Update the request body with the complete message history
+    body_json["messages"] = all_messages
+
+    # Also add reasoning_effort
+    if reasoning_effort:
+        body_json["reasoning_effort"] = reasoning_effort
+
+    # Cache the enriched body on the request object
+    request._enriched_body = body_json
+
+    return body_json
 
 
 def update_conversation_history(convo_id: Optional[str], assistant_text: str) -> None:
@@ -144,8 +191,10 @@ async def root_chat(request: Request):
 async def smart_route(request: Request):
     """Intelligently route requests based on content analysis."""
     try:
-        # Step 1: Add to history first - parse request body and inject conversation history
+        # Step 1: Store raw body and inject conversation history
         raw_body = await request.body()
+        request._body = raw_body  # Cache for later use
+
         convo_id = request.headers.get("X-Convo-ID")
 
         # Handle empty body case
@@ -154,12 +203,12 @@ async def smart_route(request: Request):
 
         # Handle invalid JSON case
         try:
-            test_json = json.loads(raw_body)
+            json.loads(raw_body)
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="Invalid JSON in request body")
 
-        # Inject history to get the full conversation context
-        body_json, is_streaming = parse_and_inject_history(raw_body, convo_id)
+        # Enrich request with conversation history
+        body_json = enrich_request_with_history(request)
 
         if not body_json or not isinstance(body_json, dict):
             raise HTTPException(status_code=400, detail="Invalid request body")
@@ -214,7 +263,6 @@ async def smart_route(request: Request):
             decision.endpoint,
             request,
             extra_headers=routing_headers,
-            _enriched_body=body_json,
         )
 
     except HTTPException:
@@ -472,112 +520,25 @@ async def proxy_with_context(
     path: str,
     request: Request,
     extra_headers: Dict[str, str] = None,
-    _skip_history_injection: bool = False,
-    _enriched_body: Dict = None,
 ):
     """Main proxy handler with conversation context."""
 
-    # Step 3: Use pre-enriched body if provided (contains full conversation history)
-    if _enriched_body is not None:
-        body = _enriched_body
-        is_streaming = body.get("stream", False)
-        convo_id = request.headers.get("X-Convo-ID")
-    else:
-        # Parse request body and inject conversation history first
+    # Get enriched body from request (handles conversation history and reasoning)
+    if not hasattr(request, "_body"):
+        # Store raw body for processing
         raw_body = await request.body()
-        convo_id = request.headers.get("X-Convo-ID")
+        request._body = raw_body
 
-        # Skip history injection if this is a recursive call (e.g., from smart/auto routing)
-        if _skip_history_injection:
-            try:
-                body = json.loads(raw_body) if raw_body else {}
-                is_streaming = body.get("stream", False)
-            except json.JSONDecodeError:
-                body, is_streaming = None, False
-        else:
-            body, is_streaming = parse_and_inject_history(raw_body, convo_id)
+    # Get enriched body with conversation history
+    body = enrich_request_with_history(request)
+    is_streaming = body.get("stream", False)
 
     # Check for streaming flag in query params as fallback
     if not is_streaming:
         is_streaming = request.query_params.get("stream") in {"true", "1"}
 
-    # Check if this is an Auto/smart routing request
-    clean_path = path.lstrip("/")
-    endpoint_key = clean_path.split("/")[0] if clean_path else ""
-
-    if endpoint_key == "Auto":
-        # Handle Auto endpoint with smart routing
-        try:
-            if not body or not isinstance(body, dict):
-                raise HTTPException(
-                    status_code=400, detail="Invalid request body for Auto routing"
-                )
-
-            # Extract text from messages for analysis
-            messages = body.get("messages", [])
-            if not messages:
-                raise HTTPException(
-                    status_code=400, detail="No messages provided for Auto routing"
-                )
-
-            # Get the latest user message for routing analysis
-            user_messages = [msg for msg in messages if msg.get("role") == "user"]
-            if not user_messages:
-                raise HTTPException(
-                    status_code=400, detail="No user messages found for Auto routing"
-                )
-
-            latest_message = user_messages[-1].get("content", "")
-
-            # Use LLM router to determine best endpoint
-            router = get_router()
-            decision = await router.route_request(latest_message)
-
-            # Get endpoint configuration for hardware info
-            selected_endpoint_config = router.get_endpoint_by_name(decision.endpoint)
-
-            # Add routing metadata to response headers
-            routing_headers = {
-                "X-Route-Decision": decision.endpoint,
-                "X-Route-Confidence": str(decision.confidence),
-                "X-Route-Reason": decision.reason,
-                "X-Route-Strategy": decision.strategy.value,
-            }
-
-            # Add endpoint hardware info to headers
-            if selected_endpoint_config:
-                if selected_endpoint_config.gpu:
-                    routing_headers["X-Route-GPU"] = selected_endpoint_config.gpu
-                if selected_endpoint_config.vram:
-                    routing_headers["X-Route-VRAM"] = selected_endpoint_config.vram
-                if selected_endpoint_config.soc:
-                    routing_headers["X-Route-SOC"] = selected_endpoint_config.soc
-                if selected_endpoint_config.cpu:
-                    routing_headers["X-Route-CPU"] = selected_endpoint_config.cpu
-                if selected_endpoint_config.ram:
-                    routing_headers["X-Route-RAM"] = selected_endpoint_config.ram
-
-            if extra_headers:
-                routing_headers.update(extra_headers)
-
-            # Log routing decision
-            logger.info(
-                f"Auto routing: {decision.endpoint} (confidence: {decision.confidence:.2f}) - {decision.reason}"
-            )
-
-            # Route to the selected endpoint
-            return await proxy_with_context(
-                decision.endpoint,
-                request,
-                extra_headers=routing_headers,
-                _enriched_body=body,
-            )
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Auto routing failed: {e}")
-            raise HTTPException(status_code=500, detail=f"Auto routing error: {str(e)}")
+    # Get conversation ID for history tracking
+    convo_id = request.headers.get("X-Convo-ID")
 
     # Get target endpoint based on streaming preference
     target_endpoint = get_target_endpoint(path, is_streaming)

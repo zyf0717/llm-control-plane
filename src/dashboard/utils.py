@@ -53,6 +53,21 @@ async def fetch_available_endpoints():
                         "models": [],
                     }
                 endpoints[endpoint_name]["models"].append(model)
+
+        # Always add Auto/Smart routing option
+        endpoints["Auto"] = {
+            "endpoint_url": f"{PROXY_BASE_URL}/smart",
+            "models": [
+                {
+                    "id": "auto-router",
+                    "object": "model",
+                    "endpoint": "Auto",
+                    "endpoint_url": f"{PROXY_BASE_URL}/smart",
+                    "description": "Intelligent routing to best available endpoint",
+                }
+            ],
+        }
+
         logging.info(f"Fetched endpoints: {endpoints}")
         logging.info(f"Raw data: {data}")
         return endpoints, data  # Return both endpoints and raw data
@@ -66,7 +81,15 @@ def create_endpoint_display_choices(endpoints_data):
     choices = {}
     mapping = {}
 
+    # Always put Auto first if it exists
+    if "Auto" in endpoints_data:
+        choices["Auto (auto-router)"] = "Auto"
+        mapping["Auto (auto-router)"] = "Auto"
+
     for endpoint_name, endpoint_data in endpoints_data.items():
+        if endpoint_name == "Auto":
+            continue  # Already handled above
+
         models = endpoint_data.get("models", [])
         if models:
             # Use the first model's name for display

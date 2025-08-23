@@ -125,7 +125,7 @@ def server(input, output, session):
         endpoints_dict: dict,
         stream: bool = True,
         output_json: bool = False,
-        # reasoning_effort: str = "low",
+        reasoning_effort: str = "none",
         output_reasoning: bool = False,
         convo_id: str = None,
         current_routing_info: dict = None,
@@ -139,31 +139,23 @@ def server(input, output, session):
         send_button_state.set("busy")
 
         try:
-            # Handle smart routing differently - no need to validate endpoint exists
-            if endpoint_key == "smart":
-                # Smart routing endpoint - always available
+            # Handle Auto routing specially - route to smart endpoint
+            if endpoint_key == "Auto":
                 url = f"{PROXY_BASE_URL}/smart"
             else:
-                # Validate regular endpoint
                 if not endpoints_dict or endpoint_key not in endpoints_dict:
                     yield f"Error: Endpoint '{endpoint_key}' not available"
                     return
                 url = f"{PROXY_BASE_URL}/{endpoint_key}"
 
             # Prepare request
-            payload = {
-                "messages": [
-                    # {
-                    #     "role": "system",
-                    #     "content": f"Reasoning: {reasoning_effort}\nValid channels: analysis, final.\nPut internal thinking in analysis; put the user-facing answer in final.",
-                    # },
-                    {"role": "user", "content": text},
-                ],
-            }
+
+            payload = {"messages": [{"role": "user", "content": text}]}
             headers = {
                 "CF-Access-Client-Id": API_KEY_ID,
                 "CF-Access-Client-Secret": API_KEY_SECRET,
                 "Content-Type": "application/json",
+                "X-Reasoning-Effort": reasoning_effort,
             }
             if convo_id:
                 headers["X-Convo-ID"] = convo_id
@@ -342,7 +334,7 @@ def server(input, output, session):
                 endpoints_dict=current_endpoints,
                 stream=input.stream(),
                 output_json=input.outputJSON(),
-                # reasoning_effort=input.reasoningEffort(),
+                reasoning_effort=input.reasoningEffort(),
                 output_reasoning=input.outputReasoning(),
                 convo_id=input.convoID() if input.convoID() else None,
                 current_routing_info=current_run_info.get("routing", {}),
@@ -456,21 +448,25 @@ def server(input, output, session):
         if info and "routing" in info:
             routing = info["routing"]
             routing_info = routing  # Store for hardware info use
-            routing_lines = ["**Auto-Routing Decision**"]
 
-            if "decision" in routing:
-                routing_lines.append(f"Selected: {routing['decision']}")
-            if "confidence" in routing:
-                confidence = float(routing["confidence"])
-                routing_lines.append(f"Confidence: {confidence:.1%}")
-            if "reason" in routing:
-                routing_lines.append(f"Reason: {routing['reason']}")
-            if "strategy" in routing:
-                routing_lines.append(f"Strategy: {routing['strategy']}")
+            # Build routing display lines if we have meaningful data
+            routing_lines = []
+            routing_fields = {
+                "decision": lambda v: f"Selected: {v}",
+                "confidence": lambda v: f"Confidence: {float(v):.1%}",
+                "reason": lambda v: f"Reason: {v}",
+                "strategy": lambda v: f"Strategy: {v}",
+            }
 
-            sections.append("<br>".join(routing_lines))
+            for field, formatter in routing_fields.items():
+                if field in routing:
+                    routing_lines.append(formatter(routing[field]))
 
-        # Request info (usage, stats, model_info, runtime from response)
+            # Only show routing section if we have actual routing data
+            if routing_lines:
+                sections.append(
+                    "**Auto-Routing Decision**<br>" + "<br>".join(routing_lines)
+                )  # Request info (usage, stats, model_info, runtime from response)
         if info:
             sections.extend(format_response_info(info, fmt))
 
