@@ -263,7 +263,7 @@ async def smart_route(request: Request):
     """Smart routing based on content analysis."""
     try:
         # Prepare request
-        body = await RequestProcessor.prepare_request(request)
+        body = await request.json()
         messages = body.get("messages", [])
 
         if not messages:
