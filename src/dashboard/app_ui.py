@@ -15,12 +15,18 @@ app_ui = ui.page_fluid(
         // Hint virtual keyboards appropriately
         ta.setAttribute('enterkeyhint', isTouch ? 'enter' : 'send');
 
+        // Blur textarea before mouse click to ensure sync
+        btn.addEventListener('mousedown', () => {
+            ta.blur();
+        });
+
         // Desktop only: Enter sends (Shift+Enter = newline)
         if (!isTouch) {
             ta.addEventListener('keydown', (e) => {
             if (e.isComposing) return; // IME safety
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
+                ta.blur(); // Ensure sync before send
                 btn.click();
             }
             });
