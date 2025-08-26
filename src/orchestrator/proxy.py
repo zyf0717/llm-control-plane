@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -35,7 +35,42 @@ app = FastAPI()
 convo_history: Dict[str, List[Dict]] = {}
 
 # Global cache of reachable endpoints
-reachable_endpoints: Dict[str, dict] = {}
+reachable_endpoints: List[str] = []
+_reachable_last_refresh = datetime.min
+_REACHABLE_TTL = timedelta(seconds=60)
+
+
+async def _refresh_reachable_endpoints() -> List[str]:
+    """Refresh list of reachable endpoints."""
+    global reachable_endpoints, _reachable_last_refresh
+    names: List[str] = []
+    headers = HeaderManager.create_auth_headers()
+
+    for ep in endpoints:
+        name = ep.get("name")
+        url = ep.get("url")
+        if not name or not url:
+            continue
+
+        models_url = f"{url}/api/v0/models"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(models_url, headers=headers)
+                resp.raise_for_status()
+                names.append(name)
+        except Exception as exc:
+            logger.debug(f"Endpoint {name} unreachable: {exc}")
+
+    reachable_endpoints = names
+    _reachable_last_refresh = datetime.utcnow()
+    return reachable_endpoints
+
+
+async def get_reachable_endpoints() -> List[str]:
+    """Return cached reachable endpoints, refreshing if TTL expired."""
+    if datetime.utcnow() - _reachable_last_refresh > _REACHABLE_TTL:
+        await _refresh_reachable_endpoints()
+    return reachable_endpoints
 
 
 class RequestProcessor:
@@ -282,7 +317,8 @@ async def smart_route(request: Request):
 
         # Route using LLM router
         router = get_router()
-        decision = await router.route_request(latest_message, reachable_endpoints)
+        reachable = await get_reachable_endpoints()
+        decision = await router.route_request(latest_message, reachable)
         endpoint_config = router.get_endpoint_by_name(decision.endpoint)
 
         # Build routing headers
@@ -427,10 +463,11 @@ async def list_models():
         elif isinstance(result, Exception):
             logger.error(f"Endpoint fetch failed: {result}")
 
-    global reachable_endpoints
+    global reachable_endpoints, _reachable_last_refresh
     reachable_endpoints = list(
         set(model.get("endpoint") for model in models if model.get("endpoint"))
     )
+    _reachable_last_refresh = datetime.utcnow()
     return {"object": "list", "data": models}
 
 
