@@ -286,7 +286,7 @@ async def smart_route(request: Request):
             "X-Route-Decision": decision.endpoint,
             "X-Route-Confidence": str(decision.confidence),
             "X-Route-Reason": decision.reason,
-            "X-Route-Strategy": decision.strategy.value,
+            "X-Route-Strategy": decision.workload_type.value,
         }
 
         # Add hardware info

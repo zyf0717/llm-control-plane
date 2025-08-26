@@ -1,17 +1,14 @@
 """
 LLM Router for intelligent endpoint selection.
 
-Determines the most appropriate endpoint based on request characteristics.
-Currently supports reasoning detection with extensible framework for future routing logic.
+Determines the most appropriate endpoint based on workload type and endpoint preferences.
 """
 
 import logging
-import re
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import httpx
 import yaml
@@ -21,13 +18,13 @@ from .utils import HeaderManager
 logger = logging.getLogger(__name__)
 
 
-class RouteStrategy(Enum):
-    """Available routing strategies."""
+class WorkloadType(Enum):
+    """Available workload types."""
 
     REASONING = "reasoning"
-    PERFORMANCE = "performance"
-    COST = "cost"
-    # Future strategies can be added here
+    TTFT_CONTENT = "ttft_content"
+    TOKENS_PER_SECOND = "tokens_per_second"
+    PROGRAMMING = "programming"
 
 
 @dataclass
@@ -36,6 +33,7 @@ class EndpointConfig:
 
     name: str
     url: str
+    viable_models: List[str]
     gpu: Optional[str] = None
     vram: Optional[str] = None
     cpu: Optional[str] = None
@@ -50,128 +48,49 @@ class RouteDecision:
     endpoint: str
     confidence: float
     reason: str
-    strategy: RouteStrategy
+    workload_type: WorkloadType
 
 
-class BaseRouter(ABC):
-    """Base class for routing strategies."""
+class WorkloadClassifier:
+    """Classifies text to determine appropriate workload type."""
 
-    @abstractmethod
-    async def should_route(self, text: str, **kwargs) -> bool:
-        """Determine if this router should handle the request."""
-        pass
-
-    @abstractmethod
-    async def select_endpoint(
-        self, text: str, endpoints: List[EndpointConfig], **kwargs
-    ) -> RouteDecision:
-        """Select the best endpoint for the request."""
-        pass
-
-
-class ReasoningRouter(BaseRouter):
-    """Router for reasoning-intensive tasks."""
-
-    # Patterns that indicate reasoning is needed
-    REASONING_PATTERNS = [
-        r"\b(think|reason|analyze|solve|calculate|deduce|infer)\b",
-        r"\b(step by step|step-by-step|explain why|how does|what if)\b",
-        r"\b(problem|puzzle|logic|proof|derive|conclude)\b",
-        r"\b(compare|contrast|evaluate|assess|judge)\b",
-        r"\b(plan|strategy|approach|method|solution)\b",
-        r"\b(why|how)\b.*\?",  # Why/How questions are typically reasoning
-        r"\bwhat if\b.*\?",  # What-if scenarios require reasoning
-        r"\b(because|therefore|thus|hence|consequently)\b",
-    ]
-
-    # Keywords that strongly suggest reasoning
-    STRONG_REASONING_KEYWORDS = [
-        "analyze",
-        "reasoning",
-        "logic",
-        "proof",
-        "derive",
-        "calculate",
-        "step by step",
-        "think through",
-        "problem solving",
-        "critical thinking",
-    ]
-
-    def __init__(
-        self,
-        lightweight_endpoint: str = None,
-        reasoning_endpoint: str = None,
-        use_llm_classification: bool = True,
-    ):
-        """
-        Initialize reasoning router.
-
-        Args:
-            lightweight_endpoint: Name of lightweight model for classification
-            reasoning_endpoint: Name of reasoning-capable model for complex tasks
-            use_llm_classification: Whether to use LLM for classification (vs pattern matching)
-        """
-        self.lightweight_endpoint = (
-            lightweight_endpoint or "mac-mini"
-        )  # Default to fastest
-        self.reasoning_endpoint = (
-            reasoning_endpoint or "gmk-evo-x2"
-        )  # Default to most powerful
-        self.use_llm_classification = use_llm_classification
-
-    async def _classify_with_llm(
-        self, text: str, endpoints: List[EndpointConfig]
-    ) -> Optional[bool]:
-        """Use lightweight LLM to classify if reasoning is needed."""
+    async def classify_with_llm(
+        self, text: str, classification_endpoint_url: str
+    ) -> Optional[WorkloadType]:
+        """Use LLM to classify workload type."""
         try:
-            # Find the lightweight endpoint
-            lightweight_ep = self._find_endpoint_by_name(
-                endpoints, self.lightweight_endpoint
-            )
-            if not lightweight_ep:
-                logger.warning(
-                    "Lightweight endpoint not found, falling back to pattern matching"
-                )
-                return None
+            system_prompt = """You are a classifier only.
+Classify the request into exactly one of these categories:
+- reasoning
+- programming
+- ttft_content
+- tokens_per_second
 
-            # Prepare the classification prompt
-            classification_prompt = f"""Analyze the following user request and determine if it requires complex reasoning, step-by-step thinking, problem-solving, or chain-of-thought processing.
+Rules in descending order of priority:
+1. If multi-step analysis/trade-offs → reasoning
+2. If code-related tasks → programming
+3. If emphasis on speed/throughput/TTFT/TPS → tokens_per_second
+4. Else → ttft_content
 
-User request: "{text}"
-
-Consider these factors:
-- Does it ask for analysis, reasoning, or problem-solving?
-- Does it require step-by-step thinking?
-- Does it involve calculations, logic, or complex explanations?
-- Is it asking "how" or "why" questions that need detailed reasoning?
-
-Respond with only "YES" if complex reasoning is required, or "NO" if it's a simple task.
-
-Response:"""
-
-            # Make request to lightweight endpoint
-            endpoint_url = f"{lightweight_ep.url}/api/v0/chat/completions"
+Output exactly one label, lowercase, no punctuation."""
 
             payload = {
-                "messages": [{"role": "user", "content": classification_prompt}],
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": text},
+                ],
                 "model": "classification",
-                "max_tokens": 10,
-                "temperature": 0.1,  # Low temperature for consistent classification
+                "max_tokens": 20,
+                "temperature": 0.1,
                 "stream": False,
             }
 
             async with httpx.AsyncClient(timeout=10.0) as client:
-                # Create authentication headers
                 headers = HeaderManager.create_auth_headers()
                 headers["Content-Type"] = "application/json"
 
-                # Debug logging
-                logger.debug(f"Making LLM classification request to: {endpoint_url}")
-                logger.debug(f"Headers: {headers}")
-
                 response = await client.post(
-                    endpoint_url, json=payload, headers=headers
+                    classification_endpoint_url, json=payload, headers=headers
                 )
                 response.raise_for_status()
 
@@ -182,250 +101,134 @@ Response:"""
                         .get("message", {})
                         .get("content", "")
                         .strip()
-                        .upper()
+                        .lower()
                     )
 
-                    if "YES" in content:
-                        return True
-                    elif "NO" in content:
-                        return False
-                    else:
-                        logger.warning(
-                            f"Unexpected LLM classification response: {content}"
-                        )
-                        return None
+                    for workload_type in WorkloadType:
+                        if workload_type.value in content:
+                            return workload_type
 
-        except Exception as e:
-            logger.warning(
-                f"LLM classification failed: {e}, falling back to pattern matching"
-            )
-            return None
+        except (httpx.RequestError, httpx.HTTPStatusError, KeyError) as e:
+            logger.warning("LLM classification failed: %s", e)
 
         return None
 
-    async def should_route(
-        self, text: str, endpoints: List[EndpointConfig] = None, **kwargs
-    ) -> bool:
-        """Check if text indicates reasoning is needed."""
-        # Try LLM classification first if enabled and endpoints available
-        if self.use_llm_classification and endpoints:
-            llm_result = await self._classify_with_llm(text, endpoints)
-            if llm_result is not None:
-                logger.info(
-                    f"LLM classification: {'reasoning' if llm_result else 'simple'} task"
-                )
-                return llm_result
-
-        # Fallback to pattern-based classification
-        text_lower = text.lower()
-
-        # Quick pattern-based check
-        for pattern in self.REASONING_PATTERNS:
-            if re.search(pattern, text_lower, re.IGNORECASE):
-                return True
-
-        # Check for strong reasoning keywords
-        for keyword in self.STRONG_REASONING_KEYWORDS:
-            if keyword in text_lower:
-                return True
-
-        return False
-
-    async def select_endpoint(
-        self, text: str, endpoints: List[EndpointConfig], **kwargs
-    ) -> RouteDecision:
-        """Select endpoint based on reasoning requirements."""
-        needs_reasoning = await self.should_route(text, endpoints=endpoints)
-
-        if needs_reasoning:
-            # Find the most powerful endpoint for reasoning
-            target_endpoint = self._find_endpoint_by_name(
-                endpoints, self.reasoning_endpoint
-            )
-            if not target_endpoint:
-                target_endpoint = self._select_most_powerful(endpoints)
-
-            # Higher confidence when using LLM classification
-            confidence = 0.9 if self.use_llm_classification else 0.8
-            reason = (
-                "Complex reasoning task detected (LLM classified)"
-                if self.use_llm_classification
-                else "Complex reasoning task detected"
-            )
-
-            return RouteDecision(
-                endpoint=target_endpoint.name,
-                confidence=confidence,
-                reason=reason,
-                strategy=RouteStrategy.REASONING,
-            )
-        else:
-            # Use lightweight endpoint for simple tasks
-            target_endpoint = self._find_endpoint_by_name(
-                endpoints, self.lightweight_endpoint
-            )
-            if not target_endpoint:
-                target_endpoint = self._select_fastest(endpoints)
-
-            # Higher confidence when using LLM classification
-            confidence = 0.85 if self.use_llm_classification else 0.7
-            reason = (
-                "Simple task, using efficient endpoint (LLM classified)"
-                if self.use_llm_classification
-                else "Simple task, using efficient endpoint"
-            )
-
-            return RouteDecision(
-                endpoint=target_endpoint.name,
-                confidence=confidence,
-                reason=reason,
-                strategy=RouteStrategy.REASONING,
-            )
-
-    def _find_endpoint_by_name(
-        self, endpoints: List[EndpointConfig], name: str
-    ) -> Optional[EndpointConfig]:
-        """Find endpoint by name."""
-        return next((ep for ep in endpoints if ep.name == name), None)
-
-    def _select_most_powerful(self, endpoints: List[EndpointConfig]) -> EndpointConfig:
-        """Select the most powerful endpoint based on memory capacity."""
-        return max(endpoints, key=self._get_memory_gb, default=None)
-
-    def _select_fastest(self, endpoints: List[EndpointConfig]) -> EndpointConfig:
-        """Select the fastest endpoint (smallest model/least VRAM)."""
-        return min(endpoints, key=self._get_memory_gb, default=None)
-
-    def _get_memory_gb(self, endpoint: EndpointConfig) -> int:
-        """Get memory in GB: VRAM for GPU endpoints, RAM for SOC endpoints."""
-        # Use RAM for SOC-based endpoints (Apple Silicon, etc.)
-        if endpoint.soc:
-            return self._extract_gb(endpoint.ram)
-        # Use VRAM for GPU-based endpoints
-        return self._extract_gb(endpoint.vram)
-
-    def _extract_gb(self, memory_str: Optional[str]) -> int:
-        """Extract memory in GB from string."""
-        if not memory_str:
-            return 0
-        match = re.search(r"(\d+)", memory_str)
-        return int(match.group(1)) if match else 0
-
 
 class LLMRouter:
-    """Main LLM router that orchestrates different routing strategies."""
+    """Main LLM router for endpoint selection."""
 
-    def __init__(
-        self, config_path: str = "config.yaml", use_llm_classification: bool = True
-    ):
-        """Initialize the router with configuration."""
+    def __init__(self, config_path: str = "config.yaml"):
+        """Initialize router with configuration."""
         self.config_path = Path(config_path)
-        self.endpoints = self._load_endpoints()
-        self.use_llm_classification = use_llm_classification
-        self.routers = {
-            RouteStrategy.REASONING: ReasoningRouter(
-                use_llm_classification=use_llm_classification
+        self.endpoints: Dict[str, EndpointConfig] = {}
+        self.workload_preferences: Dict[WorkloadType, List[str]] = {}
+        self.classifier = WorkloadClassifier()
+        self._load_config()
+
+    def _load_config(self):
+        """Load configuration from YAML file."""
+        with self.config_path.open("r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+
+        # Load endpoints
+        for ep_config in config.get("endpoints", []):
+            endpoint = EndpointConfig(
+                name=ep_config["name"],
+                url=ep_config["url"],
+                viable_models=ep_config.get("viable_models", []),
+                gpu=ep_config.get("gpu"),
+                vram=ep_config.get("vram"),
+                cpu=ep_config.get("cpu"),
+                ram=ep_config.get("ram"),
+                soc=ep_config.get("soc"),
             )
-        }
-        self.default_strategy = RouteStrategy.REASONING
+            self.endpoints[endpoint.name] = endpoint
 
-    def _load_endpoints(self) -> List[EndpointConfig]:
-        """Load endpoint configurations from YAML."""
-        try:
-            with self.config_path.open("r") as f:
-                config = yaml.safe_load(f)
-
-            endpoints = []
-            for ep_config in config.get("endpoints", []):
-                endpoints.append(
-                    EndpointConfig(
-                        name=ep_config["name"],
-                        url=ep_config["url"],
-                        gpu=ep_config.get("gpu"),
-                        vram=ep_config.get("vram"),
-                        cpu=ep_config.get("cpu"),
-                        ram=ep_config.get("ram"),
-                        soc=ep_config.get("soc"),
-                    )
-                )
-
-            return endpoints
-        except Exception as e:
-            logger.error(f"Failed to load endpoints config: {e}")
-            return []
+        # Load workload preferences
+        for workload_config in config.get("workloads", []):
+            workload_type = WorkloadType(workload_config["type"])
+            self.workload_preferences[workload_type] = workload_config[
+                "endpoint_preference"
+            ]
 
     async def route_request(
-        self, text: str, strategy: Optional[RouteStrategy] = None, **kwargs
+        self, text: str, workload_type: Optional[WorkloadType] = None
     ) -> RouteDecision:
-        """
-        Route a request to the most appropriate endpoint.
+        """Route request to best endpoint."""
+        # Determine workload type if not provided
+        if workload_type is None:
+            workload_type = await self._classify_workload(text)
 
-        Args:
-            text: The input text/prompt to analyze
-            strategy: Optional specific strategy to use
-            **kwargs: Additional parameters for routing
+        # Get preferred endpoints for this workload type
+        preferred_endpoints = self.workload_preferences.get(workload_type, [])
 
-        Returns:
-            RouteDecision with selected endpoint and reasoning
-        """
-        if not self.endpoints:
-            raise ValueError("No endpoints configured")
+        # Find first available endpoint from preferences
+        selected_endpoint_name = preferred_endpoints[
+            0
+        ]  # Assume at least 1 endpoint available
+        selected_endpoint = self.endpoints[selected_endpoint_name]
 
-        # Use specified strategy or default
-        strategy = strategy or self.default_strategy
-        router = self.routers.get(strategy)
+        return RouteDecision(
+            endpoint=selected_endpoint.name,
+            confidence=0.9,
+            reason=f"Selected for {workload_type.value} workload",
+            workload_type=workload_type,
+        )
 
-        if not router:
-            raise ValueError(f"Unknown routing strategy: {strategy}")
-
-        try:
-            decision = await router.select_endpoint(text, self.endpoints, **kwargs)
-            logger.info(f"Routed to {decision.endpoint}: {decision.reason}")
-            return decision
-        except Exception as e:
-            logger.error(f"Routing failed: {e}")
-            # Fallback to first endpoint
-            return RouteDecision(
-                endpoint=self.endpoints[0].name,
-                confidence=0.1,
-                reason=f"Fallback due to routing error: {e}",
-                strategy=strategy,
+    async def _classify_workload(self, text: str) -> WorkloadType:
+        """Classify text to determine workload type."""
+        # Try LLM classification first with fastest endpoint
+        fastest_endpoint = self._get_fastest_endpoint()
+        if fastest_endpoint:
+            classification_url = f"{fastest_endpoint.url}/api/v0/chat/completions"
+            llm_result = await self.classifier.classify_with_llm(
+                text, classification_url
             )
+            if llm_result:
+                return llm_result
 
-    def add_router(self, strategy: RouteStrategy, router: BaseRouter):
-        """Add a new routing strategy."""
-        self.routers[strategy] = router
+    def _get_fastest_endpoint(self) -> Optional[EndpointConfig]:
+        """Get fastest endpoint for classification (prefer SOC-based)."""
+        # Prefer Apple Silicon endpoints for speed
+        for endpoint in self.endpoints.values():
+            if endpoint.soc and "apple" in endpoint.soc.lower():
+                return endpoint
+
+        # Fallback to first available endpoint
+        return next(iter(self.endpoints.values()), None)
 
     def get_endpoint_by_name(self, name: str) -> Optional[EndpointConfig]:
-        """Get endpoint configuration by name."""
-        return next((ep for ep in self.endpoints if ep.name == name), None)
+        """Get endpoint by name."""
+        return self.endpoints.get(name)
 
     def list_endpoints(self) -> List[str]:
-        """List all available endpoint names."""
-        return [ep.name for ep in self.endpoints]
+        """List all endpoint names."""
+        return list(self.endpoints.keys())
 
 
 # Global router instance
-_router_instance = None
+_router_instance: Optional[LLMRouter] = None
 
 
-def get_router(use_llm_classification: bool = True) -> LLMRouter:
-    """Get the global router instance."""
-    global _router_instance
+def get_router() -> LLMRouter:
+    """Get global router instance."""
+    # Using global is necessary for singleton pattern
+    global _router_instance  # noqa: PLW0603
     if _router_instance is None:
-        _router_instance = LLMRouter(use_llm_classification=use_llm_classification)
+        _router_instance = LLMRouter()
     return _router_instance
 
 
 def reset_router():
-    """Reset the global router instance (useful for testing)."""
-    global _router_instance
+    """Reset global router instance."""
+    # Using global is necessary for singleton pattern
+    global _router_instance  # noqa: PLW0603
     _router_instance = None
 
 
 async def route_text(
-    text: str, strategy: Optional[RouteStrategy] = None
+    text: str, workload_type: Optional[WorkloadType] = None
 ) -> RouteDecision:
     """Convenience function to route text."""
     router = get_router()
-    return await router.route_request(text, strategy)
+    return await router.route_request(text, workload_type)

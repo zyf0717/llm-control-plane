@@ -306,7 +306,10 @@ def server(input, output, session):
                         yield str(content)
 
         except httpx.HTTPStatusError as e:
-            yield f"HTTP Error {e.response.status_code}: {e.response.text}"
+            # For streaming responses, we can't access response.text directly
+            # So we'll use the status code and reason phrase instead
+            reason = getattr(e.response, "reason_phrase", "Unknown Error")
+            yield f"HTTP Error {e.response.status_code}: {reason}"
         except httpx.RequestError as e:
             yield f"Request Error: {str(e)}"
         except Exception as e:
@@ -472,7 +475,7 @@ def server(input, output, session):
                 "decision": lambda v: f"Selected: {v}",
                 "confidence": lambda v: f"Confidence: {float(v):.1%}",
                 "reason": lambda v: f"Reason: {v}",
-                "strategy": lambda v: f"Strategy: {v}",
+                "strategy": lambda v: f"Workload Type: {v}",
             }
 
             for field, formatter in routing_fields.items():

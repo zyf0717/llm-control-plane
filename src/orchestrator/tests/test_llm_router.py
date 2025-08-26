@@ -9,339 +9,318 @@ import pytest
 from ..llm_router import (
     EndpointConfig,
     LLMRouter,
-    ReasoningRouter,
     RouteDecision,
-    RouteStrategy,
+    WorkloadClassifier,
+    WorkloadType,
     get_router,
+    reset_router,
+    route_text,
 )
+
+
+@pytest.fixture
+def mock_config():
+    """Mock configuration data."""
+    return {
+        "endpoints": [
+            {
+                "name": "hrpc-cisr-hpc",
+                "url": "https://llm-hrpc-cisr-hpc.paperclips.dev",
+                "gpu": "NVIDIA GeForce RTX 5060 Ti 16GB",
+                "vram": "16GB",
+                "cpu": "Intel Core Ultra 9 285K",
+                "ram": "192GB",
+                "viable_models": ["gpt-oss-20b", "deepseek-r1-0528-qwen3-8b"],
+            },
+            {
+                "name": "mac-mini",
+                "url": "https://llm-mac-mini.paperclips.dev",
+                "soc": "Apple M4",
+                "ram": "16GB",
+                "viable_models": ["qwen3-4b-2507"],
+            },
+            {
+                "name": "gmktec-evo-x2",
+                "url": "https://llm-evo-x2.paperclips.dev",
+                "soc": "AMD Ryzen AI Max+ 395",
+                "ram": "128GB",
+                "viable_models": ["gpt-oss-120b", "Llama-3.3-70B-Instruct"],
+            },
+        ],
+        "workloads": [
+            {
+                "type": "reasoning",
+                "endpoint_preference": ["gmktec-evo-x2", "hrpc-cisr-hpc", "mac-mini"],
+            },
+            {
+                "type": "programming",
+                "endpoint_preference": ["gmktec-evo-x2", "hrpc-cisr-hpc", "mac-mini"],
+            },
+            {
+                "type": "ttft_content",
+                "endpoint_preference": ["mac-mini", "hrpc-cisr-hpc", "gmktec-evo-x2"],
+            },
+            {
+                "type": "tokens_per_second",
+                "endpoint_preference": ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2"],
+            },
+        ],
+    }
 
 
 @pytest.fixture
 def mock_endpoints():
     """Mock endpoint configurations for testing."""
-    return [
-        EndpointConfig(
-            name="HRPC-CISR HPC",
-            url="https://llm-hrpc.paperclips.dev",
+    return {
+        "hrpc-cisr-hpc": EndpointConfig(
+            name="hrpc-cisr-hpc",
+            url="https://llm-hrpc-cisr-hpc.paperclips.dev",
+            viable_models=["gpt-oss-20b", "deepseek-r1-0528-qwen3-8b"],
             gpu="NVIDIA GeForce RTX 5060 Ti 16GB",
             vram="16GB",
             cpu="Intel Core Ultra 9 285K",
             ram="192GB",
         ),
-        EndpointConfig(
-            name="Mac Mini",
+        "mac-mini": EndpointConfig(
+            name="mac-mini",
             url="https://llm-mac-mini.paperclips.dev",
+            viable_models=["qwen3-4b-2507"],
             soc="Apple M4",
             ram="16GB",
         ),
-        EndpointConfig(
-            name="Home Desktop",
-            url="https://llm-home-desktop.paperclips.dev",
-            gpu="NVIDIA GeForce RTX 4070 Ti",
-            vram="12GB",
-            cpu="Intel Core i7-13700KF",
-            ram="32GB",
+        "gmktec-evo-x2": EndpointConfig(
+            name="gmktec-evo-x2",
+            url="https://llm-evo-x2.paperclips.dev",
+            viable_models=["gpt-oss-120b", "Llama-3.3-70B-Instruct"],
+            soc="AMD Ryzen AI Max+ 395",
+            ram="128GB",
         ),
-        EndpointConfig(
-            name="MacBook Pro 16-inch",
-            url="https://llm-macbook-pro.paperclips.dev",
-            soc="Apple M2 Max",
-            ram="32GB",
-        ),
-    ]
+    }
 
 
 @pytest.fixture
-def reasoning_router():
-    """Create a ReasoningRouter instance with pattern matching only."""
-    return ReasoningRouter(use_llm_classification=False)
+def workload_preferences():
+    """Mock workload preferences."""
+    return {
+        WorkloadType.REASONING: ["gmktec-evo-x2", "hrpc-cisr-hpc", "mac-mini"],
+        WorkloadType.PROGRAMMING: ["gmktec-evo-x2", "hrpc-cisr-hpc", "mac-mini"],
+        WorkloadType.TTFT_CONTENT: ["mac-mini", "hrpc-cisr-hpc", "gmktec-evo-x2"],
+        WorkloadType.TOKENS_PER_SECOND: ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2"],
+    }
 
 
 @pytest.fixture
-def reasoning_router_with_llm():
-    """Create a ReasoningRouter instance with LLM classification enabled."""
-    return ReasoningRouter(use_llm_classification=True)
+def llm_router(mock_config):
+    """Create an LLMRouter instance with mocked configuration."""
+    with patch("yaml.safe_load", return_value=mock_config):
+        with patch("pathlib.Path.open"):
+            return LLMRouter()
 
 
 @pytest.fixture
-def llm_router(mock_endpoints):
-    """Create an LLMRouter instance with mock endpoints."""
-    with patch.object(LLMRouter, "_load_endpoints", return_value=mock_endpoints):
-        return LLMRouter()
+def workload_classifier():
+    """Create a WorkloadClassifier instance."""
+    return WorkloadClassifier()
 
 
-class TestReasoningRouter:
-    """Tests for the ReasoningRouter class."""
+class TestWorkloadClassifier:
+    """Tests for the WorkloadClassifier class."""
 
-    @pytest.mark.asyncio
-    async def test_simple_tasks_detection(self, reasoning_router):
-        """Test that simple tasks are correctly identified."""
-        simple_cases = [
-            "What's the weather like today?",
-            "Hi there!",
-            "Write a hello world program",
-            "What is 2+2?",
-            "Good morning",
+    def test_classify_programming_patterns(self, workload_classifier):
+        """Test classification of programming-related text."""
+        programming_cases = [
+            "Write a Python function to sort a list",
+            "Debug this JavaScript code",
+            "How do I implement a REST API?",
+            "Fix this syntax error in my C++ program",
+            "What's wrong with this SQL query?",
         ]
 
-        for case in simple_cases:
-            should_route = await reasoning_router.should_route(case)
-            assert not should_route, f"'{case}' should not require reasoning"
+        for case in programming_cases:
+            result = workload_classifier.classify_with_patterns(case)
+            assert (
+                result == WorkloadType.PROGRAMMING
+            ), f"'{case}' should be classified as programming"
 
-    @pytest.mark.asyncio
-    async def test_reasoning_tasks_detection(self, reasoning_router):
-        """Test that reasoning-intensive tasks are correctly identified."""
+    def test_classify_reasoning_patterns(self, workload_classifier):
+        """Test classification of reasoning-intensive text."""
         reasoning_cases = [
-            "Please analyze the economic impact of inflation",
-            "Solve this step by step: complex problem",
-            "Think through this problem carefully",
-            "Can you help me reason about quantum computing?",
-            "Calculate the derivative of x^2 + 3x + 1",
-            "How would you design a distributed cache?",
-            "Explain why this approach works",
-            "What if we tried a different strategy?",
+            "Analyze the economic impact of inflation step by step",
+            "Think through this complex problem carefully",
+            "Why does quantum entanglement work the way it does?",
+            "Compare and contrast different machine learning approaches",
+            "How would you solve this mathematical proof?",
         ]
 
         for case in reasoning_cases:
-            should_route = await reasoning_router.should_route(case)
-            assert should_route, f"'{case}' should require reasoning"
+            result = workload_classifier.classify_with_patterns(case)
+            assert (
+                result == WorkloadType.REASONING
+            ), f"'{case}' should be classified as reasoning"
 
-    @pytest.mark.asyncio
-    async def test_select_endpoint_simple_task(self, reasoning_router, mock_endpoints):
-        """Test endpoint selection for simple tasks."""
-        simple_text = "What's the weather today?"
-
-        decision = await reasoning_router.select_endpoint(simple_text, mock_endpoints)
-
-        assert decision.endpoint == "Mac Mini"  # Should route to fastest endpoint
-        assert decision.strategy == RouteStrategy.REASONING
-        assert decision.confidence == 0.7
-        assert "simple task" in decision.reason.lower()
-
-    @pytest.mark.asyncio
-    async def test_select_endpoint_complex_task(self, reasoning_router, mock_endpoints):
-        """Test endpoint selection for complex reasoning tasks."""
-        complex_text = "Analyze the philosophical implications step by step"
-
-        decision = await reasoning_router.select_endpoint(complex_text, mock_endpoints)
-
-        assert decision.endpoint == "HRPC-CISR HPC"  # Should route to powerful endpoint
-        assert decision.strategy == RouteStrategy.REASONING
-        assert decision.confidence == 0.8
-        assert "reasoning" in decision.reason.lower()
-
-    @pytest.mark.asyncio
-    async def test_endpoint_fallback(self, reasoning_router):
-        """Test fallback when preferred endpoints are not available."""
-        limited_endpoints = [
-            EndpointConfig(name="Test Endpoint", url="https://test.com")
+    def test_classify_default_content(self, workload_classifier):
+        """Test that simple content defaults to TTFT_CONTENT."""
+        simple_cases = [
+            "Hello, good morning!",
+            "What's the weather like today?",
+            "Tell me a short story",
+            "Good evening!",
         ]
 
-        simple_decision = await reasoning_router.select_endpoint(
-            "Hello", limited_endpoints
-        )
-        complex_decision = await reasoning_router.select_endpoint(
-            "Analyze this complex problem", limited_endpoints
-        )
-
-        # Both should fall back to the only available endpoint
-        assert simple_decision.endpoint == "Test Endpoint"
-        assert complex_decision.endpoint == "Test Endpoint"
-
-    def test_extract_gb(self, reasoning_router):
-        """Test VRAM extraction from strings."""
-        assert reasoning_router._extract_gb("16GB") == 16
-        assert reasoning_router._extract_gb("12GB") == 12
-        assert reasoning_router._extract_gb("32 GB") == 32
-        assert reasoning_router._extract_gb(None) == 0
-        assert reasoning_router._extract_gb("unknown") == 0
+        for case in simple_cases:
+            result = workload_classifier.classify_with_patterns(case)
+            assert (
+                result == WorkloadType.TTFT_CONTENT
+            ), f"'{case}' should default to content generation"
 
     @pytest.mark.asyncio
-    async def test_llm_classification_success(
-        self, reasoning_router_with_llm, mock_endpoints
-    ):
-        """Test LLM classification when endpoint is available."""
-        with patch("httpx.AsyncClient.post") as mock_post:
-            # Mock successful LLM response
+    async def test_llm_classification_success(self, workload_classifier):
+        """Test successful LLM classification."""
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
             mock_response = Mock()
             mock_response.json.return_value = {
-                "choices": [{"message": {"content": "requires_reasoning"}}]
+                "choices": [{"message": {"content": "programming task detected"}}]
             }
-            mock_post.return_value = mock_response
+            mock_response.raise_for_status = Mock()
+            mock_client.post.return_value = mock_response
+            mock_client_class.return_value.__aenter__.return_value = mock_client
 
-            decision = await reasoning_router_with_llm.select_endpoint(
-                "Think step by step", mock_endpoints
+            result = await workload_classifier.classify_with_llm(
+                "Write a function", "https://test.com/api"
             )
 
-            # Should use LLM classification and route to HPC
-            assert decision.endpoint == "HRPC-CISR HPC"
-            assert decision.confidence == 0.9
-            assert "LLM classified" in decision.reason
+            assert result == WorkloadType.PROGRAMMING
 
     @pytest.mark.asyncio
-    async def test_llm_classification_fallback(
-        self, reasoning_router_with_llm, mock_endpoints
-    ):
-        """Test fallback to pattern matching when LLM fails."""
-        with patch("httpx.AsyncClient.post") as mock_post:
-            # Mock LLM endpoint failure
+    async def test_llm_classification_failure(self, workload_classifier):
+        """Test LLM classification failure handling."""
+        with patch("httpx.AsyncClient") as mock_client_class:
             import httpx
 
-            mock_post.side_effect = httpx.HTTPStatusError(
+            mock_client = Mock()
+            mock_client.post.side_effect = httpx.HTTPStatusError(
                 "404 Not Found", request=Mock(), response=Mock(status_code=404)
             )
+            mock_client_class.return_value.__aenter__.return_value = mock_client
 
-            decision = await reasoning_router_with_llm.select_endpoint(
-                "Think step by step", mock_endpoints
+            result = await workload_classifier.classify_with_llm(
+                "test text", "https://test.com/api"
             )
 
-            # Should fall back to pattern matching
-            assert decision.endpoint == "HRPC-CISR HPC"
-            assert (
-                decision.confidence == 0.9
-            )  # Uses LLM confidence since fallback still shows as LLM classified
-            assert (
-                "LLM classified" in decision.reason
-            )  # Still shows as LLM classified due to fallback
-
-    @pytest.mark.asyncio
-    async def test_llm_classification_simple_task(
-        self, reasoning_router_with_llm, mock_endpoints
-    ):
-        """Test LLM classification for simple tasks."""
-        with patch("httpx.AsyncClient.post") as mock_post:
-            # Mock LLM response for simple task
-            mock_response = Mock()
-            mock_response.json.return_value = {
-                "choices": [{"message": {"content": "simple_task"}}]
-            }
-            mock_post.return_value = mock_response
-
-            decision = await reasoning_router_with_llm.select_endpoint(
-                "What's the weather?", mock_endpoints
-            )
-
-            # Should route to efficient endpoint
-            assert decision.endpoint == "Mac Mini"
-            assert decision.confidence == 0.85
-            assert "LLM classified" in decision.reason
+            assert result is None
 
 
 class TestLLMRouter:
     """Tests for the main LLMRouter class."""
 
-    @pytest.mark.asyncio
-    async def test_route_request_simple(self, llm_router):
-        """Test routing a simple request."""
-        decision = await llm_router.route_request("Hello world")
+    def test_load_config(self, llm_router):
+        """Test that configuration is loaded correctly."""
+        assert len(llm_router.endpoints) == 3
+        assert "hrpc-cisr-hpc" in llm_router.endpoints
+        assert "mac-mini" in llm_router.endpoints
+        assert "gmktec-evo-x2" in llm_router.endpoints
 
-        assert decision.endpoint == "Mac Mini"
-        assert decision.strategy == RouteStrategy.REASONING
-        assert isinstance(decision.confidence, float)
-        assert decision.reason
+        assert len(llm_router.workload_preferences) == 4
+        assert WorkloadType.REASONING in llm_router.workload_preferences
+        assert WorkloadType.PROGRAMMING in llm_router.workload_preferences
 
     @pytest.mark.asyncio
-    async def test_route_request_complex(self, llm_router):
-        """Test routing a complex reasoning request."""
+    async def test_route_reasoning_request(self, llm_router):
+        """Test routing a reasoning request."""
         decision = await llm_router.route_request(
-            "Think step by step about quantum mechanics"
+            "Analyze this complex problem step by step"
         )
 
-        assert decision.endpoint == "HRPC-CISR HPC"
-        assert decision.strategy == RouteStrategy.REASONING
-        assert isinstance(decision.confidence, float)
-        assert decision.reason
+        assert decision.endpoint == "gmktec-evo-x2"  # First in reasoning preferences
+        assert decision.workload_type == WorkloadType.REASONING
+        assert decision.confidence == 0.9
+        assert "reasoning workload" in decision.reason
 
     @pytest.mark.asyncio
-    async def test_route_request_with_strategy(self, llm_router):
-        """Test routing with explicit strategy specification."""
+    async def test_route_programming_request(self, llm_router):
+        """Test routing a programming request."""
         decision = await llm_router.route_request(
-            "Test message", strategy=RouteStrategy.REASONING
+            "Write a Python function to parse JSON"
         )
 
-        assert decision.strategy == RouteStrategy.REASONING
-        assert decision.endpoint in llm_router.list_endpoints()
+        assert decision.endpoint == "gmktec-evo-x2"  # First in programming preferences
+        assert decision.workload_type == WorkloadType.PROGRAMMING
+        assert decision.confidence == 0.9
+        assert "programming workload" in decision.reason
 
     @pytest.mark.asyncio
-    async def test_route_request_no_endpoints(self):
-        """Test routing behavior when no endpoints are configured."""
-        with patch.object(LLMRouter, "_load_endpoints", return_value=[]):
-            router = LLMRouter()
+    async def test_route_content_request(self, llm_router):
+        """Test routing a simple content request."""
+        decision = await llm_router.route_request("Tell me a joke")
 
-            with pytest.raises(ValueError, match="No endpoints configured"):
-                await router.route_request("Test message")
-
-    @pytest.mark.asyncio
-    async def test_route_request_unknown_strategy(self, llm_router):
-        """Test routing with unknown strategy."""
-        # This would normally raise an error, but let's test the fallback
-        with pytest.raises(ValueError, match="Unknown routing strategy"):
-            await llm_router.route_request(
-                "Test", strategy="unknown_strategy"  # Invalid strategy
-            )
+        assert decision.endpoint == "mac-mini"  # First in content preferences
+        assert decision.workload_type == WorkloadType.TTFT_CONTENT
+        assert decision.confidence == 0.9
+        assert "ttft_content workload" in decision.reason
 
     @pytest.mark.asyncio
-    async def test_route_request_error_fallback(self, llm_router):
-        """Test fallback behavior when routing fails."""
-        # Mock the router to raise an exception
-        with patch.object(
-            llm_router.routers[RouteStrategy.REASONING], "select_endpoint"
-        ) as mock_select:
-            mock_select.side_effect = Exception("Test error")
+    async def test_route_with_explicit_workload(self, llm_router):
+        """Test routing with explicitly specified workload type."""
+        decision = await llm_router.route_request(
+            "Hello world", workload_type=WorkloadType.TOKENS_PER_SECOND
+        )
 
-            decision = await llm_router.route_request("Test message")
+        assert (
+            decision.endpoint == "hrpc-cisr-hpc"
+        )  # First in tokens_per_second preferences
+        assert decision.workload_type == WorkloadType.TOKENS_PER_SECOND
+        assert decision.confidence == 0.9
 
-            # Should fallback to first endpoint
-            assert decision.endpoint == llm_router.endpoints[0].name
-            assert decision.confidence == 0.1
-            assert "fallback" in decision.reason.lower()
+    def test_get_fastest_endpoint(self, llm_router):
+        """Test getting the fastest endpoint (prefers Apple Silicon)."""
+        fastest = llm_router._get_fastest_endpoint()
+        assert fastest.name == "mac-mini"  # Apple M4 endpoint
 
     def test_get_endpoint_by_name(self, llm_router):
         """Test getting endpoint by name."""
-        endpoint = llm_router.get_endpoint_by_name("Mac Mini")
+        endpoint = llm_router.get_endpoint_by_name("mac-mini")
         assert endpoint is not None
-        assert endpoint.name == "Mac Mini"
+        assert endpoint.name == "mac-mini"
 
-        missing = llm_router.get_endpoint_by_name("Nonexistent")
+        missing = llm_router.get_endpoint_by_name("nonexistent")
         assert missing is None
 
     def test_list_endpoints(self, llm_router):
         """Test listing all endpoint names."""
         endpoints = llm_router.list_endpoints()
-        expected = ["HRPC-CISR HPC", "Mac Mini", "Home Desktop", "MacBook Pro 16-inch"]
-        assert endpoints == expected
-
-    def test_add_router(self, llm_router):
-        """Test adding a new routing strategy."""
-        mock_router = Mock()
-        llm_router.add_router(RouteStrategy.PERFORMANCE, mock_router)
-
-        assert RouteStrategy.PERFORMANCE in llm_router.routers
-        assert llm_router.routers[RouteStrategy.PERFORMANCE] == mock_router
+        expected = ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2"]
+        assert set(endpoints) == set(expected)
 
 
-class TestRouterGlobalFunctions:
+class TestGlobalFunctions:
     """Tests for global router functions."""
 
     def test_get_router_singleton(self):
         """Test that get_router returns the same instance."""
+        reset_router()  # Ensure clean state
+
         router1 = get_router()
         router2 = get_router()
         assert router1 is router2
 
+    def test_reset_router(self):
+        """Test router reset functionality."""
+        router1 = get_router()
+        reset_router()
+        router2 = get_router()
+        assert router1 is not router2
+
     @pytest.mark.asyncio
     async def test_route_text_function(self):
         """Test the convenience route_text function."""
-        # Import here to avoid circular import issues
-        from ..llm_router import route_text
-
         with patch("src.orchestrator.llm_router.get_router") as mock_get_router:
             mock_router = Mock()
             mock_decision = RouteDecision(
-                endpoint="Test",
+                endpoint="test-endpoint",
                 confidence=0.8,
                 reason="Test reason",
-                strategy=RouteStrategy.REASONING,
+                workload_type=WorkloadType.REASONING,
             )
             mock_router.route_request = AsyncMock(return_value=mock_decision)
             mock_get_router.return_value = mock_router
@@ -352,37 +331,43 @@ class TestRouterGlobalFunctions:
             mock_router.route_request.assert_called_once_with("Test message", None)
 
 
-class TestRouteDecision:
-    """Tests for the RouteDecision dataclass."""
-
-    def test_route_decision_creation(self):
-        """Test creating a RouteDecision instance."""
-        decision = RouteDecision(
-            endpoint="Test Endpoint",
-            confidence=0.95,
-            reason="Test reasoning",
-            strategy=RouteStrategy.REASONING,
-        )
-
-        assert decision.endpoint == "Test Endpoint"
-        assert decision.confidence == 0.95
-        assert decision.reason == "Test reasoning"
-        assert decision.strategy == RouteStrategy.REASONING
-
-
-class TestEndpointConfig:
-    """Tests for the EndpointConfig dataclass."""
+class TestDataClasses:
+    """Tests for data classes."""
 
     def test_endpoint_config_creation(self):
         """Test creating an EndpointConfig instance."""
         config = EndpointConfig(
-            name="Test", url="https://test.com", gpu="NVIDIA RTX 4090", vram="24GB"
+            name="test-endpoint",
+            url="https://test.com",
+            viable_models=["model1", "model2"],
+            gpu="NVIDIA RTX 4090",
+            vram="24GB",
         )
 
-        assert config.name == "Test"
+        assert config.name == "test-endpoint"
         assert config.url == "https://test.com"
+        assert config.viable_models == ["model1", "model2"]
         assert config.gpu == "NVIDIA RTX 4090"
         assert config.vram == "24GB"
-        assert config.cpu is None  # Optional field
         assert config.soc is None  # Optional field
-        assert config.soc is None  # Optional field
+
+    def test_route_decision_creation(self):
+        """Test creating a RouteDecision instance."""
+        decision = RouteDecision(
+            endpoint="test-endpoint",
+            confidence=0.95,
+            reason="Test reasoning",
+            workload_type=WorkloadType.REASONING,
+        )
+
+        assert decision.endpoint == "test-endpoint"
+        assert decision.confidence == 0.95
+        assert decision.reason == "Test reasoning"
+        assert decision.workload_type == WorkloadType.REASONING
+
+    def test_workload_type_enum(self):
+        """Test WorkloadType enum values."""
+        assert WorkloadType.REASONING.value == "reasoning"
+        assert WorkloadType.PROGRAMMING.value == "programming"
+        assert WorkloadType.TTFT_CONTENT.value == "ttft_content"
+        assert WorkloadType.TOKENS_PER_SECOND.value == "tokens_per_second"

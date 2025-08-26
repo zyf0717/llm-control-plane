@@ -9,7 +9,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from ..llm_router import RouteDecision, RouteStrategy
+from ..llm_router import RouteDecision, WorkloadType
 from ..proxy import app
 
 
@@ -26,7 +26,7 @@ def mock_route_decision():
         endpoint="HRPC-CISR HPC",
         confidence=0.8,
         reason="Complex reasoning task detected",
-        strategy=RouteStrategy.REASONING,
+        workload_type=WorkloadType.REASONING,
     )
 
 
@@ -195,7 +195,7 @@ class TestSmartRoutingEndpoint:
                 endpoint=case["expected_endpoint"],
                 confidence=0.8,
                 reason=case["expected_reason"],
-                strategy=RouteStrategy.REASONING,
+                workload_type=WorkloadType.REASONING,
             )
 
             mock_router = Mock()
