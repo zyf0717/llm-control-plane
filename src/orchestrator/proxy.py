@@ -340,19 +340,22 @@ async def retrieve_conversation(request: Request):
 @app.get("/models")
 async def list_models():
     """List all available models with metadata."""
+    import asyncio
+
     models = []
 
-    for endpoint_config in endpoints:
+    async def fetch_endpoint_models(endpoint_config):
+        """Fetch models from a single endpoint."""
         name = endpoint_config.get("name", "unknown")
         url = endpoint_config.get("url")
 
         if not url:
             logger.warning(f"No URL for endpoint: {name}")
-            continue
+            return []
 
         # Special handling for Auto endpoint
         if name == "Auto":
-            models.append(
+            return [
                 {
                     "id": "auto-router",
                     "object": "model",
@@ -362,8 +365,7 @@ async def list_models():
                     "endpoint_url": url,
                     "description": "Intelligent routing to best available endpoint",
                 }
-            )
-            continue
+            ]
 
         # Fetch models from endpoint
         try:
@@ -379,6 +381,7 @@ async def list_models():
                     "data", data.get("models", data if isinstance(data, list) else [])
                 )
 
+                endpoint_models = []
                 for model in remote_models:
                     if isinstance(model, dict):
                         enhanced_model = {
@@ -402,12 +405,27 @@ async def list_models():
                             if k not in enhanced_model:
                                 enhanced_model[k] = v
 
-                        models.append(enhanced_model)
+                        endpoint_models.append(enhanced_model)
+
+                return endpoint_models
 
         except httpx.HTTPError as e:
             logger.warning(f"Failed to fetch models from {name}: {e}")
+            return []
         except Exception as e:
             logger.error(f"Error fetching models from {name}: {e}")
+            return []
+
+    # Fire off all requests concurrently
+    tasks = [fetch_endpoint_models(endpoint_config) for endpoint_config in endpoints]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Collect all models from successful requests
+    for result in results:
+        if isinstance(result, list):
+            models.extend(result)
+        elif isinstance(result, Exception):
+            logger.error(f"Endpoint fetch failed: {result}")
 
     global reachable_endpoints
     reachable_endpoints = list(

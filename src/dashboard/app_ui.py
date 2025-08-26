@@ -9,11 +9,11 @@ app_ui = ui.page_fluid(
         const btn = document.getElementById('send');
         if (!ta || !btn) return;
 
-        // Simple touch detection
-        const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0 || matchMedia('(pointer: coarse)').matches;
+        // Desktop-like detection: fine pointer + hover available
+        const isDesktopLike = matchMedia('(hover: hover) and (pointer: fine)').matches;
 
         // Hint virtual keyboards appropriately
-        ta.setAttribute('enterkeyhint', isTouch ? 'enter' : 'send');
+        ta.setAttribute('enterkeyhint', isDesktopLike ? 'send' : 'enter');
 
         // Blur textarea before mouse click to ensure sync
         btn.addEventListener('mousedown', () => {
@@ -21,14 +21,14 @@ app_ui = ui.page_fluid(
         });
 
         // Desktop only: Enter sends (Shift+Enter = newline)
-        if (!isTouch) {
+        if (isDesktopLike) {
             ta.addEventListener('keydown', (e) => {
-            if (e.isComposing) return; // IME safety
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                ta.blur(); // Ensure sync before send
-                btn.click();
-            }
+                if (e.isComposing) return; // IME safety
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    ta.blur(); // Ensure sync before send
+                    btn.click();
+                }
             });
         }
         });
@@ -65,19 +65,19 @@ app_ui = ui.page_fluid(
                     ),
                     ui.input_switch("stream", "Streaming", True),
                     ui.input_switch("autoScroll", "Auto-scroll", True),
-                    ui.input_switch("outputJSON", "JSON", False),
-                    ui.input_select(
-                        "reasoningEffort",
-                        "Reasoning",
-                        choices={
-                            "none": "None",
-                            "low": "Low",
-                            "medium": "Medium",
-                            "high": "High",
-                        },
-                        selected="medium",
-                    ),
+                    # ui.input_select(
+                    #     "reasoningEffort",
+                    #     "Reasoning",
+                    #     choices={
+                    #         "none": "None",
+                    #         "low": "Low",
+                    #         "medium": "Medium",
+                    #         "high": "High",
+                    #     },
+                    #     selected="medium",
+                    # ),
                     ui.input_switch("outputReasoning", "Show reasoning", True),
+                    ui.input_switch("outputJSON", "JSON", False),
                     ui.hr(),
                     shinyswatch.theme_picker_ui(),
                     ui.input_action_button("logout", "Logout"),

@@ -133,7 +133,7 @@ def server(input, output, session):
         endpoints_dict: dict,
         stream: bool = True,
         output_json: bool = False,
-        reasoning_effort: str = "none",
+        reasoning_effort: str = "medium",
         output_reasoning: bool = False,
         convo_id: str = None,
         current_routing_info: dict = None,
@@ -344,7 +344,7 @@ def server(input, output, session):
                 endpoints_dict=current_endpoints,
                 stream=input.stream(),
                 output_json=input.outputJSON(),
-                reasoning_effort=input.reasoningEffort(),
+                # reasoning_effort=input.reasoningEffort(),
                 output_reasoning=input.outputReasoning(),
                 convo_id=input.convoID() if input.convoID() else None,
                 current_routing_info=current_run_info.get("routing", {}),
@@ -432,7 +432,7 @@ def server(input, output, session):
         # Create static accordion structure - this only renders once
         return ui.accordion(
             ui.accordion_panel(
-                "Model & System Information",
+                "Runtime & System Information",
                 ui.output_ui("info_content"),  # Dynamic content goes here
                 value="info_panel",
             ),
@@ -459,9 +459,9 @@ def server(input, output, session):
 
         sections = []
 
-        # Runtime section
+        # Elapsed time section
         if runtime is not None:
-            sections.append(f"**Runtime**: {runtime:.2f}s")
+            sections.append(f"**Elapsed Time**: {runtime:.2f}s")
 
         # Routing information (for smart routing)
         routing_info = None
@@ -472,10 +472,10 @@ def server(input, output, session):
             # Build routing display lines if we have meaningful data
             routing_lines = []
             routing_fields = {
-                "decision": lambda v: f"Selected: {v}",
+                "decision": lambda v: f"Selected Node: {v}",
                 # "confidence": lambda v: f"Confidence: {float(v):.1%}",
                 # "reason": lambda v: f"Reason: {v}",
-                "strategy": lambda v: f"Workload Type: {v}",
+                "strategy": lambda v: f"Workload: {v}",
             }
 
             for field, formatter in routing_fields.items():
