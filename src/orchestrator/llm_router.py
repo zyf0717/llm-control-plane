@@ -113,10 +113,10 @@ class ReasoningRouter(BaseRouter):
             use_llm_classification: Whether to use LLM for classification (vs pattern matching)
         """
         self.lightweight_endpoint = (
-            lightweight_endpoint or "Mac Mini"
+            lightweight_endpoint or "mac-mini"
         )  # Default to fastest
         self.reasoning_endpoint = (
-            reasoning_endpoint or "HRPC-CISR HPC"
+            reasoning_endpoint or "gmk-evo-x2"
         )  # Default to most powerful
         self.use_llm_classification = use_llm_classification
 
