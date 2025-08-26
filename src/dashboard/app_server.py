@@ -473,8 +473,8 @@ def server(input, output, session):
             routing_lines = []
             routing_fields = {
                 "decision": lambda v: f"Selected: {v}",
-                "confidence": lambda v: f"Confidence: {float(v):.1%}",
-                "reason": lambda v: f"Reason: {v}",
+                # "confidence": lambda v: f"Confidence: {float(v):.1%}",
+                # "reason": lambda v: f"Reason: {v}",
                 "strategy": lambda v: f"Workload Type: {v}",
             }
 

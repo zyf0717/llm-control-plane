@@ -34,6 +34,9 @@ app = FastAPI()
 # Global conversation store
 convo_history: Dict[str, List[Dict]] = {}
 
+# Global cache of reachable endpoints
+reachable_endpoints: Dict[str, dict] = {}
+
 
 class RequestProcessor:
     """Handles request processing, history management, and routing logic."""
@@ -62,7 +65,8 @@ class RequestProcessor:
         """Parse and enrich request with conversation history and reasoning."""
         # Parse request
         try:
-            body = json.loads(await request.body()) if request.body() else {}
+            raw_body = await request.body()
+            body = json.loads(raw_body) if raw_body else {}
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="Invalid JSON")
 
@@ -278,7 +282,7 @@ async def smart_route(request: Request):
 
         # Route using LLM router
         router = get_router()
-        decision = await router.route_request(latest_message)
+        decision = await router.route_request(latest_message, reachable_endpoints)
         endpoint_config = router.get_endpoint_by_name(decision.endpoint)
 
         # Build routing headers
@@ -405,6 +409,10 @@ async def list_models():
         except Exception as e:
             logger.error(f"Error fetching models from {name}: {e}")
 
+    global reachable_endpoints
+    reachable_endpoints = list(
+        set(model.get("endpoint") for model in models if model.get("endpoint"))
+    )
     return {"object": "list", "data": models}
 
 

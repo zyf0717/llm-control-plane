@@ -25,6 +25,7 @@ class WorkloadType(Enum):
     TTFT_CONTENT = "ttft_content"
     TOKENS_PER_SECOND = "tokens_per_second"
     PROGRAMMING = "programming"
+    CLASSIFICATION = "classification"
 
 
 @dataclass
@@ -59,20 +60,36 @@ class WorkloadClassifier:
     ) -> Optional[WorkloadType]:
         """Use LLM to classify workload type."""
         try:
-            system_prompt = """You are a classifier only.
-Classify the request into exactly one of these categories:
+            system_prompt = """
+You are a classifier only, and your job is to classify the request into exactly ONE of the following categories:
 - reasoning
 - programming
-- ttft_content
 - tokens_per_second
+- ttft_content
 
-Rules in descending order of priority:
-1. If multi-step analysis/trade-offs → reasoning
-2. If code-related tasks → programming
-3. If emphasis on speed/throughput/TTFT/TPS → tokens_per_second
-4. Else → ttft_content
+Rules:
+- If the request needs multi-step thinking, analysis, or comparing trade-offs → reasoning
+- If the request asks to write, debug, or explain code → programming
+- If the request expects a long or detailed output with minimal reasoning/programming → tokens_per_second
+- Otherwise (simple Q&A, general chat, basic requests) → ttft_content
 
-Output exactly one label, lowercase, no punctuation."""
+Examples:
+- "Compare <service A> vs <service B> for cost efficiency." → reasoning
+- "Analyze the pros and cons of <option 1> and <option 2>." → reasoning
+
+- "Write <programming language> to parse <log format>." → programming
+- "Implement <programming language> function to <task>." → programming
+
+- "Explain <topic> in detail (without code or comparisons)." → tokens_per_second
+- "Describe <topic> comprehensively (without trade-offs)." → tokens_per_second
+
+- "What is the capital of <country>?" → ttft_content
+- "Define <term>." → ttft_content
+
+Pick only ONE of the four categories, the MOST LIKELY based on the rules above.
+
+Respond with ONLY the category name and nothing else.
+"""
 
             payload = {
                 "messages": [
@@ -152,33 +169,51 @@ class LLMRouter:
             ]
 
     async def route_request(
-        self, text: str, workload_type: Optional[WorkloadType] = None
+        self,
+        text: str,
+        reachable_endpoints: List[str],
+        workload_type: Optional[WorkloadType] = None,
     ) -> RouteDecision:
         """Route request to best endpoint."""
         # Determine workload type if not provided
         if workload_type is None:
-            workload_type = await self._classify_workload(text)
+            workload_type = await self._classify_workload(text, reachable_endpoints)
 
         # Get preferred endpoints for this workload type
         preferred_endpoints = self.workload_preferences.get(workload_type, [])
 
-        # Find first available endpoint from preferences
-        selected_endpoint_name = preferred_endpoints[
-            0
-        ]  # Assume at least 1 endpoint available
+        # Keep only reachable endpoints
+        available_preferred = [
+            ep for ep in preferred_endpoints if ep in reachable_endpoints
+        ]
+
+        # Select endpoint with fallback logic
+        if available_preferred:
+            selected_endpoint_name = available_preferred[0]
+            reason = f"Selected preferred endpoint for {workload_type.value} workload"
+        elif reachable_endpoints:
+            # Fallback to any reachable endpoint
+            selected_endpoint_name = reachable_endpoints[0]
+            reason = f"No preferred endpoints available, using fallback for {workload_type.value} workload"
+        else:
+            # No endpoints available at all
+            raise RuntimeError("No reachable endpoints available")
+
         selected_endpoint = self.endpoints[selected_endpoint_name]
 
         return RouteDecision(
             endpoint=selected_endpoint.name,
-            confidence=0.9,
-            reason=f"Selected for {workload_type.value} workload",
+            confidence=0.9 if available_preferred else 0.5,
+            reason=reason,
             workload_type=workload_type,
         )
 
-    async def _classify_workload(self, text: str) -> WorkloadType:
+    async def _classify_workload(
+        self, text: str, reachable_endpoints: List[str]
+    ) -> WorkloadType:
         """Classify text to determine workload type."""
         # Try LLM classification first with fastest endpoint
-        fastest_endpoint = self._get_fastest_endpoint()
+        fastest_endpoint = self._get_fastest_endpoint(reachable_endpoints)
         if fastest_endpoint:
             classification_url = f"{fastest_endpoint.url}/api/v0/chat/completions"
             llm_result = await self.classifier.classify_with_llm(
@@ -187,14 +222,32 @@ class LLMRouter:
             if llm_result:
                 return llm_result
 
-    def _get_fastest_endpoint(self) -> Optional[EndpointConfig]:
-        """Get fastest endpoint for classification (prefer SOC-based)."""
-        # Prefer Apple Silicon endpoints for speed
-        for endpoint in self.endpoints.values():
-            if endpoint.soc and "apple" in endpoint.soc.lower():
-                return endpoint
+        # Fallback to tokens_per_second if classification fails
+        return WorkloadType.TOKENS_PER_SECOND
 
-        # Fallback to first available endpoint
+    def _get_fastest_endpoint(
+        self, reachable_endpoints: List[str]
+    ) -> Optional[EndpointConfig]:
+        """Get fastest endpoint for classification using reachable endpoints and classification preferences."""
+        # Get classification endpoint preferences from config
+        classification_preferences = self.workload_preferences.get(
+            WorkloadType.CLASSIFICATION, []
+        )
+
+        # Find first endpoint that is both preferred for classification and reachable
+        for preferred_endpoint in classification_preferences:
+            if (
+                preferred_endpoint in reachable_endpoints
+                and preferred_endpoint in self.endpoints
+            ):
+                return self.endpoints[preferred_endpoint]
+
+        # Fallback: use first reachable endpoint
+        for endpoint_name in reachable_endpoints:
+            if endpoint_name in self.endpoints:
+                return self.endpoints[endpoint_name]
+
+        # Last resort: any configured endpoint
         return next(iter(self.endpoints.values()), None)
 
     def get_endpoint_by_name(self, name: str) -> Optional[EndpointConfig]:
