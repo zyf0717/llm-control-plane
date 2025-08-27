@@ -176,7 +176,7 @@ def server(input, output, session):
                 obj, response_headers=None, preserve_routing_from=None
             ):
                 """Extract metadata from response object and headers."""
-                metadata_keys = ("stats", "usage", "model_info", "runtime")
+                metadata_keys = ("stats", "usage", "model_info", "runtime", "timings")
                 combined = {}
 
                 # Preserve existing routing info if provided
@@ -360,14 +360,14 @@ def server(input, output, session):
             for key in ["gpu", "vram", "soc", "cpu", "ram"]:
                 value = routing_info.get(key)
                 if value:
-                    hardware_info.append(f"{key.upper()}: {value}")
+                    hardware_info.append(f"{key}: {value}")
 
         # If no routing info or routing info was incomplete, fallback to model hardware info
         if not hardware_info and model:
             for key in ["gpu", "vram", "soc", "cpu", "ram"]:
                 value = model.get(key)
                 if value:
-                    hardware_info.append(f"{key.upper()}: {value}")
+                    hardware_info.append(f"{key}: {value}")
 
         return hardware_info
 
@@ -378,22 +378,22 @@ def server(input, output, session):
         # Add the full model name first
         model_name = model.get("id")
         if model_name:
-            model_details.append(f"Model: {model_name}")
+            model_details.append(f"model: {model_name}")
 
         # Add other model properties
         for key in ["arch", "quantization", "compatibility_type", "state"]:
             value = model.get(key)
             if value:
-                key_name = key.replace("_", " ").title()
+                key_name = key  # .replace("_", " ").title()
                 model_details.append(f"{key_name}: {value}")
 
         # Add context information
         max_ctx = model.get("max_context_length")
         loaded_ctx = model.get("loaded_context_length")
         if max_ctx:
-            model_details.append(f"Max Context: {max_ctx:,}")
+            model_details.append(f"max_context: {max_ctx}")
         if loaded_ctx:
-            model_details.append(f"Loaded Context: {loaded_ctx:,}")
+            model_details.append(f"loaded_context: {loaded_ctx}")
 
         return model_details
 
@@ -422,10 +422,23 @@ def server(input, output, session):
                 title = section_name.replace("_", " ").title()
                 lines = [f"**{title}**"]
                 for k, v in section_data.items():
-                    key_name = k.replace("_", " ").title()
+                    key_name = k  # .replace("_", " ").title()
                     lines.append(f"{key_name}: {fmt_func(v)}")
                 sections.append("<br>".join(lines))
         return sections
+
+    def format_timings_info(info, fmt_func):
+        timings = info.get("timings", {})
+        if not timings:
+            return []
+        timings_info = [
+            f"{key}: {fmt_func(value)}"
+            for key, value in timings.items()
+            if value is not None
+        ]
+        if not timings_info:
+            return []
+        return ["**Timings**<br>" + "<br>".join(timings_info)]
 
     @render.ui
     def outputRunInfo():
@@ -489,6 +502,7 @@ def server(input, output, session):
                 )  # Request info (usage, stats, model_info, runtime from response)
         if info:
             sections.extend(format_response_info(info, fmt))
+            sections.extend(format_timings_info(info, fmt))
 
         # Current endpoint info from /models endpoint
         # For Auto/smart routing: show all pre-run, use the routed endpoint post-run
