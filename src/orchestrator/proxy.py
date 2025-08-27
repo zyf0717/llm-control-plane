@@ -52,8 +52,8 @@ class RequestProcessor:
                 if base_url:
                     suffix = (
                         "/v1/chat/completions"
-                        if is_streaming
-                        else "/api/v0/chat/completions"
+                        # if is_streaming
+                        # else "/api/v0/chat/completions"
                     )
                     return f"{base_url}{suffix}"
 
@@ -369,7 +369,9 @@ async def list_models():
 
         # Fetch models from endpoint
         try:
-            models_url = f"{url}/api/v0/models"
+            # models_url = f"{url}/api/v0/models"
+            models_url = f"{url}/v1/models"
+
             headers = HeaderManager.create_auth_headers()
 
             async with httpx.AsyncClient(timeout=10.0) as client:
