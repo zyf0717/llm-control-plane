@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -42,7 +43,7 @@ class RequestProcessor:
     """Handles request processing, history management, and routing logic."""
 
     @staticmethod
-    def get_endpoint_url(path: str, is_streaming: bool = False) -> Optional[str]:
+    def get_endpoint_url(path: str) -> Optional[str]:
         """Get target endpoint URL based on path and streaming preference."""
         endpoint_key = path.lstrip("/").split("/")[0] if path else ""
 
@@ -63,7 +64,6 @@ class RequestProcessor:
     @staticmethod
     async def prepare_request(request: Request) -> Dict:
         """Parse and enrich request with conversation history and reasoning."""
-        # Parse request
         try:
             raw_body = await request.body()
             body = json.loads(raw_body) if raw_body else {}
@@ -228,7 +228,7 @@ async def proxy_request(
     convo_id = request.headers.get("X-Convo-ID")
 
     # Get target endpoint
-    target_url = RequestProcessor.get_endpoint_url(path, is_streaming)
+    target_url = RequestProcessor.get_endpoint_url(path)
     if not target_url:
         raise HTTPException(status_code=404, detail=f"Endpoint not found: {path}")
 
@@ -340,8 +340,6 @@ async def retrieve_conversation(request: Request):
 @app.get("/models")
 async def list_models():
     """List all available models with metadata."""
-    import asyncio
-
     models = []
 
     async def fetch_endpoint_models(endpoint_config):
