@@ -229,6 +229,7 @@ def server(input, output, session):
                         extract_metadata({}, dict(r.headers))
 
                         reasoning_chunk_found = False
+                        reasoning_chunk_buffer = ""
 
                         async for line in r.aiter_lines():
                             if not line or not line.startswith("data: "):
@@ -259,14 +260,46 @@ def server(input, output, session):
                                         yield "</em>\n\n---\n\n"
                                         reasoning_chunk_found = False
 
-                                    # Legacy: <think> tags for reasoning/CoT
+                                    ### <think> tags parsing ###
                                     content_chunk = content_chunk.replace(
                                         "<think>", "<em>"
                                     )
                                     content_chunk = content_chunk.replace(
                                         "</think>", "</em>\n\n---\n\n"
                                     )
-                                    yield content_chunk
+
+                                    ### <|channel|> tags parsing ###
+                                    # If buffer is not empty, add to it first
+                                    if reasoning_chunk_buffer:
+                                        reasoning_chunk_buffer += content_chunk
+
+                                    # If start of analysis channel found
+                                    if reasoning_chunk_buffer.startswith(
+                                        "<|channel|>analysis<|message|>"
+                                    ):
+                                        reasoning_chunk_buffer = ""
+                                        yield "<em>"
+                                        continue
+
+                                    # If end of analysis channel found
+                                    if reasoning_chunk_buffer.endswith(
+                                        "<|end|><|start|>assistant<|channel|>final<|message|>"
+                                    ):
+                                        reasoning_chunk_buffer = ""
+                                        yield "</em>\n\n---\n\n"
+                                        continue
+
+                                    # Start buffer if content chunk is a channel message; do not add again if buffer is not empty
+                                    if (
+                                        content_chunk in ["<|channel|>", "<|end|>"]
+                                        and not reasoning_chunk_buffer
+                                    ):
+                                        reasoning_chunk_buffer += content_chunk
+                                        continue
+
+                                    # Only output content if buffer is empty
+                                    if not reasoning_chunk_buffer:
+                                        yield content_chunk
 
                             # Use the stored routing info
                             extract_metadata(
@@ -300,9 +333,18 @@ def server(input, output, session):
                             .get("message", {})
                             .get("content", "")
                         )
-                        # Legacy: <think> tags for reasoning/CoT
+                        ### <think> tags parsing ###
                         content = content.replace("<think>", "<em>")
                         content = content.replace("</think>", "</em>\n\n---\n\n")
+
+                        ### <|channel|> tags parsing ###
+                        content = content.replace(
+                            "<|channel|>analysis<|message|>", "<em>"
+                        )
+                        content = content.replace(
+                            "<|end|><|start|>assistant<|channel|>final<|message|>",
+                            "</em>\n\n---\n\n",
+                        )
                         yield str(content)
 
         except httpx.HTTPStatusError as e:
