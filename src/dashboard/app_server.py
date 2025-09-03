@@ -278,46 +278,48 @@ def server(input, output, session):
                                         yield "</em>\n\n---\n\n"
                                         reasoning_chunk_found = False
 
-                                    ### <think> tags parsing ###
-                                    content_chunk = content_chunk.replace(
-                                        "<think>", "<em>"
-                                    )
-                                    content_chunk = content_chunk.replace(
-                                        "</think>", "</em>\n\n---\n\n"
-                                    )
+                                    yield content_chunk
 
-                                    ### <|channel|> tags parsing ###
-                                    # If buffer is not empty, add to it first
-                                    if reasoning_chunk_buffer:
-                                        reasoning_chunk_buffer += content_chunk
+                                    # ### <think> tags parsing ###
+                                    # content_chunk = content_chunk.replace(
+                                    #     "<think>", "<em>"
+                                    # )
+                                    # content_chunk = content_chunk.replace(
+                                    #     "</think>", "</em>\n\n---\n\n"
+                                    # )
 
-                                    # If start of analysis channel found
-                                    if reasoning_chunk_buffer.startswith(
-                                        "<|channel|>analysis<|message|>"
-                                    ):
-                                        reasoning_chunk_buffer = ""
-                                        yield "<em>"
-                                        continue
+                                    # ### <|channel|> tags parsing ###
+                                    # # If buffer is not empty, add to it first
+                                    # if reasoning_chunk_buffer:
+                                    #     reasoning_chunk_buffer += content_chunk
 
-                                    # If end of analysis channel found
-                                    if reasoning_chunk_buffer.endswith(
-                                        "<|end|><|start|>assistant<|channel|>final<|message|>"
-                                    ):
-                                        reasoning_chunk_buffer = ""
-                                        yield "</em>\n\n---\n\n"
-                                        continue
+                                    # # If start of analysis channel found
+                                    # if reasoning_chunk_buffer.startswith(
+                                    #     "<|channel|>analysis<|message|>"
+                                    # ):
+                                    #     reasoning_chunk_buffer = ""
+                                    #     yield "<em>"
+                                    #     continue
 
-                                    # Start buffer if content chunk is a channel message; do not add again if buffer is not empty
-                                    if (
-                                        content_chunk in ["<|channel|>", "<|end|>"]
-                                        and not reasoning_chunk_buffer
-                                    ):
-                                        reasoning_chunk_buffer += content_chunk
-                                        continue
+                                    # # If end of analysis channel found
+                                    # if reasoning_chunk_buffer.endswith(
+                                    #     "<|end|><|start|>assistant<|channel|>final<|message|>"
+                                    # ):
+                                    #     reasoning_chunk_buffer = ""
+                                    #     yield "</em>\n\n---\n\n"
+                                    #     continue
 
-                                    # Only output content if buffer is empty
-                                    if not reasoning_chunk_buffer:
-                                        yield content_chunk
+                                    # # Start buffer if content chunk is a channel message; do not add again if buffer is not empty
+                                    # if (
+                                    #     content_chunk in ["<|channel|>", "<|end|>"]
+                                    #     and not reasoning_chunk_buffer
+                                    # ):
+                                    #     reasoning_chunk_buffer += content_chunk
+                                    #     continue
+
+                                    # # Only output content if buffer is empty
+                                    # if not reasoning_chunk_buffer:
+                                    #     yield content_chunk
 
                             # Use the stored routing info
                             extract_metadata(

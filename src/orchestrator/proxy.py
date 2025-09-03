@@ -153,71 +153,108 @@ class ProxyHandler:
                     ) as resp:
                         resp.raise_for_status()
 
-                        channel_accumulator = ""
+                        start_reasoning_buffer = ""
+                        end_reasoning_buffer = ""
                         async for line in resp.aiter_lines():
-
-                            # Format is "data: {json}""
+                            # 1. Format is "data: {json}""
                             if not line or not line.startswith("data: "):
                                 continue
                             data = line[6:].strip()
 
-                            # Parse JSON
+                            # 2. End loop if [DONE] is received
+                            if data == "[DONE]":
+                                chunk = (f"data: {data}\n\n").encode("utf-8")
+                                yield chunk
+                                break
+
+                            # 3. Parse JSON, fall back to passthrough if malformed
                             try:
                                 obj = json.loads(data)
                             except json.JSONDecodeError:
+                                chunk = (line + "\n\n").encode("utf-8")
+                                acc.feed(chunk)
+                                yield chunk
                                 continue
 
-                            content = (
-                                obj.get("choices", [{}])[0]
-                                .get("delta", {})
-                                .get("content", "")
-                            )
+                            delta = (obj.get("choices") or [{}])[0].get("delta") or {}
+                            content = delta.get("content", "")
 
-                            if content:
+                            # 4. If no content (e.g., tool/role deltas), passthrough unchanged
+                            if not content:
                                 chunk = line.encode("utf-8") + b"\n\n"
                                 acc.feed(chunk)
                                 yield chunk
                                 continue
 
-                            # # Identifying channel
-                            # if (
-                            #     "<|channel|>" in content
-                            #     or "<|start|>" in content
-                            #     or "<think>" in content
-                            # ):
-                            #     channel_accumulator += content
-                            #     logger.info(
-                            #         f"Accumulating channel: {channel_accumulator}"
-                            #     )
-                            #     continue
+                            # 5. Channel start/end detection
+                            if (
+                                content
+                                in [
+                                    "<|channel|>",
+                                ]
+                                and not start_reasoning_buffer
+                            ):
+                                logger.info("start_reasoning_buffer: %s", content)
+                                start_reasoning_buffer = content
+                                continue
+                            elif (
+                                content
+                                in [
+                                    "<|end|>",
+                                ]
+                                and not end_reasoning_buffer
+                            ):
+                                logger.info("end_reasoning_buffer: %s", content)
+                                end_reasoning_buffer = content
+                                continue
 
-                            # # Stop
-                            # if "<|end|>" in content or "</think>" in content:
-                            #     logger.info(f"{channel_accumulator} channel ended")
-                            #     channel_accumulator = ""
-                            #     continue
+                            # 6. If end of reasoning/analysis channel found, clear buffers proceed to yield in step 10.
+                            if end_reasoning_buffer in [
+                                "<|end|><|start|>assistant<|channel|>final<|message|>",
+                                # "</think>",
+                            ]:
+                                logger.info("Switching to content channel...")
+                                start_reasoning_buffer = ""
+                                end_reasoning_buffer = ""
+                                # Note: no continue here in order to yield first content message
 
-                            # if channel_accumulator in [
-                            #     "",  # If no channel tags at all
-                            #     "<|start|>assistant<|channel|>final<|message|>",
-                            # ]:
-                            #     chunk = line.encode("utf-8") + b"\n\n"
-                            #     yield chunk
-                            #     acc.feed(chunk)
-                            #     continue
+                            # 7. Otherwise if end of reasoning/analysis buffer not empty, accumulate
+                            elif end_reasoning_buffer:
+                                end_reasoning_buffer += content
+                                logger.info(
+                                    "Accumulating end_reasoning_buffer: %s",
+                                    end_reasoning_buffer,
+                                )
+                                continue
 
-                            # # Yield content in the correct channel:
-                            # if channel_accumulator in [
-                            #     "<|channel|>analysis<|message|>",
-                            #     "<think>",
-                            # ]:
-                            #     obj["choices"]["delta"].pop("content", None)
-                            #     obj["choices"]["delta"]["reasoning"] = content
-                            #     yield f"data: {json.dumps(obj)}".encode("utf-8")
-                            #     continue
+                            # 8. If reasoning/analysis channel found, yield into a "reasoning" channel
+                            if start_reasoning_buffer in [
+                                "<|channel|>analysis<|message|>",
+                                # "<think>",
+                            ]:
+                                logger.info("Reasoning stream: %s", content)
+                                obj["choices"][0]["delta"].pop("content", None)
+                                obj["choices"][0]["delta"]["reasoning"] = content
+                                yield f"data: {json.dumps(obj)}".encode(
+                                    "utf-8"
+                                ) + b"\n\n"
+                                continue
 
-                            # # Add to channel_accumulator
-                            # channel_accumulator += content
+                            # 9. If start of reasoning/analysis buffer not empty, accumulate
+                            elif start_reasoning_buffer:
+                                start_reasoning_buffer += content
+                                logger.info(
+                                    "Accumulating start_reasoning_buffer: %s",
+                                    start_reasoning_buffer,
+                                )
+                                continue
+
+                            # 10. Yield content as-is if both buffers are empty
+                            if not start_reasoning_buffer and not end_reasoning_buffer:
+                                logger.info("Content stream: %s", content)
+                                chunk = line.encode("utf-8") + b"\n\n"
+                                acc.feed(chunk)
+                                yield chunk
 
             except httpx.HTTPStatusError as e:
                 yield create_error_sse_message(
