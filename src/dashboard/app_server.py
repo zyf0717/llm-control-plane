@@ -254,7 +254,7 @@ def server(input, output, session):
                                 if md_code_wrap:
                                     yield "```json\n"
                                     md_code_wrap = False
-                                yield f"{json.dumps(obj, indent=2)}\n"
+                                yield f"{json.dumps(obj, indent=2)},\n"
                                 continue
 
                             # Parse output content
@@ -339,6 +339,7 @@ def server(input, output, session):
 
                     if output_json:
                         yield f"```json\n{json.dumps(data, indent=2)}\n```"
+
                     else:
                         if output_reasoning:
                             # GPT-style
