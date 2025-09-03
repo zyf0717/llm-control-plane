@@ -7,6 +7,11 @@ from fastapi import Request
 
 logger = logging.getLogger(__name__)
 
+START_REASONING_SEEDS = ("<|channel|>", "<think>")
+START_REASONING_SEQ = ("<|channel|>analysis<|message|>", "<think>")
+END_REASONING_SEEDS = ("<|end|>", "</think>")
+END_REASONING_SEQ = ("</think>", "<|end|><|start|>assistant<|channel|>final<|message|>")
+
 
 class SSEAccumulator:
     def __init__(self):
@@ -163,18 +168,15 @@ async def process_stream_line(
         return chunk, start_reasoning_buffer, end_reasoning_buffer, True
 
     # 5. Channel start/end detection to start respective buffers
-    if content in ["<|channel|>", "<think>"] and not start_reasoning_buffer:
+    if content in START_REASONING_SEEDS and not start_reasoning_buffer:
         logger.debug("start_reasoning_buffer: %s", content)
         return None, content, end_reasoning_buffer, True
-    elif content in ["<|end|>", "</think>"] and not end_reasoning_buffer:
+    elif content in END_REASONING_SEEDS and not end_reasoning_buffer:
         logger.debug("end_reasoning_buffer: %s", content)
         return None, start_reasoning_buffer, content, True
 
     # 6. If end of reasoning/analysis channel found, clear buffers, proceed to yield in step 10.
-    if end_reasoning_buffer in [
-        "<|end|><|start|>assistant<|channel|>final<|message|>",
-        "</think>",
-    ]:
+    if end_reasoning_buffer in END_REASONING_SEQ:
         logger.debug("Switching to content channel...")
         start_reasoning_buffer = ""
         end_reasoning_buffer = ""
@@ -190,10 +192,7 @@ async def process_stream_line(
         return None, start_reasoning_buffer, end_reasoning_buffer, True
 
     # 8. If reasoning/analysis channel found, yield into a "reasoning" channel
-    if start_reasoning_buffer in [
-        "<|channel|>analysis<|message|>",
-        "<think>",
-    ]:
+    if start_reasoning_buffer in START_REASONING_SEQ:
         logger.debug("Reasoning stream: %s", content)
         obj["choices"][0]["delta"].pop("content", None)
         obj["choices"][0]["delta"]["reasoning"] = content
