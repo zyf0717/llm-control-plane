@@ -152,9 +152,73 @@ class ProxyHandler:
                         "POST", target_url, headers=headers, json=body
                     ) as resp:
                         resp.raise_for_status()
-                        async for chunk in resp.aiter_bytes():
-                            acc.feed(chunk)
-                            yield chunk
+
+                        channel_accumulator = ""
+                        async for line in resp.aiter_lines():
+
+                            # Format is "data: {json}""
+                            if not line or not line.startswith("data: "):
+                                continue
+                            data = line[6:].strip()
+
+                            # Parse JSON
+                            try:
+                                obj = json.loads(data)
+                            except json.JSONDecodeError:
+                                continue
+
+                            content = (
+                                obj.get("choices", [{}])[0]
+                                .get("delta", {})
+                                .get("content", "")
+                            )
+
+                            if content:
+                                chunk = line.encode("utf-8") + b"\n\n"
+                                acc.feed(chunk)
+                                yield chunk
+                                continue
+
+                            # # Identifying channel
+                            # if (
+                            #     "<|channel|>" in content
+                            #     or "<|start|>" in content
+                            #     or "<think>" in content
+                            # ):
+                            #     channel_accumulator += content
+                            #     logger.info(
+                            #         f"Accumulating channel: {channel_accumulator}"
+                            #     )
+                            #     continue
+
+                            # # Stop
+                            # if "<|end|>" in content or "</think>" in content:
+                            #     logger.info(f"{channel_accumulator} channel ended")
+                            #     channel_accumulator = ""
+                            #     continue
+
+                            # if channel_accumulator in [
+                            #     "",  # If no channel tags at all
+                            #     "<|start|>assistant<|channel|>final<|message|>",
+                            # ]:
+                            #     chunk = line.encode("utf-8") + b"\n\n"
+                            #     yield chunk
+                            #     acc.feed(chunk)
+                            #     continue
+
+                            # # Yield content in the correct channel:
+                            # if channel_accumulator in [
+                            #     "<|channel|>analysis<|message|>",
+                            #     "<think>",
+                            # ]:
+                            #     obj["choices"]["delta"].pop("content", None)
+                            #     obj["choices"]["delta"]["reasoning"] = content
+                            #     yield f"data: {json.dumps(obj)}".encode("utf-8")
+                            #     continue
+
+                            # # Add to channel_accumulator
+                            # channel_accumulator += content
+
             except httpx.HTTPStatusError as e:
                 yield create_error_sse_message(
                     "error",
