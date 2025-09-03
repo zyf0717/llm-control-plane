@@ -171,7 +171,7 @@ async def process_stream_line(
         logger.debug("end_reasoning_buffer: %s", content)
         return None, start_reasoning_buffer, content, True
 
-    # 6. If end of reasoning/analysis channel found, clear buffers proceed to yield in step 10.
+    # 6. If end of reasoning/analysis channel found, clear buffers, proceed to yield in step 10.
     if end_reasoning_buffer in [
         "<|end|><|start|>assistant<|channel|>final<|message|>",
         "</think>",
@@ -179,7 +179,7 @@ async def process_stream_line(
         logger.debug("Switching to content channel...")
         start_reasoning_buffer = ""
         end_reasoning_buffer = ""
-        # Note: no continue here in order to yield first content message
+        # Note: no `continue` here in order to yield first content message
 
     # 7. Otherwise if end of reasoning/analysis buffer not empty, accumulate
     elif end_reasoning_buffer:
@@ -210,7 +210,7 @@ async def process_stream_line(
         )
         return None, start_reasoning_buffer, end_reasoning_buffer, True
 
-    # 10. Yield content as-is if both buffers are empty
+    # 10. Yield content as-is if both buffers are empty (i.e. default-path)
     if not start_reasoning_buffer and not end_reasoning_buffer:
         logger.debug("Content stream: %s", content)
         chunk = line.encode("utf-8") + b"\n\n"
@@ -240,78 +240,55 @@ def process_non_stream_response(resp_json: Dict) -> Dict:
         if not content:
             return resp_json
 
-        # Process <think> tags
+        reasoning = ""
+        clean_content = content
+
+        # Process <think> tags - extract and remove
         if "<think>" in content and "</think>" in content:
-            # Extract reasoning content between <think> tags
+            # Simple split and join approach
             parts = content.split("<think>")
-            if len(parts) > 1:
-                reasoning_parts = []
-                main_content_parts = [parts[0]]  # Content before first <think>
+            clean_parts = [parts[0]]  # Content before first <think> (could be empty)
+            reasoning_parts = []
 
-                for part in parts[1:]:
-                    if "</think>" in part:
-                        think_content, remaining = part.split("</think>", 1)
-                        reasoning_parts.append(think_content)
-                        main_content_parts.append(remaining)
-                    else:
-                        # Malformed - no closing tag, treat as regular content
-                        main_content_parts.append("<think>" + part)
+            for part in parts[1:]:
+                if "</think>" in part:
+                    think_part, after_part = part.split("</think>", 1)
+                    reasoning_parts.append(think_part)
+                    clean_parts.append(after_part)
+                else:
+                    # No closing tag, keep as is
+                    clean_parts.append("<think>" + part)
 
-                if reasoning_parts:
-                    # Create modified response
-                    modified_resp = resp_json.copy()
-                    modified_resp["choices"] = [choice.copy() for choice in choices]
-                    modified_resp["choices"][0]["message"] = message.copy()
+            if reasoning_parts:
+                reasoning = "\n\n".join(reasoning_parts).strip()
+                clean_content = "".join(clean_parts).strip()
 
-                    # Set main content (without <think> blocks)
-                    modified_resp["choices"][0]["message"]["content"] = "".join(
-                        main_content_parts
-                    ).strip()
+        # Process <|channel|> tags - extract and remove
+        elif "<|channel|>analysis<|message|>" in content:
+            # Split by analysis start
+            before, analysis_part = content.split("<|channel|>analysis<|message|>", 1)
 
-                    # Add reasoning field
-                    modified_resp["choices"][0]["message"]["reasoning"] = "\n\n".join(
-                        reasoning_parts
-                    ).strip()
-
-                    return modified_resp
-
-        # Process <|channel|> tags
-        if "<|channel|>analysis<|message|>" in content:
-            # Find analysis channel content
-            analysis_start = content.find("<|channel|>analysis<|message|>")
-            if analysis_start != -1:
-                analysis_content = content[
-                    analysis_start + len("<|channel|>analysis<|message|>") :
-                ]
-
-                # Find end of analysis channel
-                analysis_end = analysis_content.find(
-                    "<|end|><|start|>assistant<|channel|>final<|message|>"
+            # Split by analysis end
+            if "<|end|><|start|>assistant<|channel|>final<|message|>" in analysis_part:
+                reasoning_content, after = analysis_part.split(
+                    "<|end|><|start|>assistant<|channel|>final<|message|>", 1
                 )
-                if analysis_end != -1:
-                    reasoning_content = analysis_content[:analysis_end].strip()
-                    main_content = analysis_content[
-                        analysis_end
-                        + len("<|end|><|start|>assistant<|channel|>final<|message|>") :
-                    ].strip()
+                reasoning = reasoning_content.strip()
+                # Handle edge cases: before and/or after could be empty
+                clean_content = (before + after).strip() or ""
 
-                    if reasoning_content:
-                        # Create modified response
-                        modified_resp = resp_json.copy()
-                        modified_resp["choices"] = [choice.copy() for choice in choices]
-                        modified_resp["choices"][0]["message"] = message.copy()
+        # Return modified response if reasoning was found
+        if reasoning:
+            modified_resp = resp_json.copy()
+            modified_resp["choices"] = [choice.copy() for choice in choices]
+            modified_resp["choices"][0]["message"] = message.copy()
+            # Ensure clean_content is never None, use empty string if no content remains
+            modified_resp["choices"][0]["message"]["content"] = clean_content or ""
+            modified_resp["choices"][0]["message"]["reasoning"] = reasoning
+            return modified_resp
 
-                        # Set main content and reasoning
-                        modified_resp["choices"][0]["message"]["content"] = main_content
-                        modified_resp["choices"][0]["message"][
-                            "reasoning"
-                        ] = reasoning_content
-
-                        return modified_resp
-
-        # No reasoning content found, return original
         return resp_json
 
     except Exception as e:
-        logger.error(f"Error processing non-stream response: {e}")
+        logger.error("Error processing non-stream response: %s", str(e))
         return resp_json
