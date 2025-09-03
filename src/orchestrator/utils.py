@@ -18,7 +18,7 @@ class SSEAccumulator:
         self._parts = []
 
     def feed(self, chunk: bytes):
-        # Parse SSE "data: {...}" lines and accumulate content deltas
+        # Parse SSE "data: {...}" lines and accumulate only content deltas; reasoning excluded
         for line in chunk.split(b"\n"):
             if not line.startswith(b"data: "):
                 continue
