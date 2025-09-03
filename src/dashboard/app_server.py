@@ -73,28 +73,28 @@ def server(input, output, session):
     # Enable dynamic theme switching
     shinyswatch.theme_picker_server()
 
-    # # Handle UI state changes for switches
-    # @reactive.Effect
-    # @reactive.event(input.outputJSON)
-    # def _handle_json_toggle():
-    #     if input.outputJSON():
-    #         ui.update_switch("stream", value=False)
-    #         ui.update_switch("autoScroll", value=False)
+    # Handle UI state changes for switches
+    @reactive.Effect
+    @reactive.event(input.outputJSON)
+    def _handle_json_toggle():
+        if input.outputJSON():
+            ui.update_switch("stream", value=False)
+            ui.update_switch("autoScroll", value=False)
 
-    # @reactive.Effect
-    # @reactive.event(input.autoScroll)
-    # def _handle_autoscroll_toggle():
-    #     if input.autoScroll():
-    #         ui.update_switch("outputJSON", value=False)
-    #         ui.update_switch("stream", value=True)
+    @reactive.Effect
+    @reactive.event(input.autoScroll)
+    def _handle_autoscroll_toggle():
+        if input.autoScroll():
+            ui.update_switch("outputJSON", value=False)
+            ui.update_switch("stream", value=True)
 
-    # @reactive.Effect
-    # @reactive.event(input.stream)
-    # def _handle_stream_toggle():
-    #     if input.stream():
-    #         ui.update_switch("outputJSON", value=False)
-    #     else:
-    #         ui.update_switch("autoScroll", value=False)
+    @reactive.Effect
+    @reactive.event(input.stream)
+    def _handle_stream_toggle():
+        if input.stream():
+            ui.update_switch("outputJSON", value=False)
+        else:
+            ui.update_switch("autoScroll", value=False)
 
     # Utility actions
     @reactive.Effect
@@ -370,7 +370,7 @@ def server(input, output, session):
                 endpoints_dict=current_endpoints,
                 stream=input.stream(),
                 output_json=input.outputJSON(),
-                # reasoning_effort=input.reasoningEffort(),
+                reasoning_effort=input.reasoningEffort(),
                 output_reasoning=input.outputReasoning(),
                 convo_id=input.convoID() if input.convoID() else None,
                 current_routing_info=current_run_info.get("routing", {}),

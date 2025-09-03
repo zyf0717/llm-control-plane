@@ -17,6 +17,8 @@ from .utils import (
     SSEAccumulator,
     create_error_sse_message,
     extract_assistant_text,
+    process_non_stream_response,
+    process_stream_line,
 )
 
 # Configuration
@@ -109,7 +111,7 @@ class RequestProcessor:
                 messages.insert(0, reasoning_msg)
                 if convo_id:
                     convo_history[convo_id] = messages
-                logger.info(f"✅ Applied reasoning: {reasoning_effort}")
+                logger.info(f"Applied reasoning: {reasoning_effort}")
 
         # Update body
         body["messages"] = messages
@@ -156,99 +158,20 @@ class ProxyHandler:
                         start_reasoning_buffer = ""
                         end_reasoning_buffer = ""
                         async for line in resp.aiter_lines():
-                            # 1. Format is "data: {json}""
-                            if not line or not line.startswith("data: "):
-                                continue
-                            data = line[6:].strip()
+                            (
+                                chunk,
+                                start_reasoning_buffer,
+                                end_reasoning_buffer,
+                                should_continue,
+                            ) = await process_stream_line(
+                                line, acc, start_reasoning_buffer, end_reasoning_buffer
+                            )
 
-                            # 2. End loop if [DONE] is received
-                            if data == "[DONE]":
-                                chunk = (f"data: {data}\n\n").encode("utf-8")
+                            if chunk:
                                 yield chunk
+
+                            if not should_continue:
                                 break
-
-                            # 3. Parse JSON, fall back to passthrough if malformed
-                            try:
-                                obj = json.loads(data)
-                            except json.JSONDecodeError:
-                                chunk = (line + "\n\n").encode("utf-8")
-                                acc.feed(chunk)
-                                yield chunk
-                                continue
-
-                            delta = (obj.get("choices") or [{}])[0].get("delta") or {}
-                            content = delta.get("content", "")
-
-                            # 4. If no content (e.g., tool/role deltas), passthrough unchanged
-                            if not content:
-                                chunk = line.encode("utf-8") + b"\n\n"
-                                acc.feed(chunk)
-                                yield chunk
-                                continue
-
-                            # 5. Channel start/end detection
-                            if (
-                                content in ["<|channel|>", "<think>"]
-                                and not start_reasoning_buffer
-                            ):
-                                logger.debug("start_reasoning_buffer: %s", content)
-                                start_reasoning_buffer = content
-                                continue
-                            elif (
-                                content in ["<|end|>", "</think>"]
-                                and not end_reasoning_buffer
-                            ):
-                                logger.debug("end_reasoning_buffer: %s", content)
-                                end_reasoning_buffer = content
-                                continue
-
-                            # 6. If end of reasoning/analysis channel found, clear buffers proceed to yield in step 10.
-                            if end_reasoning_buffer in [
-                                "<|end|><|start|>assistant<|channel|>final<|message|>",
-                                "</think>",
-                            ]:
-                                logger.debug("Switching to content channel...")
-                                start_reasoning_buffer = ""
-                                end_reasoning_buffer = ""
-                                # Note: no continue here in order to yield first content message
-
-                            # 7. Otherwise if end of reasoning/analysis buffer not empty, accumulate
-                            elif end_reasoning_buffer:
-                                end_reasoning_buffer += content
-                                logger.debug(
-                                    "Accumulating end_reasoning_buffer: %s",
-                                    end_reasoning_buffer,
-                                )
-                                continue
-
-                            # 8. If reasoning/analysis channel found, yield into a "reasoning" channel
-                            if start_reasoning_buffer in [
-                                "<|channel|>analysis<|message|>",
-                                "<think>",
-                            ]:
-                                logger.debug("Reasoning stream: %s", content)
-                                obj["choices"][0]["delta"].pop("content", None)
-                                obj["choices"][0]["delta"]["reasoning"] = content
-                                yield f"data: {json.dumps(obj)}".encode(
-                                    "utf-8"
-                                ) + b"\n\n"
-                                continue
-
-                            # 9. If start of reasoning/analysis buffer not empty, accumulate
-                            elif start_reasoning_buffer:
-                                start_reasoning_buffer += content
-                                logger.debug(
-                                    "Accumulating start_reasoning_buffer: %s",
-                                    start_reasoning_buffer,
-                                )
-                                continue
-
-                            # 10. Yield content as-is if both buffers are empty
-                            if not start_reasoning_buffer and not end_reasoning_buffer:
-                                logger.debug("Content stream: %s", content)
-                                chunk = line.encode("utf-8") + b"\n\n"
-                                acc.feed(chunk)
-                                yield chunk
 
             except httpx.HTTPStatusError as e:
                 yield create_error_sse_message(
@@ -287,16 +210,26 @@ class ProxyHandler:
 
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(target_url, headers=headers, json=body)
+            resp.raise_for_status()
 
-            # Extract assistant text for history
-            assistant_text = None
+            # Process response and extract reasoning
             try:
                 resp_json = resp.json()
-                assistant_text = extract_assistant_text(resp_json)
-                if "model" in resp_json:
-                    logger.info(f"Response model: {resp_json['model']}")
+                processed_resp = process_non_stream_response(resp_json)
+
+                # Extract assistant text for history (from processed response)
+                assistant_text = extract_assistant_text(processed_resp)
+
+                if "model" in processed_resp:
+                    logger.info(f"Response model: {processed_resp['model']}")
+
+                # Update response content with processed version
+                resp_content = json.dumps(processed_resp).encode("utf-8")
+
             except Exception:
                 logger.info(f"Response: {resp.text[-500:]}")
+                assistant_text = None
+                resp_content = resp.content
 
             RequestProcessor.update_history(convo_id, assistant_text)
 
@@ -306,7 +239,7 @@ class ProxyHandler:
             if extra_headers:
                 response_headers.update(extra_headers)
 
-            return Response(resp.content, resp.status_code, response_headers)
+            return Response(resp_content, resp.status_code, response_headers)
 
 
 ##########  Core Proxy Function ##########
