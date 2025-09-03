@@ -135,7 +135,7 @@ async def process_stream_line(
     end_reasoning_buffer: str,
 ) -> tuple[Optional[bytes], str, str, bool]:
     """
-    Process a single streaming response line with reasoning channel detection.
+    Process a single streaming response line with reasoning channel detection and separation.
 
     Returns:
         tuple: (chunk_to_yield, new_start_buffer, new_end_buffer, should_continue)

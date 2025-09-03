@@ -278,16 +278,9 @@ async def proxy_request(
 ##########  API Endpoints ##########
 @app.post("/")
 async def root_chat(request: Request):
-    """Route to first available endpoint."""
-    if not endpoints:
-        raise HTTPException(status_code=503, detail="No endpoints configured")
-
-    first_endpoint = endpoints[0].get("name")
-    if not first_endpoint:
-        raise HTTPException(status_code=503, detail="Invalid endpoint configuration")
-
-    logger.info(f"Routing root request to: {first_endpoint}")
-    return await proxy_request(first_endpoint, request)
+    """Route to smart routing endpoint."""
+    logger.info("Routing root request to smart routing")
+    return await smart_route(request)
 
 
 @app.post("/smart")
@@ -395,14 +388,28 @@ async def list_models():
 
         # Fetch models from endpoint
         try:
-            # models_url = f"{url}/api/v0/models"
-            models_url = f"{url}/v1/models"
-
             headers = HeaderManager.create_auth_headers()
 
             async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(models_url, headers=headers)
-                resp.raise_for_status()
+                # Try LM Studio API first (/api/v0/models), then fallback to OpenAI-compatible (/v1/models)
+                models_urls = [f"{url}/api/v0/models", f"{url}/v1/models"]
+
+                resp = None
+                for models_url in models_urls:
+                    try:
+                        resp = await client.get(models_url, headers=headers)
+                        resp.raise_for_status()
+                        logger.debug(f"Successfully fetched models from {models_url}")
+                        break
+                    except httpx.HTTPError as e:
+                        logger.debug(f"Failed to fetch from {models_url}: {e}")
+                        continue
+
+                if resp is None:
+                    logger.warning(
+                        f"Failed to fetch models from {name} using all endpoints"
+                    )
+                    return []
 
                 data = resp.json()
                 remote_models = data.get(
