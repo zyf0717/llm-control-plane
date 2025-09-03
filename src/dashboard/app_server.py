@@ -73,28 +73,28 @@ def server(input, output, session):
     # Enable dynamic theme switching
     shinyswatch.theme_picker_server()
 
-    # Handle UI state changes for switches
-    @reactive.Effect
-    @reactive.event(input.outputJSON)
-    def _handle_json_toggle():
-        if input.outputJSON():
-            ui.update_switch("stream", value=False)
-            ui.update_switch("autoScroll", value=False)
+    # # Handle UI state changes for switches
+    # @reactive.Effect
+    # @reactive.event(input.outputJSON)
+    # def _handle_json_toggle():
+    #     if input.outputJSON():
+    #         ui.update_switch("stream", value=False)
+    #         ui.update_switch("autoScroll", value=False)
 
-    @reactive.Effect
-    @reactive.event(input.autoScroll)
-    def _handle_autoscroll_toggle():
-        if input.autoScroll():
-            ui.update_switch("outputJSON", value=False)
-            ui.update_switch("stream", value=True)
+    # @reactive.Effect
+    # @reactive.event(input.autoScroll)
+    # def _handle_autoscroll_toggle():
+    #     if input.autoScroll():
+    #         ui.update_switch("outputJSON", value=False)
+    #         ui.update_switch("stream", value=True)
 
-    @reactive.Effect
-    @reactive.event(input.stream)
-    def _handle_stream_toggle():
-        if input.stream():
-            ui.update_switch("outputJSON", value=False)
-        else:
-            ui.update_switch("autoScroll", value=False)
+    # @reactive.Effect
+    # @reactive.event(input.stream)
+    # def _handle_stream_toggle():
+    #     if input.stream():
+    #         ui.update_switch("outputJSON", value=False)
+    #     else:
+    #         ui.update_switch("autoScroll", value=False)
 
     # Utility actions
     @reactive.Effect
@@ -230,16 +230,34 @@ def server(input, output, session):
 
                         reasoning_chunk_found = False
                         reasoning_chunk_buffer = ""
+                        md_code_wrap = True
 
                         async for line in r.aiter_lines():
+
+                            # Format is "data: {json}""
                             if not line or not line.startswith("data: "):
                                 continue
                             data = line[6:].strip()
+
+                            # Final line
                             if data == "[DONE]":
                                 break
 
-                            obj = json.loads(data)
+                            # Parse JSON
+                            try:
+                                obj = json.loads(data)
+                            except json.JSONDecodeError:
+                                continue
 
+                            # For debugging
+                            if output_json:
+                                if md_code_wrap:
+                                    yield "```json\n"
+                                    md_code_wrap = False
+                                yield f"{json.dumps(obj, indent=2)}\n"
+                                continue
+
+                            # Parse output content
                             choices = obj.get("choices", [])
                             if choices:
                                 if output_reasoning:
@@ -305,6 +323,9 @@ def server(input, output, session):
                             extract_metadata(
                                 obj, preserve_routing_from=routing_info_holder
                             )
+
+                        if not md_code_wrap:
+                            yield "```\n"
 
                 else:
                     # Non-streaming request
