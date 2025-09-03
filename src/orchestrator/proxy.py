@@ -188,32 +188,26 @@ class ProxyHandler:
 
                             # 5. Channel start/end detection
                             if (
-                                content
-                                in [
-                                    "<|channel|>",
-                                ]
+                                content in ["<|channel|>", "<think>"]
                                 and not start_reasoning_buffer
                             ):
-                                logger.info("start_reasoning_buffer: %s", content)
+                                logger.debug("start_reasoning_buffer: %s", content)
                                 start_reasoning_buffer = content
                                 continue
                             elif (
-                                content
-                                in [
-                                    "<|end|>",
-                                ]
+                                content in ["<|end|>", "</think>"]
                                 and not end_reasoning_buffer
                             ):
-                                logger.info("end_reasoning_buffer: %s", content)
+                                logger.debug("end_reasoning_buffer: %s", content)
                                 end_reasoning_buffer = content
                                 continue
 
                             # 6. If end of reasoning/analysis channel found, clear buffers proceed to yield in step 10.
                             if end_reasoning_buffer in [
                                 "<|end|><|start|>assistant<|channel|>final<|message|>",
-                                # "</think>",
+                                "</think>",
                             ]:
-                                logger.info("Switching to content channel...")
+                                logger.debug("Switching to content channel...")
                                 start_reasoning_buffer = ""
                                 end_reasoning_buffer = ""
                                 # Note: no continue here in order to yield first content message
@@ -221,7 +215,7 @@ class ProxyHandler:
                             # 7. Otherwise if end of reasoning/analysis buffer not empty, accumulate
                             elif end_reasoning_buffer:
                                 end_reasoning_buffer += content
-                                logger.info(
+                                logger.debug(
                                     "Accumulating end_reasoning_buffer: %s",
                                     end_reasoning_buffer,
                                 )
@@ -230,9 +224,9 @@ class ProxyHandler:
                             # 8. If reasoning/analysis channel found, yield into a "reasoning" channel
                             if start_reasoning_buffer in [
                                 "<|channel|>analysis<|message|>",
-                                # "<think>",
+                                "<think>",
                             ]:
-                                logger.info("Reasoning stream: %s", content)
+                                logger.debug("Reasoning stream: %s", content)
                                 obj["choices"][0]["delta"].pop("content", None)
                                 obj["choices"][0]["delta"]["reasoning"] = content
                                 yield f"data: {json.dumps(obj)}".encode(
@@ -243,7 +237,7 @@ class ProxyHandler:
                             # 9. If start of reasoning/analysis buffer not empty, accumulate
                             elif start_reasoning_buffer:
                                 start_reasoning_buffer += content
-                                logger.info(
+                                logger.debug(
                                     "Accumulating start_reasoning_buffer: %s",
                                     start_reasoning_buffer,
                                 )
@@ -251,7 +245,7 @@ class ProxyHandler:
 
                             # 10. Yield content as-is if both buffers are empty
                             if not start_reasoning_buffer and not end_reasoning_buffer:
-                                logger.info("Content stream: %s", content)
+                                logger.debug("Content stream: %s", content)
                                 chunk = line.encode("utf-8") + b"\n\n"
                                 acc.feed(chunk)
                                 yield chunk
