@@ -128,7 +128,7 @@ async def process_stream_line(
     acc: SSEAccumulator,
     start_reasoning_buffer: str,
     end_reasoning_buffer: str,
-):
+) -> tuple[Optional[bytes], str, str, bool]:
     """
     Process a single streaming response line with reasoning channel detection.
 
@@ -146,14 +146,13 @@ async def process_stream_line(
         chunk = (f"data: {data}\n\n").encode("utf-8")
         return chunk, start_reasoning_buffer, end_reasoning_buffer, False
 
-    # 3. Parse JSON, fall back to passthrough if malformed
+    # 3. Parse delta and content, fall back to passthrough if JSON malformed
     try:
         obj = json.loads(data)
     except json.JSONDecodeError:
         chunk = (line + "\n\n").encode("utf-8")
         acc.feed(chunk)
         return chunk, start_reasoning_buffer, end_reasoning_buffer, True
-
     delta = (obj.get("choices") or [{}])[0].get("delta") or {}
     content = delta.get("content", "")
 
@@ -163,7 +162,7 @@ async def process_stream_line(
         acc.feed(chunk)
         return chunk, start_reasoning_buffer, end_reasoning_buffer, True
 
-    # 5. Channel start/end detection
+    # 5. Channel start/end detection to start respective buffers
     if content in ["<|channel|>", "<think>"] and not start_reasoning_buffer:
         logger.debug("start_reasoning_buffer: %s", content)
         return None, content, end_reasoning_buffer, True
