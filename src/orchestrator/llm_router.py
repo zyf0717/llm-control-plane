@@ -215,7 +215,7 @@ class LLMRouter:
         # Try LLM classification first with fastest endpoint
         fastest_endpoint = self._get_fastest_endpoint(reachable_endpoints)
         if fastest_endpoint:
-            classification_url = f"{fastest_endpoint.url}/api/v0/chat/completions"
+            classification_url = f"{fastest_endpoint.url}/v1/chat/completions"
             llm_result = await self.classifier.classify_with_llm(
                 text, classification_url
             )
