@@ -14,7 +14,6 @@ from ..llm_router import (
     WorkloadType,
     get_router,
     reset_router,
-    route_text,
 )
 
 
@@ -310,25 +309,6 @@ class TestGlobalFunctions:
         reset_router()
         router2 = get_router()
         assert router1 is not router2
-
-    @pytest.mark.asyncio
-    async def test_route_text_function(self):
-        """Test the convenience route_text function."""
-        with patch("src.orchestrator.llm_router.get_router") as mock_get_router:
-            mock_router = Mock()
-            mock_decision = RouteDecision(
-                endpoint="test-endpoint",
-                confidence=0.8,
-                reason="Test reason",
-                workload_type=WorkloadType.REASONING,
-            )
-            mock_router.route_request = AsyncMock(return_value=mock_decision)
-            mock_get_router.return_value = mock_router
-
-            result = await route_text("Test message")
-
-            assert result == mock_decision
-            mock_router.route_request.assert_called_once_with("Test message", None)
 
 
 class TestDataClasses:

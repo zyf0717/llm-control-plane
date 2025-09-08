@@ -283,8 +283,8 @@ async def root_chat(request: Request):
     return await smart_route(request)
 
 
-@app.post("/smart")
-async def smart_route(request: Request):
+@app.post("/smart/{subpath:path}")
+async def smart_route(request: Request, subpath: str = ""):
     """Smart routing based on content analysis."""
     try:
         # Prepare request

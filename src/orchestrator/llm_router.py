@@ -277,11 +277,3 @@ def reset_router():
     # Using global is necessary for singleton pattern
     global _router_instance  # noqa: PLW0603
     _router_instance = None
-
-
-async def route_text(
-    text: str, workload_type: Optional[WorkloadType] = None
-) -> RouteDecision:
-    """Convenience function to route text."""
-    router = get_router()
-    return await router.route_request(text, workload_type)
