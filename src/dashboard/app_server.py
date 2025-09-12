@@ -355,7 +355,7 @@ def server(input, output, session):
 
     @reactive.effect
     @reactive.event(input.send)
-    async def _():
+    async def _handle_markdown_stream():
         # Read reactive values outside the extended task
         current_endpoints = available_endpoints.get()
         display_mapping = endpoint_display_mapping.get()
@@ -585,6 +585,34 @@ def server(input, output, session):
             ui.output_markdown_stream("streamOutput", auto_scroll=input.autoScroll()),
             height="88vh",
         )
+
+    chat = ui.Chat(id="chat")
+
+    @chat.on_user_submit
+    async def _handle_chat_input(user_input: str):
+        # Read reactive values outside the extended task
+        current_endpoints = available_endpoints.get()
+        display_mapping = endpoint_display_mapping.get()
+        current_run_info = run_info.get() or {}
+
+        # Get the actual endpoint key from the display name
+        actual_endpoint_key = display_mapping.get(input.endpoint())
+
+        # Call the async generator function to get response stream
+        res = llm_stream_generator(
+            endpoint_key=actual_endpoint_key,
+            text=user_input,
+            endpoints_dict=current_endpoints,
+            stream=input.stream(),
+            output_json=input.outputJSON(),
+            reasoning_effort=input.reasoningEffort(),
+            output_reasoning=input.outputReasoning(),
+            convo_id=input.convoID() if input.convoID() else None,
+            current_routing_info=current_run_info.get("routing", {}),
+        )
+
+        # Stream async generator chunks to the chat UI per latest Shiny Chat API
+        await chat.append_message_stream(res)
 
     # Add a reactive value to track history refresh needs
     history_refresh_trigger = reactive.Value(0)

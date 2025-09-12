@@ -214,6 +214,7 @@ class LLMRouter:
         """Classify text to determine workload type."""
         # Try LLM classification first with fastest endpoint
         fastest_endpoint = self._get_fastest_endpoint(reachable_endpoints)
+        logger.info("Fastest endpoint for classification: %s", fastest_endpoint)
         if fastest_endpoint:
             classification_url = f"{fastest_endpoint.url}/v1/chat/completions"
             llm_result = await self.classifier.classify_with_llm(
