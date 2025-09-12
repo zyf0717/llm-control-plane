@@ -4,6 +4,7 @@ from shiny import ui
 app_ui = ui.page_fluid(
     ui.tags.script(
         """
+        /* userTextInput handling */
         document.addEventListener('DOMContentLoaded', () => {
         const ta  = document.getElementById('userTextInput');
         const btn = document.getElementById('send');
@@ -108,7 +109,7 @@ app_ui = ui.page_fluid(
                     # ui.output_ui("responseBox"),
                     ui.card(
                         ui.chat_ui("chat"),
-                        style="height: 90vh",
+                        style="height: 87vh",
                     ),
                     col_widths=[3, 9],
                     fillable=False,
