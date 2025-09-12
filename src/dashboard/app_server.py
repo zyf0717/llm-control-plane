@@ -96,7 +96,6 @@ def server(input, output, session):
         else:
             ui.update_switch("autoScroll", value=False)
 
-    # Utility actions
     @reactive.Effect
     @reactive.event(input.generateConvoID)
     def _generate_convo_id():
@@ -108,7 +107,6 @@ def server(input, output, session):
     async def _logout():
         await session.send_custom_message("logout", {})
 
-    # Track accordion state changes
     @reactive.Effect
     @reactive.event(input.info_accordion)
     def _track_accordion_state():
@@ -541,13 +539,7 @@ def server(input, output, session):
         markdown_content = "<br><br>".join(sections)
         return ui.markdown(markdown_content)
 
-    @render.ui
-    def responseBox():
-        return ui.card(
-            ui.output_markdown_stream("streamOutput", auto_scroll=input.autoScroll()),
-            height="88vh",
-        )
-
+    # Object to append messages
     chat = ui.Chat(id="chat")
 
     @chat.on_user_submit

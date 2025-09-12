@@ -54,21 +54,23 @@ app_ui = ui.page_fillable(
                     ui.input_action_button("logout", "Logout"),
                 ),
                 ui.layout_columns(
+                    # Left column with chat UI
                     ui.chat_ui("chat"),
-                    # RIGHT COLUMN: vertical flex with a dedicated scroller
+                    # Right column vertical flex with a dedicated scroller
                     ui.div(
-                        # Top controls row (stays fixed)
+                        # Top convo ID row (stays fixed)
                         ui.layout_columns(
                             ui.input_text(
                                 "convoID",
                                 "",
-                                placeholder=str(uuid.uuid4().hex[:12]),
+                                placeholder="Convo ID",
+                                value=str(uuid.uuid4().hex[:12]),
                                 width="100%",
                             ),
                             ui.input_action_button("generateConvoID", "New"),
                             col_widths=[7, 5],
                         ),
-                        # Scrollable content region
+                        # Bottom accordion with run info: scrollable
                         ui.div(
                             ui.output_ui("outputRunInfo"),
                             class_="flex-grow-1 overflow-auto mt-2",
