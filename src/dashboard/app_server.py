@@ -108,17 +108,6 @@ def server(input, output, session):
     async def _logout():
         await session.send_custom_message("logout", {})
 
-    # @reactive.effect
-    # @reactive.event(input.send)
-    # def _on_send():
-    #     ui.update_text_area("userTextInput", value="")
-
-    # Update send button state
-    @reactive.effect
-    def _update_send_button():
-        status = send_button_state.get()
-        ui.update_task_button("send", state=status)
-
     # Track accordion state changes
     @reactive.Effect
     @reactive.event(input.info_accordion)
@@ -229,7 +218,6 @@ def server(input, output, session):
                         extract_metadata({}, dict(r.headers))
 
                         reasoning_chunk_found = False
-                        reasoning_chunk_buffer = ""
                         md_code_wrap = True
 
                         async for line in r.aiter_lines():
@@ -351,32 +339,6 @@ def server(input, output, session):
             last_runtime.set(time.time() - now)
             send_button_state.set("ready")
 
-    # md = ui.MarkdownStream("streamOutput")
-
-    # @reactive.effect
-    # @reactive.event(input.send)
-    # async def _handle_markdown_stream():
-    #     # Read reactive values outside the extended task
-    #     current_endpoints = available_endpoints.get()
-    #     display_mapping = endpoint_display_mapping.get()
-    #     current_run_info = run_info.get() or {}
-
-    #     # Get the actual endpoint key from the display name
-    #     actual_endpoint_key = display_mapping.get(input.endpoint())
-    #     await md.stream(
-    #         llm_stream_generator(
-    #             endpoint_key=actual_endpoint_key,
-    #             text=input.userTextInput(),
-    #             endpoints_dict=current_endpoints,
-    #             stream=input.stream(),
-    #             output_json=input.outputJSON(),
-    #             reasoning_effort=input.reasoningEffort(),
-    #             output_reasoning=input.outputReasoning(),
-    #             convo_id=input.convoID() if input.convoID() else None,
-    #             current_routing_info=current_run_info.get("routing", {}),
-    #         )
-    #     )
-
     def format_hardware_info(model, routing_info=None):
         """Format hardware information for display."""
         hardware_info = []
@@ -476,7 +438,7 @@ def server(input, output, session):
                 value="info_panel",
             ),
             id="info_accordion",
-            open=[],  # Start collapsed, user can expand as needed
+            open=False,  # Start collapsed
         )
 
     @render.ui

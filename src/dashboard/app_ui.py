@@ -1,40 +1,9 @@
+import uuid
+
 import shinyswatch
 from shiny import ui
 
-app_ui = ui.page_fluid(
-    ui.tags.script(
-        """
-        /* userTextInput handling */
-        document.addEventListener('DOMContentLoaded', () => {
-        const ta  = document.getElementById('userTextInput');
-        const btn = document.getElementById('send');
-        if (!ta || !btn) return;
-
-        // Desktop-like detection: fine pointer + hover available
-        const isDesktopLike = matchMedia('(hover: hover) and (pointer: fine)').matches;
-
-        // Hint virtual keyboards appropriately
-        ta.setAttribute('enterkeyhint', isDesktopLike ? 'send' : 'enter');
-
-        // Blur textarea before mouse click to ensure sync
-        btn.addEventListener('mousedown', () => {
-            ta.blur();
-        });
-
-        // Desktop only: Enter sends (Shift+Enter = newline)
-        if (isDesktopLike) {
-            ta.addEventListener('keydown', (e) => {
-                if (e.isComposing) return; // IME safety
-                if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    ta.blur(); // Ensure sync before send
-                    btn.click();
-                }
-            });
-        }
-        });
-        """
-    ),
+app_ui = ui.page_fillable(
     ui.tags.style(
         """
         /* Make the sidebar independently scrollable */
@@ -85,35 +54,30 @@ app_ui = ui.page_fluid(
                     ui.input_action_button("logout", "Logout"),
                 ),
                 ui.layout_columns(
-                    ui.card(
+                    ui.chat_ui("chat"),
+                    # RIGHT COLUMN: vertical flex with a dedicated scroller
+                    ui.div(
+                        # Top controls row (stays fixed)
                         ui.layout_columns(
                             ui.input_text(
                                 "convoID",
                                 "",
-                                placeholder="Convo ID",
+                                placeholder=str(uuid.uuid4().hex[:12]),
                                 width="100%",
                             ),
                             ui.input_action_button("generateConvoID", "New"),
                             col_widths=[7, 5],
                         ),
-                        # ui.input_text_area(
-                        #     "userTextInput",
-                        #     "",
-                        #     rows=6,
-                        #     placeholder="Ask anything",
-                        #     width="100%",
-                        # ),
-                        # ui.input_task_button("send", "Send", auto_reset=False),
-                        ui.output_ui("outputRunInfo"),
+                        # Scrollable content region
+                        ui.div(
+                            ui.output_ui("outputRunInfo"),
+                            class_="flex-grow-1 overflow-auto mt-2",
+                        ),
+                        class_="h-100 d-flex flex-column",  # column stretches; child can scroll
                     ),
-                    # ui.output_ui("responseBox"),
-                    ui.card(
-                        ui.chat_ui("chat"),
-                        style="height: 87vh",
-                    ),
-                    col_widths=[3, 9],
-                    fillable=False,
+                    col_widths=[9, 3],
                 ),
+                fillable=True,
             ),
         ),
         ui.nav_panel("Multi-Node"),
