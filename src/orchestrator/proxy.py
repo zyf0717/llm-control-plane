@@ -392,8 +392,7 @@ async def list_models():
             headers = HeaderManager.create_auth_headers()
 
             async with httpx.AsyncClient(timeout=10.0) as client:
-                # Try LM Studio API first (/api/v0/models), then fallback to OpenAI-compatible (/v1/models)
-                models_urls = [f"{url}/api/v0/models", f"{url}/v1/models"]
+                models_urls = [f"{url}/v1/models"]
 
                 resp = None
                 for models_url in models_urls:
