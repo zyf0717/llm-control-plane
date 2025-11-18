@@ -57,6 +57,12 @@ def server(input, output, session):
     async def _initialize_endpoints():
         await update_endpoints_and_data()
 
+    # Initialize convoID with random hex on startup
+    @reactive.Effect
+    def _initialize_convo_id():
+        initial_uuid = str(uuid.uuid4().hex[:12])
+        ui.update_text("convoID", value=initial_uuid, session=session)
+
     # Refresh endpoints when button is clicked
     @reactive.Effect
     @reactive.event(input.refreshEndpoints)

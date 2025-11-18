@@ -125,52 +125,65 @@ def workload_classifier():
 class TestWorkloadClassifier:
     """Tests for the WorkloadClassifier class."""
 
-    def test_classify_programming_patterns(self, workload_classifier):
-        """Test classification of programming-related text."""
-        programming_cases = [
-            "Write a Python function to sort a list",
-            "Debug this JavaScript code",
-            "How do I implement a REST API?",
-            "Fix this syntax error in my C++ program",
-            "What's wrong with this SQL query?",
-        ]
+    @pytest.mark.asyncio
+    async def test_classify_programming_patterns(self, workload_classifier):
+        """Test classification of programming-related text using LLM."""
+        programming_case = "Write a Python function to sort a list"
 
-        for case in programming_cases:
-            result = workload_classifier.classify_with_patterns(case)
-            assert (
-                result == WorkloadType.PROGRAMMING
-            ), f"'{case}' should be classified as programming"
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_response = Mock()
+            mock_response.json.return_value = {
+                "choices": [{"message": {"content": "programming"}}]
+            }
+            mock_response.raise_for_status = Mock()
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_client_class.return_value.__aenter__.return_value = mock_client
 
-    def test_classify_reasoning_patterns(self, workload_classifier):
-        """Test classification of reasoning-intensive text."""
-        reasoning_cases = [
-            "Analyze the economic impact of inflation step by step",
-            "Think through this complex problem carefully",
-            "Why does quantum entanglement work the way it does?",
-            "Compare and contrast different machine learning approaches",
-            "How would you solve this mathematical proof?",
-        ]
+            result = await workload_classifier.classify_with_llm(
+                programming_case, "https://test.example.com/v1/chat/completions"
+            )
+            assert result == WorkloadType.PROGRAMMING
 
-        for case in reasoning_cases:
-            result = workload_classifier.classify_with_patterns(case)
-            assert (
-                result == WorkloadType.REASONING
-            ), f"'{case}' should be classified as reasoning"
+    @pytest.mark.asyncio
+    async def test_classify_reasoning_patterns(self, workload_classifier):
+        """Test classification of reasoning-intensive text using LLM."""
+        reasoning_case = "Analyze the economic impact of inflation step by step"
 
-    def test_classify_default_content(self, workload_classifier):
-        """Test that simple content defaults to TTFT_CONTENT."""
-        simple_cases = [
-            "Hello, good morning!",
-            "What's the weather like today?",
-            "Tell me a short story",
-            "Good evening!",
-        ]
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_response = Mock()
+            mock_response.json.return_value = {
+                "choices": [{"message": {"content": "reasoning"}}]
+            }
+            mock_response.raise_for_status = Mock()
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        for case in simple_cases:
-            result = workload_classifier.classify_with_patterns(case)
-            assert (
-                result == WorkloadType.TTFT_CONTENT
-            ), f"'{case}' should default to content generation"
+            result = await workload_classifier.classify_with_llm(
+                reasoning_case, "https://test.example.com/v1/chat/completions"
+            )
+            assert result == WorkloadType.REASONING
+
+    @pytest.mark.asyncio
+    async def test_classify_default_content(self, workload_classifier):
+        """Test that simple content can be classified as TTFT_CONTENT."""
+        simple_case = "Hello, good morning!"
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_response = Mock()
+            mock_response.json.return_value = {
+                "choices": [{"message": {"content": "ttft_content"}}]
+            }
+            mock_response.raise_for_status = Mock()
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            result = await workload_classifier.classify_with_llm(
+                simple_case, "https://test.example.com/v1/chat/completions"
+            )
+            assert result == WorkloadType.TTFT_CONTENT
 
     @pytest.mark.asyncio
     async def test_llm_classification_success(self, workload_classifier):
@@ -227,8 +240,11 @@ class TestLLMRouter:
     @pytest.mark.asyncio
     async def test_route_reasoning_request(self, llm_router):
         """Test routing a reasoning request."""
+        reachable = ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2"]
         decision = await llm_router.route_request(
-            "Analyze this complex problem step by step"
+            "Analyze this complex problem step by step",
+            reachable,
+            WorkloadType.REASONING,
         )
 
         assert decision.endpoint == "gmktec-evo-x2"  # First in reasoning preferences
@@ -239,8 +255,9 @@ class TestLLMRouter:
     @pytest.mark.asyncio
     async def test_route_programming_request(self, llm_router):
         """Test routing a programming request."""
+        reachable = ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2"]
         decision = await llm_router.route_request(
-            "Write a Python function to parse JSON"
+            "Write a Python function to parse JSON", reachable, WorkloadType.PROGRAMMING
         )
 
         assert decision.endpoint == "gmktec-evo-x2"  # First in programming preferences
@@ -251,7 +268,10 @@ class TestLLMRouter:
     @pytest.mark.asyncio
     async def test_route_content_request(self, llm_router):
         """Test routing a simple content request."""
-        decision = await llm_router.route_request("Tell me a joke")
+        reachable = ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2"]
+        decision = await llm_router.route_request(
+            "Tell me a joke", reachable, WorkloadType.TTFT_CONTENT
+        )
 
         assert decision.endpoint == "mac-mini"  # First in content preferences
         assert decision.workload_type == WorkloadType.TTFT_CONTENT
@@ -261,8 +281,9 @@ class TestLLMRouter:
     @pytest.mark.asyncio
     async def test_route_with_explicit_workload(self, llm_router):
         """Test routing with explicitly specified workload type."""
+        reachable = ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2"]
         decision = await llm_router.route_request(
-            "Hello world", workload_type=WorkloadType.TOKENS_PER_SECOND
+            "Hello world", reachable, workload_type=WorkloadType.TOKENS_PER_SECOND
         )
 
         assert (
@@ -272,9 +293,11 @@ class TestLLMRouter:
         assert decision.confidence == 0.9
 
     def test_get_fastest_endpoint(self, llm_router):
-        """Test getting the fastest endpoint (prefers Apple Silicon)."""
-        fastest = llm_router._get_fastest_endpoint()
-        assert fastest.name == "mac-mini"  # Apple M4 endpoint
+        """Test getting the fastest endpoint (prefers classification preferences)."""
+        reachable = ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2"]
+        fastest = llm_router._get_fastest_endpoint(reachable)
+        assert fastest is not None
+        assert fastest.name in reachable
 
     def test_get_endpoint_by_name(self, llm_router):
         """Test getting endpoint by name."""

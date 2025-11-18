@@ -1,5 +1,3 @@
-import uuid
-
 import shinyswatch
 from shiny import ui
 
@@ -64,7 +62,6 @@ app_ui = ui.page_fillable(
                                 "convoID",
                                 "",
                                 placeholder="Convo ID",
-                                value=str(uuid.uuid4().hex[:12]),
                                 width="100%",
                             ),
                             ui.input_action_button("generateConvoID", "New"),
