@@ -89,7 +89,10 @@ app_ui = ui.page_fillable(
                 fillable=True,
             ),
         ),
-        ui.nav_panel("Multi-Node"),
+        ui.nav_panel(
+            "Multi-Node",
+            ui.div("Multi-node UI coming soon!"),
+        ),
         ui.nav_panel(
             "History",
             ui.layout_columns(
