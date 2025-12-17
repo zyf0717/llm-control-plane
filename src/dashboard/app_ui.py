@@ -67,6 +67,14 @@ app_ui = ui.page_fillable(
                             ui.input_action_button("generateConvoID", "New"),
                             col_widths=[7, 5],
                         ),
+                        # System prompt input
+                        ui.input_text_area(
+                            "systemPrompt",
+                            "",
+                            placeholder="System prompt (optional)",
+                            width="100%",
+                            rows=4,
+                        ),
                         # Bottom accordion with run info: scrollable
                         ui.div(
                             ui.output_ui("outputRunInfo"),

@@ -130,6 +130,7 @@ def server(input, output, session):
         output_reasoning: bool = False,
         convo_id: str = None,
         current_routing_info: dict = None,
+        system_prompt: str = None,
     ) -> AsyncGenerator[str, None]:
         text = (text or "Hello! What model are you?").strip()
         if not text:
@@ -151,7 +152,13 @@ def server(input, output, session):
 
             # Prepare request
 
-            payload = {"messages": [{"role": "user", "content": text}]}
+            # Build messages array with optional system prompt
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": text})
+
+            payload = {"messages": messages}
             headers = {
                 "CF-Access-Client-Id": API_KEY_ID,
                 "CF-Access-Client-Secret": API_KEY_SECRET,
@@ -569,6 +576,7 @@ def server(input, output, session):
             output_reasoning=input.outputReasoning(),
             convo_id=input.convoID() if input.convoID() else None,
             current_routing_info=current_run_info.get("routing", {}),
+            system_prompt=input.systemPrompt() if input.systemPrompt() else None,
         )
 
         # Stream async generator chunks to the chat UI per latest Shiny Chat API
