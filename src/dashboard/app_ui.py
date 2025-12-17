@@ -75,6 +75,8 @@ app_ui = ui.page_fillable(
                             width="100%",
                             rows=4,
                         ),
+                        # File upload with clear button (dynamic)
+                        ui.output_ui("file_upload_ui"),
                         # Bottom accordion with run info: scrollable
                         ui.div(
                             ui.output_ui("outputRunInfo"),

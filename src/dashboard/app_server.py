@@ -33,6 +33,10 @@ def server(input, output, session):
     run_info = reactive.Value(None)
     send_button_state = reactive.Value("ready")
     info_accordion_open = reactive.Value(True)  # Track accordion state
+    file_upload_key = reactive.Value(0)  # Track file upload re-renders
+    current_files = reactive.Value(
+        {"key": 0, "files": None}
+    )  # Track files with their key
 
     async def update_endpoints_and_data():
         """Helper function to update both endpoints and models data."""
@@ -107,6 +111,37 @@ def server(input, output, session):
     def _generate_convo_id():
         new_uuid = str(uuid.uuid4().hex[:12])
         ui.update_text("convoID", value=new_uuid, session=session)
+
+    @render.ui
+    @reactive.event(file_upload_key)
+    def file_upload_ui():
+        # Re-render file upload when key changes (to clear it)
+        return ui.layout_columns(
+            ui.input_file(
+                "uploadFile",
+                "",
+                button_label="UTF-8 file(s)",
+                multiple=True,
+                width="100%",
+            ),
+            ui.input_action_button("clearUpload", "Clear"),
+            col_widths=[7, 5],
+        )
+
+    @reactive.Effect
+    @reactive.event(input.uploadFile)
+    def _track_uploaded_files():
+        # Store files with current key when files are uploaded
+        uploaded = input.uploadFile()
+        if uploaded and len(uploaded) > 0:
+            current_files.set({"key": file_upload_key.get(), "files": uploaded})
+
+    @reactive.Effect
+    @reactive.event(input.clearUpload)
+    def _clear_upload():
+        # Clear tracked files and increment key to force file upload re-render
+        current_files.set({"key": file_upload_key.get() + 1, "files": None})
+        file_upload_key.set(file_upload_key.get() + 1)
 
     @reactive.Effect
     @reactive.event(input.logout)
@@ -564,6 +599,36 @@ def server(input, output, session):
 
         # Get the actual endpoint key from the display name
         actual_endpoint_key = display_mapping.get(input.endpoint())
+
+        # Read uploaded file content if present
+        # Only use files if they match the current upload key (not cleared)
+        files_data = current_files.get()
+        uploaded_files = (
+            files_data.get("files")
+            if files_data.get("key") == file_upload_key.get()
+            else None
+        )
+
+        if uploaded_files and len(uploaded_files) > 0:
+            file_contents = []
+            for file_info in uploaded_files:
+                try:
+                    # Check if file actually exists before trying to read
+                    if not os.path.exists(file_info["datapath"]):
+                        continue
+                    with open(file_info["datapath"], "r", encoding="utf-8") as f:
+                        content = f.read()
+                        filename = file_info["name"]
+                        file_contents.append(f"--- File: {filename} ---\n{content}")
+                except Exception as e:
+                    # If file reading fails, include error message
+                    filename = file_info.get("name", "unknown")
+                    file_contents.append(f"--- Error reading {filename}: {str(e)} ---")
+
+            # Inject all file contents into user message if available
+            if file_contents:
+                files_section = "\n\n".join(file_contents)
+                user_input = f"{user_input}\n\n{files_section}"
 
         # Call the async generator function to get response stream
         res = llm_stream_generator(
