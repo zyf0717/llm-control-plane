@@ -120,12 +120,13 @@ def server(input, output, session):
             ui.input_file(
                 "uploadFile",
                 "",
-                button_label="UTF-8 file(s)",
+                button_label="Upload (UTF-8)",
+                placeholder="No files uploaded",
                 multiple=True,
                 width="100%",
             ),
-            ui.input_action_button("clearUpload", "Clear"),
-            col_widths=[7, 5],
+            ui.input_action_button("clearUpload", "❌"),
+            col_widths=[10, 2],
         )
 
     @reactive.Effect

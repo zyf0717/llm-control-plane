@@ -28,7 +28,7 @@ app_ui = ui.page_fillable(
                     ),
                     ui.layout_columns(
                         ui.input_select("endpoint", "", choices=[]),
-                        ui.input_action_button("refreshEndpoints", "⟳"),
+                        ui.input_action_button("refreshEndpoints", "🔄"),
                         col_widths=[9, 3],
                     ),
                     ui.input_switch("stream", "Streaming", True),
@@ -64,8 +64,8 @@ app_ui = ui.page_fillable(
                                 placeholder="Convo ID",
                                 width="100%",
                             ),
-                            ui.input_action_button("generateConvoID", "New"),
-                            col_widths=[7, 5],
+                            ui.input_action_button("generateConvoID", "🔄"),
+                            col_widths=[10, 2],
                         ),
                         # System prompt input
                         ui.input_text_area(
