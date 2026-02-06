@@ -296,9 +296,10 @@ def server(input, output, session):
                             choices = obj.get("choices", [])
                             if choices:
                                 if output_reasoning:
-                                    reasoning_chunk = (
-                                        choices[0].get("delta", {}).get("reasoning", "")
-                                    )
+                                    delta = choices[0].get("delta", {})
+                                    reasoning_chunk = delta.get(
+                                        "reasoning"
+                                    ) or delta.get("reasoning_content", "")
                                     if reasoning_chunk:
                                         if reasoning_chunk_found is False:
                                             reasoning_chunk_found = True
@@ -340,10 +341,9 @@ def server(input, output, session):
                     else:
                         if output_reasoning:
                             # GPT-style
-                            reasoning = (
-                                data.get("choices", [{}])[0]
-                                .get("message", {})
-                                .get("reasoning", "")
+                            message = data.get("choices", [{}])[0].get("message", {})
+                            reasoning = message.get("reasoning") or message.get(
+                                "reasoning_content", ""
                             )
                             if reasoning:
                                 yield f"<em>{str(reasoning)}</em>\n\n---\n\n"
