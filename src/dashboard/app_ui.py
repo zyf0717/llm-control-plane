@@ -17,7 +17,7 @@ app_ui = ui.page_fillable(
     ui.navset_bar(
         ui.nav_panel(
             "Single-Node",
-            ui.page_sidebar(
+            ui.layout_sidebar(
                 ui.sidebar(
                     ui.tags.script(
                         """
