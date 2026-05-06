@@ -1,9 +1,13 @@
 import shinyswatch
 from shiny import ui
 
-app_ui = ui.page_fillable(
-    ui.tags.style(
-        """
+app_ui = ui.page_fluid(
+    ui.tags.style("""
+        :root {
+            --dashboard-panel-height: calc(100dvh - 8rem);
+            --dashboard-chat-height: var(--dashboard-panel-height);
+        }
+
         /* Make the sidebar independently scrollable */
         .sidebar {
             max-height: 100vh;
@@ -12,20 +16,45 @@ app_ui = ui.page_fillable(
             top: 0;
             background: inherit;
         }
-        """
-    ),
+
+        .dashboard-pane {
+            height: var(--dashboard-panel-height);
+            min-height: 0;
+        }
+
+        .dashboard-side-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .dashboard-run-info {
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow-y: auto;
+        }
+
+        @media (max-width: 991.98px) {
+            :root {
+                --dashboard-panel-height: auto;
+                --dashboard-chat-height: min(60dvh, 32rem);
+            }
+
+            .dashboard-run-info {
+                max-height: 20rem;
+            }
+        }
+        """),
     ui.navset_bar(
         ui.nav_panel(
             "Single-Node",
             ui.layout_sidebar(
                 ui.sidebar(
-                    ui.tags.script(
-                        """
+                    ui.tags.script("""
                 Shiny.addCustomMessageHandler("logout", function(_) {
                     window.location.href = "https://llm-dashboard.paperclips.dev/cdn-cgi/access/logout";
                 });
-                """
-                    ),
+                """),
                     ui.layout_columns(
                         ui.input_select("endpoint", "", choices=[]),
                         ui.input_action_button("refreshEndpoints", "🔄"),
@@ -52,11 +81,12 @@ app_ui = ui.page_fillable(
                     ui.input_action_button("logout", "Logout"),
                 ),
                 ui.layout_columns(
-                    # Left column with chat UI
-                    ui.chat_ui("chat"),
-                    # Right column vertical flex with a dedicated scroller
+                    ui.chat_ui(
+                        "chat",
+                        width="100%",
+                        height="var(--dashboard-chat-height)",
+                    ),
                     ui.div(
-                        # Top convo ID row (stays fixed)
                         ui.layout_columns(
                             ui.input_text(
                                 "convoID",
@@ -67,7 +97,6 @@ app_ui = ui.page_fillable(
                             ui.input_action_button("generateConvoID", "🔄"),
                             col_widths=[10, 2],
                         ),
-                        # System prompt input
                         ui.input_text_area(
                             "systemPrompt",
                             "",
@@ -75,14 +104,12 @@ app_ui = ui.page_fillable(
                             width="100%",
                             rows=4,
                         ),
-                        # File upload with clear button (dynamic)
                         ui.output_ui("file_upload_ui"),
-                        # Bottom accordion with run info: scrollable
                         ui.div(
                             ui.output_ui("outputRunInfo"),
-                            class_="flex-grow-1 overflow-auto mt-2",
+                            class_="dashboard-run-info",
                         ),
-                        class_="h-100 d-flex flex-column",  # column stretches; child can scroll
+                        class_="dashboard-pane dashboard-side-panel",
                     ),
                     col_widths=[9, 3],
                 ),
