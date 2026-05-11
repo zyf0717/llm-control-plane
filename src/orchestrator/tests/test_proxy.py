@@ -2,6 +2,7 @@
 Test suite for the LLM Control Plane proxy functionality.
 """
 
+import json
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -134,6 +135,179 @@ class TestConversationHistory:
             {"role": "user", "content": "How are you?"},
         ]
         assert convo_history[convo_id] == expected_messages
+
+
+class TestRequestPreparation:
+    """Tests for proxy request preparation logic."""
+
+    @pytest.mark.asyncio
+    async def test_prepare_request_injects_rag_before_latest_user_turn(self):
+        request = Mock()
+        request.headers = {"X-RAG-Endpoint": "http://localhost:8100/api/retrieve"}
+        request.body = AsyncMock(
+            return_value=json.dumps(
+                {
+                    "messages": [
+                        {"role": "system", "content": "Base system"},
+                        {"role": "assistant", "content": "Prior answer"},
+                        {"role": "user", "content": "Need context"},
+                    ]
+                }
+            ).encode("utf-8")
+        )
+
+        rag_message = {"role": "system", "content": "Retrieved context"}
+        rag_headers = {
+            "X-RAG-Injected": "true",
+            "X-RAG-Confidence": "0.820",
+            "X-RAG-Threshold": "0.350",
+        }
+
+        with patch.object(
+            RequestProcessor,
+            "_fetch_rag_message",
+            AsyncMock(return_value=(rag_message, rag_headers)),
+        ):
+            body, response_headers = await RequestProcessor.prepare_request(request)
+
+        assert body["messages"] == [
+            {"role": "system", "content": "Base system"},
+            {"role": "assistant", "content": "Prior answer"},
+            {"role": "system", "content": "Retrieved context"},
+            {"role": "user", "content": "Need context"},
+        ]
+        assert response_headers == rag_headers
+
+    @pytest.mark.asyncio
+    async def test_prepare_request_does_not_persist_rag_in_history(self):
+        convo_history["session-1"] = [{"role": "assistant", "content": "Earlier reply"}]
+
+        request = Mock()
+        request.headers = {
+            "X-Convo-ID": "session-1",
+            "X-RAG-Endpoint": "http://localhost:8100/api/retrieve",
+        }
+        request.body = AsyncMock(
+            return_value=json.dumps(
+                {"messages": [{"role": "user", "content": "Current question"}]}
+            ).encode("utf-8")
+        )
+
+        rag_message = {"role": "system", "content": "Retrieved context"}
+        with patch.object(
+            RequestProcessor,
+            "_fetch_rag_message",
+            AsyncMock(return_value=(rag_message, {"X-RAG-Injected": "true"})),
+        ):
+            body, _response_headers = await RequestProcessor.prepare_request(request)
+
+        assert body["messages"] == [
+            {"role": "assistant", "content": "Earlier reply"},
+            {"role": "system", "content": "Retrieved context"},
+            {"role": "user", "content": "Current question"},
+        ]
+        assert convo_history["session-1"] == [
+            {"role": "assistant", "content": "Earlier reply"},
+            {"role": "user", "content": "Current question"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_fetch_rag_message_skips_below_threshold_results(self):
+        mock_response = Mock()
+        mock_response.raise_for_status = Mock()
+        mock_response.json.return_value = {
+            "results": [{"id": "doc-1", "content": "Weak match", "score": 0.2}],
+            "method": "vector",
+        }
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            mock_client.post.return_value = mock_response
+
+            rag_message, rag_headers = await RequestProcessor._fetch_rag_message(
+                [{"role": "user", "content": "Need context"}],
+                "http://localhost:8100/api/retrieve",
+            )
+
+        assert rag_message is None
+        assert rag_headers["X-RAG-Injected"] == "false"
+        assert rag_headers["X-RAG-Reason"] == "below-threshold"
+        assert rag_headers["X-RAG-Confidence"] == "0.200"
+
+    @pytest.mark.asyncio
+    async def test_fetch_rag_message_uses_distance_based_results(self):
+        mock_response = Mock()
+        mock_response.raise_for_status = Mock()
+        mock_response.json.return_value = {
+            "results": [
+                {
+                    "chunk_id": "chunk-1",
+                    "content": "Strong semantic match",
+                    "distance": 0.22,
+                },
+                {
+                    "chunk_id": "chunk-2",
+                    "content": "Weak semantic match",
+                    "distance": 0.91,
+                },
+            ]
+        }
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            mock_client.post.return_value = mock_response
+
+            rag_message, rag_headers = await RequestProcessor._fetch_rag_message(
+                [{"role": "user", "content": "Need context"}],
+                "http://localhost:8100/api/retrieve",
+            )
+
+        mock_client.post.assert_awaited_once()
+        post_kwargs = mock_client.post.await_args.kwargs
+        assert post_kwargs["json"]["limit"] == 5
+        assert rag_message is not None
+        assert "Strong semantic match" in rag_message["content"]
+        assert "Weak semantic match" not in rag_message["content"]
+        assert rag_headers["X-RAG-Injected"] == "true"
+        assert rag_headers["X-RAG-Confidence"] == "0.780"
+        assert rag_headers["X-RAG-Distance"] == "0.22"
+
+    @pytest.mark.asyncio
+    async def test_fetch_rag_message_logs_retrieval_summary(self, caplog):
+        mock_response = Mock()
+        mock_response.raise_for_status = Mock()
+        mock_response.json.return_value = {
+            "results": [
+                {
+                    "chunk_id": "chunk-1",
+                    "content": "Strong semantic match from handbook section",
+                    "distance": 0.22,
+                },
+                {
+                    "chunk_id": "chunk-2",
+                    "content": "Another useful match from release notes",
+                    "distance": 0.31,
+                },
+            ],
+            "method": "vector",
+        }
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            mock_client.post.return_value = mock_response
+
+            with caplog.at_level("INFO"):
+                await RequestProcessor._fetch_rag_message(
+                    [{"role": "user", "content": "Need context"}],
+                    "http://localhost:8100/api/retrieve",
+                )
+
+        assert "RAG retrieved 2 raw hits (2 above threshold" in caplog.text
+        assert "chunk-1 conf=0.780" in caplog.text
+        assert "Strong semantic match from handbook section" in caplog.text
 
 
 class TestModelsEndpoint:

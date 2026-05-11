@@ -18,13 +18,13 @@ PROXY_BASE_URL = os.getenv("PROXY_BASE_URL")
 from .utils import (
     create_endpoint_display_choices,
     fetch_available_endpoints,
+    fetch_available_rag_endpoints,
     fetch_convo_history,
     find_model_by_endpoint,
 )
 
 
 def server(input, output, session):
-
     # Reactive values
     available_endpoints = reactive.Value({})
     endpoint_info = reactive.Value({})
@@ -39,8 +39,7 @@ def server(input, output, session):
     )  # Track files with their key
 
     async def update_endpoints_and_data():
-        """Helper function to update both endpoints and models data."""
-        # Fetch data only once and get both endpoints and raw data
+        """Refresh model endpoints and metadata."""
         endpoints, data = await fetch_available_endpoints()
         available_endpoints.set(endpoints)
         endpoint_info.set(data)
@@ -56,10 +55,21 @@ def server(input, output, session):
             selected=choice_list[0] if choice_list else None,
         )
 
+    async def update_rag_endpoints():
+        """Refresh healthy RAG endpoints."""
+        rag_choices, rag_selected = await fetch_available_rag_endpoints()
+        ui.update_select(
+            "ragEndpoint",
+            choices=rag_choices,
+            selected=rag_selected,
+            session=session,
+        )
+
     # Initialize endpoints on startup
     @reactive.Effect
     async def _initialize_endpoints():
         await update_endpoints_and_data()
+        await update_rag_endpoints()
 
     # Initialize convoID with random hex on startup
     @reactive.Effect
@@ -72,6 +82,11 @@ def server(input, output, session):
     @reactive.event(input.refreshEndpoints)
     async def _refresh_endpoints():
         await update_endpoints_and_data()
+
+    @reactive.Effect
+    @reactive.event(input.refreshRagEndpoints)
+    async def _refresh_rag_endpoints():
+        await update_rag_endpoints()
 
     # Clear info and runtime when endpoint changes
     @reactive.Effect
@@ -167,6 +182,7 @@ def server(input, output, session):
         convo_id: str = None,
         current_routing_info: dict = None,
         system_prompt: str = None,
+        rag_endpoint: str = None,
     ) -> AsyncGenerator[str, None]:
         text = (text or "Hello! What model are you?").strip()
         if not text:
@@ -203,6 +219,8 @@ def server(input, output, session):
             }
             if convo_id:
                 headers["X-Convo-ID"] = convo_id
+            if rag_endpoint:
+                headers["X-RAG-Endpoint"] = rag_endpoint
             timeout = httpx.Timeout(connect=5, read=None, write=5, pool=10)
 
             # Use passed routing info instead of reading reactive source
@@ -249,6 +267,15 @@ def server(input, output, session):
                         combined["routing"] = routing_info
                         # Store routing info for later use
                         routing_info_holder["routing"] = routing_info
+
+                if response_headers:
+                    rag_info = {}
+                    for header_name, header_value in response_headers.items():
+                        if header_name.lower().startswith("x-rag-"):
+                            key = header_name.lower().replace("x-rag-", "")
+                            rag_info[key] = header_value
+                    if rag_info:
+                        combined["rag"] = rag_info
 
                 run_info.set(combined if combined else None)
 
@@ -535,6 +562,26 @@ def server(input, output, session):
                 sections.append(
                     "**Auto-Routing Decision**<br>" + "<br>".join(routing_lines)
                 )  # Request info (usage, stats, model_info, runtime from response)
+
+        if info and "rag" in info:
+            rag = info["rag"]
+            rag_lines = []
+            if rag.get("endpoint"):
+                rag_lines.append(f"Endpoint: {rag['endpoint']}")
+            if rag.get("injected"):
+                rag_lines.append(f"Injected: {rag['injected']}")
+            if rag.get("confidence"):
+                rag_lines.append(f"Confidence: {rag['confidence']}")
+            if rag.get("threshold"):
+                rag_lines.append(f"Threshold: {rag['threshold']}")
+            if rag.get("hits"):
+                rag_lines.append(f"Hits: {rag['hits']}")
+            if rag.get("method"):
+                rag_lines.append(f"Method: {rag['method']}")
+            if rag.get("reason") and rag.get("injected") == "false":
+                rag_lines.append(f"Skipped: {rag['reason']}")
+            if rag_lines:
+                sections.append("**RAG**<br>" + "<br>".join(rag_lines))
         if info:
             sections.extend(format_response_info(info, fmt))
             sections.extend(format_timings_info(info, fmt))
@@ -643,6 +690,7 @@ def server(input, output, session):
             convo_id=input.convoID() if input.convoID() else None,
             current_routing_info=current_run_info.get("routing", {}),
             system_prompt=input.systemPrompt() if input.systemPrompt() else None,
+            rag_endpoint=input.ragEndpoint() if input.ragEndpoint() else None,
         )
 
         # Stream async generator chunks to the chat UI per latest Shiny Chat API

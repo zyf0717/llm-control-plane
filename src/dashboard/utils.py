@@ -3,11 +3,14 @@ import os
 from pathlib import Path
 
 import httpx
+import yaml
 from dotenv import load_dotenv
 
 # Load .env from project root (two levels up from this file)
 load_dotenv()
 PROXY_BASE_URL = os.getenv("PROXY_BASE_URL")
+CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
+DEFAULT_RAG_ENDPOINT = "localhost:8100"
 
 
 async def fetch_models_data():
@@ -20,6 +23,97 @@ async def fetch_models_data():
     except Exception as e:
         print(f"Failed to fetch models data: {e}")
         return {}
+
+
+def load_rag_endpoint_config():
+    """Load configured RAG endpoints and default selection from config.yaml."""
+    try:
+        config = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
+    except FileNotFoundError:
+        logging.warning("config.yaml not found; using default RAG endpoint")
+        config = {}
+    except yaml.YAMLError as e:
+        logging.warning("Failed to parse config.yaml for RAG endpoints: %s", e)
+        config = {}
+
+    rag_config = config.get("rag", {}) if isinstance(config, dict) else {}
+    configured_endpoints = rag_config.get("endpoints", [])
+
+    endpoints = []
+    seen_retrieve_urls = set()
+    for endpoint in configured_endpoints:
+        if isinstance(endpoint, str):
+            retrieve_url = endpoint.strip()
+            health_url = ""
+            name = retrieve_url
+        elif isinstance(endpoint, dict):
+            retrieve_url = str(
+                endpoint.get("retrieve_url") or endpoint.get("url") or ""
+            ).strip()
+            health_url = str(endpoint.get("health_url") or "").strip()
+            name = str(endpoint.get("name") or retrieve_url).strip()
+        else:
+            continue
+
+        if not retrieve_url or retrieve_url in seen_retrieve_urls:
+            continue
+
+        endpoints.append(
+            {
+                "name": name or retrieve_url,
+                "retrieve_url": retrieve_url,
+                "health_url": health_url,
+            }
+        )
+        seen_retrieve_urls.add(retrieve_url)
+
+    if not endpoints:
+        endpoints = [
+            {
+                "name": DEFAULT_RAG_ENDPOINT,
+                "retrieve_url": f"http://{DEFAULT_RAG_ENDPOINT}/api/retrieve",
+                "health_url": f"http://{DEFAULT_RAG_ENDPOINT}/api/health",
+            }
+        ]
+
+    default_endpoint = str(rag_config.get("default_endpoint") or "").strip()
+    if not default_endpoint:
+        default_endpoint = endpoints[0]["retrieve_url"]
+
+    return endpoints, default_endpoint
+
+
+async def fetch_available_rag_endpoints():
+    """Return healthy RAG endpoint choices and the selected default."""
+    endpoint_configs, default_endpoint = load_rag_endpoint_config()
+    healthy_choices = {}
+
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for endpoint in endpoint_configs:
+            health_url = endpoint["health_url"]
+            if not health_url:
+                continue
+
+            try:
+                response = await client.get(health_url)
+                response.raise_for_status()
+            except Exception as e:
+                logging.warning("RAG health check failed for %s: %s", health_url, e)
+                continue
+
+            retrieve_url = endpoint["retrieve_url"]
+            label = endpoint["name"]
+            if label != retrieve_url:
+                label = f"{label} ({retrieve_url})"
+            healthy_choices[label] = retrieve_url
+
+    selected = None
+    if default_endpoint in healthy_choices.values():
+        selected = default_endpoint
+    elif healthy_choices:
+        selected = next(iter(healthy_choices.values()))
+
+    return healthy_choices, selected
 
 
 async def fetch_available_endpoints():

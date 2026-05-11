@@ -56,8 +56,11 @@ app_ui = ui.page_fluid(
                 });
                 """),
                     ui.layout_columns(
-                        ui.input_select("endpoint", "", choices=[]),
-                        ui.input_action_button("refreshEndpoints", "🔄"),
+                        ui.input_select("endpoint", "Model Endpoint", choices=[]),
+                        ui.div(
+                            ui.input_action_button("refreshEndpoints", "🔄"),
+                            style="display: flex; align-items: flex-end; height: 100%;",
+                        ),
                         col_widths=[9, 3],
                     ),
                     ui.input_switch("stream", "Streaming", True),
@@ -103,6 +106,19 @@ app_ui = ui.page_fluid(
                             placeholder="System prompt (optional)",
                             width="100%",
                             rows=4,
+                        ),
+                        ui.layout_columns(
+                            ui.input_select(
+                                "ragEndpoint",
+                                "RAG Endpoint",
+                                choices=[],
+                                width="100%",
+                            ),
+                            ui.div(
+                                ui.input_action_button("refreshRagEndpoints", "🔄"),
+                                style="display: flex; align-items: flex-end; height: 100%;",
+                            ),
+                            col_widths=[10, 2],
                         ),
                         ui.output_ui("file_upload_ui"),
                         ui.div(
