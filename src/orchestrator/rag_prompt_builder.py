@@ -67,7 +67,7 @@ class RagPromptBuilder:
 
             block_lines = [f"Source: {label}"]
             if entity_values:
-                block_lines.append(f"Relevant entities: {', '.join(entity_values)}")
+                block_lines.append(f"Relevant to: {', '.join(entity_values)}")
             if content:
                 block_lines.append("Excerpt:")
                 block_lines.append(content)
@@ -92,8 +92,8 @@ class RagPromptBuilder:
             return user_query
 
         return (
-            "Retrieved reference excerpts:\n\n"
+            "[Retrieved reference excerpts]\n\n"
             f"{rag_context}\n\n"
-            "Current user question:\n"
+            "[Current user question]\n"
             f"{user_query}"
         )
