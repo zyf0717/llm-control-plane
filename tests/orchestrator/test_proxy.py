@@ -256,10 +256,10 @@ class TestRequestPreparation:
         )
 
         assert rag_user_content is not None
-        assert "Retrieved reference excerpts:" in rag_user_content
-        assert "Relevant entities: INSERT_PROJECT_NAME, project template" in rag_user_content
+        assert "[Retrieved reference excerpts]" in rag_user_content
+        assert "Relevant to: INSERT_PROJECT_NAME, project template" in rag_user_content
         assert "Excerpt:\nDefinition text" in rag_user_content
-        assert "Current user question:\nNeed context" in rag_user_content
+        assert "[Current user question]\nNeed context" in rag_user_content
 
     @pytest.mark.asyncio
     async def test_prepare_request_rewrites_only_latest_user_turn_when_rag_is_present(self):
@@ -276,11 +276,11 @@ class TestRequestPreparation:
         )
 
         rag_user_content = (
-            "Retrieved reference excerpts:\n\n"
+            "[Retrieved reference excerpts]\n\n"
             "Source: doc-1\n"
             "Excerpt:\n"
             "Definition text\n\n"
-            "Current user question:\n"
+            "[Current user question]\n"
             "Need context"
         )
         with patch.object(
@@ -359,7 +359,7 @@ class TestRequestPreparation:
         assert rag_headers["X-RAG-Injected"] == "true"
         assert rag_headers["X-RAG-Confidence"] == "0.780"
         assert rag_headers["X-RAG-Distance"] == "0.22"
-        assert "Current user question:\nNeed context" in rag_user_content
+        assert "[Current user question]\nNeed context" in rag_user_content
 
     @pytest.mark.asyncio
     async def test_fetch_rag_message_logs_retrieval_summary(self, caplog):

@@ -11,6 +11,8 @@ load_dotenv()
 PROXY_BASE_URL = os.getenv("PROXY_BASE_URL")
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
 DEFAULT_RAG_ENDPOINT = "localhost:8100"
+NONE_RAG_OPTION_LABEL = "None"
+NONE_RAG_OPTION_VALUE = ""
 
 
 async def fetch_models_data():
@@ -84,9 +86,9 @@ def load_rag_endpoint_config():
 
 
 async def fetch_available_rag_endpoints():
-    """Return healthy RAG endpoint choices and the selected default."""
-    endpoint_configs, default_endpoint = load_rag_endpoint_config()
-    healthy_choices = {}
+    """Return healthy RAG endpoint choices with a persistent None option."""
+    endpoint_configs, _default_endpoint = load_rag_endpoint_config()
+    healthy_choices = {NONE_RAG_OPTION_LABEL: NONE_RAG_OPTION_VALUE}
 
     async with httpx.AsyncClient(timeout=5.0) as client:
         for endpoint in endpoint_configs:
@@ -107,13 +109,7 @@ async def fetch_available_rag_endpoints():
                 label = f"{label} ({retrieve_url})"
             healthy_choices[label] = retrieve_url
 
-    selected = None
-    if default_endpoint in healthy_choices.values():
-        selected = default_endpoint
-    elif healthy_choices:
-        selected = next(iter(healthy_choices.values()))
-
-    return healthy_choices, selected
+    return healthy_choices, NONE_RAG_OPTION_VALUE
 
 
 async def fetch_available_endpoints():
@@ -121,20 +117,6 @@ async def fetch_available_endpoints():
     try:
         data = await fetch_models_data()
 
-        # data: Raw response from /models endpoint with structure:
-        #   {
-        #     "data": [
-        #       {
-        #         "id": "model-name",           # Model identifier (e.g., "llama-3.1-8b")
-        #         "endpoint": "endpoint-name",  # Endpoint name (e.g., "Mac Mini")
-        #         "endpoint_url": "http://...", # Full URL to the endpoint
-        #         ...                          # Additional model metadata
-        #       },
-        #       ...
-        #     ]
-        #   }
-
-        # Group models by endpoint
         endpoints = {}
         for model in data.get("data", []):
             endpoint_name = model.get("endpoint")
@@ -148,7 +130,6 @@ async def fetch_available_endpoints():
                     }
                 endpoints[endpoint_name]["models"].append(model)
 
-        # Always add Auto/Smart routing option
         endpoints["Auto"] = {
             "endpoint_url": f"{PROXY_BASE_URL}/smart",
             "models": [
@@ -164,7 +145,7 @@ async def fetch_available_endpoints():
 
         logging.info(f"Fetched endpoints: {endpoints}")
         logging.info(f"Raw data: {data}")
-        return endpoints, data  # Return both endpoints and raw data
+        return endpoints, data
     except Exception as e:
         logging.error(f"Failed to fetch endpoints: {e}")
         return {}, {}
@@ -175,18 +156,16 @@ def create_endpoint_display_choices(endpoints_data):
     choices = {}
     mapping = {}
 
-    # Always put Auto first if it exists
     if "Auto" in endpoints_data:
         choices["Auto (auto-router)"] = "Auto"
         mapping["Auto (auto-router)"] = "Auto"
 
     for endpoint_name, endpoint_data in endpoints_data.items():
         if endpoint_name == "Auto":
-            continue  # Already handled above
+            continue
 
         models = endpoint_data.get("models", [])
         if models:
-            # Use the first model's name for display
             model_name = models[0].get("id", "")
             if model_name:
                 display_name = f"{endpoint_name} ({model_name})"

@@ -56,7 +56,7 @@ app_ui = ui.page_fluid(
                 });
                 """),
                     ui.layout_columns(
-                        ui.input_select("endpoint", "Model Endpoint", choices=[]),
+                        ui.input_select("endpoint", "Machine Endpoint", choices=[]),
                         ui.div(
                             ui.input_action_button("refreshEndpoints", "🔄"),
                             style="display: flex; align-items: flex-end; height: 100%;",
@@ -100,13 +100,7 @@ app_ui = ui.page_fluid(
                             ui.input_action_button("generateConvoID", "🔄"),
                             col_widths=[10, 2],
                         ),
-                        ui.input_text_area(
-                            "systemPrompt",
-                            "",
-                            placeholder="System prompt (optional)",
-                            width="100%",
-                            rows=4,
-                        ),
+                        ui.output_ui("system_prompt_ui"),
                         ui.layout_columns(
                             ui.input_select(
                                 "ragEndpoint",

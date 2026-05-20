@@ -1,20 +1,31 @@
-import json
 import os
-import time
 import uuid
 from datetime import datetime
-from typing import AsyncGenerator
+from typing import Any, Dict, Optional
 
-import httpx
 import shinyswatch
 from dotenv import load_dotenv
 from shiny import reactive, render, ui
 
 load_dotenv()
-API_KEY_ID = os.getenv("API_KEY_ID")
-API_KEY_SECRET = os.getenv("API_KEY_SECRET")
-PROXY_BASE_URL = os.getenv("PROXY_BASE_URL")
 
+from .chat_client import stream_chat_response
+from .formatters import (
+    format_all_available_models,
+    format_hardware_info,
+    format_history_json,
+    format_model_details,
+    format_response_info,
+    format_timings_info,
+)
+from .prompt_state import (
+    LOCKED_SYSTEM_PROMPT_MESSAGE,
+    append_managed_rag_suffix,
+    build_system_prompt_state,
+    extract_first_system_prompt,
+    first_turn_system_prompt_to_send,
+    normalize_system_prompt,
+)
 from .utils import (
     create_endpoint_display_choices,
     fetch_available_endpoints,
@@ -25,29 +36,88 @@ from .utils import (
 
 
 def server(input, output, session):
-    # Reactive values
     available_endpoints = reactive.Value({})
     endpoint_info = reactive.Value({})
     endpoint_display_mapping = reactive.Value({})
     last_runtime = reactive.Value(None)
     run_info = reactive.Value(None)
     send_button_state = reactive.Value("ready")
-    info_accordion_open = reactive.Value(True)  # Track accordion state
-    file_upload_key = reactive.Value(0)  # Track file upload re-renders
-    current_files = reactive.Value(
-        {"key": 0, "files": None}
-    )  # Track files with their key
+    info_accordion_open = reactive.Value(True)
+    file_upload_key = reactive.Value(0)
+    current_files = reactive.Value({"key": 0, "files": None})
+    system_prompt_states = reactive.Value({})
+    system_prompt_locked = reactive.Value(False)
+    system_prompt_seed = reactive.Value("")
+    history_refresh_trigger = reactive.Value(0)
 
-    async def update_endpoints_and_data():
-        """Refresh model endpoints and metadata."""
+    def current_convo_id() -> str:
+        return str(input.convoID() or "").strip()
+
+    def get_system_prompt_state(convo_id: str) -> Dict[str, Any]:
+        state = system_prompt_states.get().get(convo_id)
+        if isinstance(state, dict):
+            return state
+        return build_system_prompt_state()
+
+    def set_system_prompt_state(
+        convo_id: str,
+        *,
+        prompt: Optional[str] = None,
+        started: Optional[bool] = None,
+        locked: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        state = dict(get_system_prompt_state(convo_id))
+        if prompt is not None:
+            state["prompt"] = normalize_system_prompt(prompt)
+        if started is not None:
+            state["started"] = bool(started)
+        if locked is not None:
+            state["locked"] = bool(locked)
+
+        states = dict(system_prompt_states.get())
+        states[convo_id] = state
+        system_prompt_states.set(states)
+        return state
+
+    def apply_system_prompt_view(state: Dict[str, Any]) -> None:
+        system_prompt_locked.set(bool(state.get("locked")))
+        system_prompt_seed.set(str(state.get("prompt") or ""))
+
+    async def load_system_prompt_state(convo_id: str) -> Dict[str, Any]:
+        if not convo_id:
+            state = build_system_prompt_state()
+            apply_system_prompt_view(state)
+            return state
+
+        cached_state = system_prompt_states.get().get(convo_id)
+        if isinstance(cached_state, dict):
+            apply_system_prompt_view(cached_state)
+            return cached_state
+
+        convo_history = await fetch_convo_history(convo_id)
+        if isinstance(convo_history, list) and convo_history:
+            restored_prompt = extract_first_system_prompt(convo_history)
+            state = build_system_prompt_state(
+                restored_prompt,
+                started=True,
+                locked=True,
+            )
+        else:
+            state = build_system_prompt_state()
+
+        states = dict(system_prompt_states.get())
+        states[convo_id] = state
+        system_prompt_states.set(states)
+        apply_system_prompt_view(state)
+        return state
+
+    async def update_endpoints_and_data() -> None:
         endpoints, data = await fetch_available_endpoints()
         available_endpoints.set(endpoints)
         endpoint_info.set(data)
 
-        # Create endpoint choices and mapping
         choices, mapping = create_endpoint_display_choices(endpoints)
         endpoint_display_mapping.set(mapping)
-
         choice_list = list(choices.keys())
         ui.update_select(
             "endpoint",
@@ -55,33 +125,31 @@ def server(input, output, session):
             selected=choice_list[0] if choice_list else None,
         )
 
-    async def update_rag_endpoints():
-        """Refresh healthy RAG endpoints."""
-        rag_choices, rag_selected = await fetch_available_rag_endpoints()
+    async def update_rag_endpoints(current_selection: Optional[str] = None) -> None:
+        rag_choices, default_selection = await fetch_available_rag_endpoints()
+        selected = (
+            current_selection
+            if current_selection in rag_choices.values()
+            else default_selection
+        )
         ui.update_select(
             "ragEndpoint",
             choices=rag_choices,
-            selected=rag_selected,
+            selected=selected,
             session=session,
         )
 
-    def format_history_json(history_payload) -> str:
-        """Render history payload as readable JSON for the History tab."""
-        return json.dumps(history_payload, indent=2, ensure_ascii=False)
+    shinyswatch.theme_picker_server()
 
-    # Initialize endpoints on startup
     @reactive.Effect
     async def _initialize_endpoints():
         await update_endpoints_and_data()
         await update_rag_endpoints()
 
-    # Initialize convoID with random hex on startup
     @reactive.Effect
     def _initialize_convo_id():
-        initial_uuid = str(uuid.uuid4().hex[:12])
-        ui.update_text("convoID", value=initial_uuid, session=session)
+        ui.update_text("convoID", value=str(uuid.uuid4().hex[:12]), session=session)
 
-    # Refresh endpoints when button is clicked
     @reactive.Effect
     @reactive.event(input.refreshEndpoints)
     async def _refresh_endpoints():
@@ -90,19 +158,19 @@ def server(input, output, session):
     @reactive.Effect
     @reactive.event(input.refreshRagEndpoints)
     async def _refresh_rag_endpoints():
-        await update_rag_endpoints()
+        await update_rag_endpoints(str(input.ragEndpoint() or ""))
 
-    # Clear info and runtime when endpoint changes
     @reactive.Effect
     @reactive.event(input.endpoint)
     def _clear_info_on_endpoint_change():
         run_info.set(None)
         last_runtime.set(None)
 
-    # Enable dynamic theme switching
-    shinyswatch.theme_picker_server()
+    @reactive.Effect
+    @reactive.event(input.convoID)
+    async def _sync_system_prompt_for_conversation():
+        await load_system_prompt_state(current_convo_id())
 
-    # Handle UI state changes for switches
     @reactive.Effect
     @reactive.event(input.outputJSON)
     def _handle_json_toggle():
@@ -129,12 +197,70 @@ def server(input, output, session):
     @reactive.event(input.generateConvoID)
     def _generate_convo_id():
         new_uuid = str(uuid.uuid4().hex[:12])
+        apply_system_prompt_view(
+            set_system_prompt_state(new_uuid, prompt="", started=False, locked=False)
+        )
         ui.update_text("convoID", value=new_uuid, session=session)
+
+    @render.ui
+    def system_prompt_ui():
+        prompt = system_prompt_seed.get()
+        if system_prompt_locked.get():
+            return ui.card(
+                ui.markdown("**System Prompt** *(turn 1 only; locked)*"),
+                ui.tags.pre(
+                    prompt or LOCKED_SYSTEM_PROMPT_MESSAGE,
+                    style=(
+                        "max-height: 12rem; overflow: auto; white-space: pre-wrap; "
+                        "overflow-wrap: anywhere; margin-bottom: 0.5rem;"
+                    ),
+                ),
+                ui.markdown(
+                    "_This prompt was sent only on turn 1 and is not resent on later turns._"
+                ),
+            )
+
+        return ui.input_text_area(
+            "systemPrompt",
+            "",
+            value=system_prompt_seed.get(),
+            placeholder="System prompt (optional, turn 1 only)",
+            width="100%",
+            rows=4,
+        )
+
+    @reactive.Effect
+    @reactive.event(input.systemPrompt)
+    def _store_system_prompt_input():
+        convo_id = current_convo_id()
+        if not convo_id or system_prompt_locked.get():
+            return
+        set_system_prompt_state(convo_id, prompt=input.systemPrompt() or "")
+
+    @reactive.Effect
+    @reactive.event(input.ragEndpoint)
+    def _append_rag_suffix_for_selected_endpoint():
+        convo_id = current_convo_id()
+        if not convo_id or system_prompt_locked.get():
+            return
+
+        rag_endpoint = str(input.ragEndpoint() or "").strip()
+        if not rag_endpoint:
+            return
+
+        current_prompt = input.systemPrompt()
+        if current_prompt is None:
+            current_prompt = get_system_prompt_state(convo_id).get("prompt", "")
+
+        updated_prompt = append_managed_rag_suffix(current_prompt)
+        if updated_prompt == normalize_system_prompt(current_prompt):
+            return
+
+        apply_system_prompt_view(set_system_prompt_state(convo_id, prompt=updated_prompt))
 
     @render.ui
     @reactive.event(file_upload_key)
     def file_upload_ui():
-        # Re-render file upload when key changes (to clear it)
         return ui.layout_columns(
             ui.input_file(
                 "uploadFile",
@@ -151,7 +277,6 @@ def server(input, output, session):
     @reactive.Effect
     @reactive.event(input.uploadFile)
     def _track_uploaded_files():
-        # Store files with current key when files are uploaded
         uploaded = input.uploadFile()
         if uploaded and len(uploaded) > 0:
             current_files.set({"key": file_upload_key.get(), "files": uploaded})
@@ -159,7 +284,6 @@ def server(input, output, session):
     @reactive.Effect
     @reactive.event(input.clearUpload)
     def _clear_upload():
-        # Clear tracked files and increment key to force file upload re-render
         current_files.set({"key": file_upload_key.get() + 1, "files": None})
         file_upload_key.set(file_upload_key.get() + 1)
 
@@ -171,352 +295,18 @@ def server(input, output, session):
     @reactive.Effect
     @reactive.event(input.info_accordion)
     def _track_accordion_state():
-        # Update our reactive value when user manually toggles accordion
-        is_open = "info_panel" in (input.info_accordion() or [])
-        info_accordion_open.set(is_open)
-
-    async def llm_stream_generator(
-        endpoint_key: str,
-        text: str,
-        endpoints_dict: dict,
-        stream: bool = True,
-        output_json: bool = False,
-        reasoning_effort: str = "medium",
-        output_reasoning: bool = False,
-        convo_id: str = None,
-        current_routing_info: dict = None,
-        system_prompt: str = None,
-        rag_endpoint: str = None,
-    ) -> AsyncGenerator[str, None]:
-        text = (text or "Hello! What model are you?").strip()
-        if not text:
-            yield ""
-            return
-
-        now = time.time()
-        send_button_state.set("busy")
-
-        try:
-            # Handle Auto routing specially - route to smart endpoint
-            if endpoint_key == "Auto":
-                url = f"{PROXY_BASE_URL}/smart"
-            else:
-                if not endpoints_dict or endpoint_key not in endpoints_dict:
-                    yield f"Error: Endpoint '{endpoint_key}' not available"
-                    return
-                url = f"{PROXY_BASE_URL}/{endpoint_key}"
-
-            # Prepare request
-
-            # Build messages array with optional system prompt
-            messages = []
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-            messages.append({"role": "user", "content": text})
-
-            payload = {"messages": messages}
-            headers = {
-                "CF-Access-Client-Id": API_KEY_ID,
-                "CF-Access-Client-Secret": API_KEY_SECRET,
-                "Content-Type": "application/json",
-                "X-Reasoning-Effort": reasoning_effort,
-            }
-            if convo_id:
-                headers["X-Convo-ID"] = convo_id
-            if rag_endpoint:
-                headers["X-RAG-Endpoint"] = rag_endpoint
-            timeout = httpx.Timeout(connect=5, read=None, write=5, pool=10)
-
-            # Use passed routing info instead of reading reactive source
-            routing_info_holder = {"routing": current_routing_info or {}}
-
-            def extract_metadata(
-                obj, response_headers=None, preserve_routing_from=None
-            ):
-                """Extract metadata from response object and headers."""
-                metadata_keys = ("stats", "usage", "model_info", "runtime", "timings")
-                combined = {}
-
-                # Preserve existing routing info if provided
-                if preserve_routing_from and "routing" in preserve_routing_from:
-                    combined["routing"] = preserve_routing_from["routing"]
-
-                # Extract standard metadata
-                for key in metadata_keys:
-                    if key in obj and isinstance(obj[key], dict):
-                        combined[key] = obj[key]
-
-                # Extract routing information from headers (for smart routing)
-                # Check if this is an auto-routing request
-                is_auto_routing = (
-                    endpoint_key == "smart"
-                    or endpoint_key == "Auto"
-                    or (
-                        response_headers
-                        and any(
-                            h.lower().startswith("x-route-")
-                            for h in response_headers.keys()
-                        )
-                    )
-                )
-
-                if response_headers and is_auto_routing:
-                    routing_info = {}
-                    for header_name, header_value in response_headers.items():
-                        if header_name.lower().startswith("x-route-"):
-                            key = header_name.lower().replace("x-route-", "")
-                            routing_info[key] = header_value
-
-                    if routing_info:
-                        combined["routing"] = routing_info
-                        # Store routing info for later use
-                        routing_info_holder["routing"] = routing_info
-
-                if response_headers:
-                    rag_info = {}
-                    for header_name, header_value in response_headers.items():
-                        if header_name.lower().startswith("x-rag-"):
-                            key = header_name.lower().replace("x-rag-", "")
-                            rag_info[key] = header_value
-                    if rag_info:
-                        combined["rag"] = rag_info
-
-                run_info.set(combined if combined else None)
-
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                if stream:
-                    payload["stream"] = True
-                    payload["stream_options"] = {"include_usage": True}
-                    async with client.stream(
-                        "POST", url, headers=headers, json=payload
-                    ) as r:
-                        r.raise_for_status()
-
-                        # Extract routing info from headers once
-                        extract_metadata({}, dict(r.headers))
-
-                        reasoning_chunk_found = False
-                        md_code_wrap = True
-
-                        async for line in r.aiter_lines():
-
-                            # Format is "data: {json}""
-                            if not line or not line.startswith("data: "):
-                                continue
-                            data = line[6:].strip()
-
-                            # Final line
-                            if data == "[DONE]":
-                                break
-
-                            # Parse JSON
-                            try:
-                                obj = json.loads(data)
-                            except json.JSONDecodeError:
-                                continue
-
-                            # For debugging
-                            if output_json:
-                                if md_code_wrap:
-                                    yield "```json\n"
-                                    md_code_wrap = False
-                                yield f"{json.dumps(obj, indent=2)},\n"
-                                continue
-
-                            # Parse output content
-                            choices = obj.get("choices", [])
-                            if choices:
-                                if output_reasoning:
-                                    delta = choices[0].get("delta", {})
-                                    reasoning_chunk = delta.get(
-                                        "reasoning"
-                                    ) or delta.get("reasoning_content", "")
-                                    if reasoning_chunk:
-                                        if reasoning_chunk_found is False:
-                                            reasoning_chunk_found = True
-                                            yield "<em>"
-                                        yield reasoning_chunk
-
-                                content_chunk = (
-                                    choices[0].get("delta", {}).get("content", "")
-                                )
-                                if content_chunk:
-                                    if (
-                                        reasoning_chunk_found
-                                    ):  # Visual split of reasoning and content
-                                        yield "</em>\n\n---\n\n"
-                                        reasoning_chunk_found = False
-                                    yield content_chunk
-
-                            # Use the stored routing info
-                            extract_metadata(
-                                obj, preserve_routing_from=routing_info_holder
-                            )
-
-                        if not md_code_wrap:
-                            yield "```\n"
-
-                else:
-                    # Non-streaming request
-                    resp = await client.post(
-                        url, headers=headers, json=payload, timeout=timeout
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-
-                    extract_metadata(data, dict(resp.headers))
-
-                    if output_json:
-                        yield f"```json\n{json.dumps(data, indent=2)}\n```"
-
-                    else:
-                        if output_reasoning:
-                            # GPT-style
-                            message = data.get("choices", [{}])[0].get("message", {})
-                            reasoning = message.get("reasoning") or message.get(
-                                "reasoning_content", ""
-                            )
-                            if reasoning:
-                                yield f"<em>{str(reasoning)}</em>\n\n---\n\n"
-                        content = (
-                            data.get("choices", [{}])[0]
-                            .get("message", {})
-                            .get("content", "")
-                        )
-                        ### <think> tags parsing ###
-                        content = content.replace("<think>", "<em>")
-                        content = content.replace("</think>", "</em>\n\n---\n\n")
-
-                        ### <|channel|> tags parsing ###
-                        content = content.replace(
-                            "<|channel|>analysis<|message|>", "<em>"
-                        )
-                        content = content.replace(
-                            "<|end|><|start|>assistant<|channel|>final<|message|>",
-                            "</em>\n\n---\n\n",
-                        )
-                        yield str(content)
-
-        except httpx.HTTPStatusError as e:
-            # For streaming responses, we can't access response.text directly
-            # So we'll use the status code and reason phrase instead
-            reason = getattr(e.response, "reason_phrase", "Unknown Error")
-            yield f"HTTP Error {e.response.status_code}: {reason}"
-        except httpx.RequestError as e:
-            yield f"Request Error: {str(e)}"
-        except Exception as e:
-            # Log the full error for debugging
-            print(
-                f"Unexpected error in llm_stream_generator: {type(e).__name__}: {str(e)}"
-            )
-            import traceback
-
-            traceback.print_exc()
-            yield f"Error: {str(e)}"
-        finally:
-            last_runtime.set(time.time() - now)
-            send_button_state.set("ready")
-
-    def format_hardware_info(model, routing_info=None):
-        """Format hardware information for display."""
-        hardware_info = []
-
-        # Use routing hardware info if available (from smart routing)
-        if routing_info:
-            for key in ["gpu", "vram", "soc", "cpu", "ram"]:
-                value = routing_info.get(key)
-                if value:
-                    hardware_info.append(f"{key}: {value}")
-
-        # If no routing info or routing info was incomplete, fallback to model hardware info
-        if not hardware_info and model:
-            for key in ["gpu", "vram", "soc", "cpu", "ram"]:
-                value = model.get(key)
-                if value:
-                    hardware_info.append(f"{key}: {value}")
-
-        return hardware_info
-
-    def format_model_details(model):
-        """Format model details for display."""
-        model_details = []
-
-        # Add the full model name first
-        model_name = model.get("id")
-        if model_name:
-            model_details.append(f"model: {model_name}")
-
-        # Add other model properties
-        for key in ["arch", "quantization", "compatibility_type", "state"]:
-            value = model.get(key)
-            if value:
-                key_name = key  # .replace("_", " ").title()
-                model_details.append(f"{key_name}: {value}")
-
-        # Add context information
-        max_ctx = model.get("max_context_length")
-        loaded_ctx = model.get("loaded_context_length")
-        if max_ctx:
-            model_details.append(f"max_context: {max_ctx}")
-        if loaded_ctx:
-            model_details.append(f"loaded_context: {loaded_ctx}")
-
-        return model_details
-
-    def format_all_available_models(endpoint_data):
-        """Format all available models for display when Auto is selected."""
-        models_list = []
-
-        if not endpoint_data or "data" not in endpoint_data:
-            return []
-
-        # Get all models (excluding auto-router)
-        for model in endpoint_data["data"]:
-            model_details = format_model_details(model)
-            if model_details:
-                models_list.extend(model_details)
-                models_list.append("")  # Add spacing between models
-
-        return models_list
-
-    def format_response_info(info, fmt_func):
-        """Format response information (usage, stats, runtime) for display."""
-        sections = []
-        for section_name in ("usage", "stats", "runtime"):
-            section_data = info.get(section_name)
-            if section_data and isinstance(section_data, dict):
-                title = section_name.replace("_", " ").title()
-                lines = [f"**{title}**"]
-                for k, v in section_data.items():
-                    key_name = k  # .replace("_", " ").title()
-                    lines.append(f"{key_name}: {fmt_func(v)}")
-                sections.append("<br>".join(lines))
-        return sections
-
-    def format_timings_info(info, fmt_func):
-        timings = info.get("timings", {})
-        if not timings:
-            return []
-        timings_info = [
-            f"{key}: {fmt_func(value)}"
-            for key, value in timings.items()
-            if value is not None
-        ]
-        if not timings_info:
-            return []
-        return ["**Timings**<br>" + "<br>".join(timings_info)]
+        info_accordion_open.set("info_panel" in (input.info_accordion() or []))
 
     @render.ui
     def outputRunInfo():
-        # Create static accordion structure - this only renders once
         return ui.accordion(
             ui.accordion_panel(
                 "Runtime & System Information",
-                ui.output_ui("info_content"),  # Dynamic content goes here
+                ui.output_ui("info_content"),
                 value="info_panel",
             ),
             id="info_accordion",
-            open=False,  # Start collapsed
+            open=False,
         )
 
     @render.ui
@@ -526,46 +316,32 @@ def server(input, output, session):
         runtime = last_runtime.get()
         endpoint_data = endpoint_info.get()
         display_mapping = endpoint_display_mapping.get()
-
-        # Get the actual endpoint key from the display name
         current_endpoint = display_mapping.get(input.endpoint())
 
-        def fmt(v):
-            """Helper to format numbers and values."""
-            if isinstance(v, (int, float)):
-                return f"{v:.2f}" if v != int(v) else str(int(v))
-            return str(v)
+        def fmt(value: Any) -> str:
+            if isinstance(value, (int, float)):
+                return f"{value:.2f}" if value != int(value) else str(int(value))
+            return str(value)
 
         sections = []
-
-        # Elapsed time section
         if runtime is not None:
             sections.append(f"**Elapsed Time**: {runtime:.2f}s")
 
-        # Routing information (for smart routing)
         routing_info = None
         if info and "routing" in info:
-            routing = info["routing"]
-            routing_info = routing  # Store for hardware info use
-
-            # Build routing display lines if we have meaningful data
+            routing_info = info["routing"]
             routing_lines = []
             routing_fields = {
-                "decision": lambda v: f"Selected Node: {v}",
-                # "confidence": lambda v: f"Confidence: {float(v):.1%}",
-                # "reason": lambda v: f"Reason: {v}",
-                "strategy": lambda v: f"Workload: {v}",
+                "decision": lambda value: f"Selected Node: {value}",
+                "strategy": lambda value: f"Workload: {value}",
             }
-
             for field, formatter in routing_fields.items():
-                if field in routing:
-                    routing_lines.append(formatter(routing[field]))
-
-            # Only show routing section if we have actual routing data
+                if field in routing_info:
+                    routing_lines.append(formatter(routing_info[field]))
             if routing_lines:
                 sections.append(
                     "**Auto-Routing Decision**<br>" + "<br>".join(routing_lines)
-                )  # Request info (usage, stats, model_info, runtime from response)
+                )
 
         if info and "rag" in info:
             rag = info["rag"]
@@ -586,45 +362,32 @@ def server(input, output, session):
                 rag_lines.append(f"Skipped: {rag['reason']}")
             if rag_lines:
                 sections.append("**RAG**<br>" + "<br>".join(rag_lines))
+
         if info:
             sections.extend(format_response_info(info, fmt))
             sections.extend(format_timings_info(info, fmt))
 
-        # Current endpoint info from /models endpoint
-        # For Auto/smart routing: show all pre-run, use the routed endpoint post-run
-        # For manual selection: use the selected endpoint
         endpoint_for_model_info = current_endpoint
-
-        # If we have routing info, prioritize the routed endpoint
         if routing_info and "decision" in routing_info:
             endpoint_for_model_info = routing_info["decision"]
 
         model = find_model_by_endpoint(endpoint_data, endpoint_for_model_info)
-
-        # Fallback: if no model found and we have routing info, try the routed endpoint directly
         if not model and routing_info and "decision" in routing_info:
             model = find_model_by_endpoint(endpoint_data, routing_info["decision"])
 
-        # Special handling for Auto/smart endpoints when no routing decision has been made
         if current_endpoint in ["Auto", "smart"] and not routing_info:
-            # For Auto/smart without routing decision, always show all available models
             all_models = format_all_available_models(endpoint_data)
             if all_models:
                 sections.append(
                     "**Available Models (Auto-mode)**<br><br>" + "<br>".join(all_models)
                 )
         elif model:
-            # Hardware info - use routing info if available, otherwise use model info
             hardware_info = format_hardware_info(model, routing_info)
             if hardware_info:
                 sections.append("**Hardware**<br>" + "<br>".join(hardware_info))
-
-            # Model details
             model_details = format_model_details(model)
             if model_details:
                 sections.append("**Model Info**<br>" + "<br>".join(model_details))
-
-        # Fallback: when no specific model is found and no routing decision, show all available models
         elif not model and not routing_info:
             all_models = format_all_available_models(endpoint_data)
             if all_models:
@@ -634,56 +397,55 @@ def server(input, output, session):
 
         if not sections:
             return ui.div()
+        return ui.markdown("<br><br>".join(sections))
 
-        # Join sections with double line breaks for spacing
-        markdown_content = "<br><br>".join(sections)
-        return ui.markdown(markdown_content)
-
-    # Object to append messages
     chat = ui.Chat(id="chat")
 
     @chat.on_user_submit
     async def _handle_chat_input(user_input: str):
-        # Read reactive values outside the extended task
         current_endpoints = available_endpoints.get()
         display_mapping = endpoint_display_mapping.get()
         current_run_info = run_info.get() or {}
-
-        # Get the actual endpoint key from the display name
         actual_endpoint_key = display_mapping.get(input.endpoint())
+        convo_id = current_convo_id() or None
+        prompt_state = (
+            get_system_prompt_state(convo_id)
+            if convo_id
+            else build_system_prompt_state()
+        )
 
-        # Read uploaded file content if present
-        # Only use files if they match the current upload key (not cleared)
         files_data = current_files.get()
         uploaded_files = (
             files_data.get("files")
             if files_data.get("key") == file_upload_key.get()
             else None
         )
-
         if uploaded_files and len(uploaded_files) > 0:
             file_contents = []
             for file_info in uploaded_files:
                 try:
-                    # Check if file actually exists before trying to read
                     if not os.path.exists(file_info["datapath"]):
                         continue
-                    with open(file_info["datapath"], "r", encoding="utf-8") as f:
-                        content = f.read()
-                        filename = file_info["name"]
-                        file_contents.append(f"--- File: {filename} ---\n{content}")
-                except Exception as e:
-                    # If file reading fails, include error message
+                    with open(file_info["datapath"], "r", encoding="utf-8") as handle:
+                        content = handle.read()
+                    file_contents.append(f"--- File: {file_info['name']} ---\n{content}")
+                except Exception as exc:
                     filename = file_info.get("name", "unknown")
-                    file_contents.append(f"--- Error reading {filename}: {str(e)} ---")
-
-            # Inject all file contents into user message if available
+                    file_contents.append(f"--- Error reading {filename}: {str(exc)} ---")
             if file_contents:
-                files_section = "\n\n".join(file_contents)
-                user_input = f"{user_input}\n\n{files_section}"
+                user_input = f"{user_input}\n\n{'\n\n'.join(file_contents)}"
 
-        # Call the async generator function to get response stream
-        res = llm_stream_generator(
+        current_prompt = normalize_system_prompt(
+            input.systemPrompt()
+            if input.systemPrompt() is not None
+            else prompt_state.get("prompt")
+        )
+        system_prompt_to_send = first_turn_system_prompt_to_send(
+            current_prompt,
+            bool(prompt_state.get("started")),
+        )
+
+        response_stream = stream_chat_response(
             endpoint_key=actual_endpoint_key,
             text=user_input,
             endpoints_dict=current_endpoints,
@@ -691,63 +453,62 @@ def server(input, output, session):
             output_json=input.outputJSON(),
             reasoning_effort=input.reasoningEffort(),
             output_reasoning=input.outputReasoning(),
-            convo_id=input.convoID() if input.convoID() else None,
+            convo_id=convo_id,
             current_routing_info=current_run_info.get("routing", {}),
-            system_prompt=input.systemPrompt() if input.systemPrompt() else None,
+            system_prompt=system_prompt_to_send,
             rag_endpoint=input.ragEndpoint() if input.ragEndpoint() else None,
+            on_metadata=run_info.set,
+            on_send_button_state=send_button_state.set,
+            on_runtime=last_runtime.set,
         )
+        await chat.append_message_stream(response_stream)
 
-        # Stream async generator chunks to the chat UI per latest Shiny Chat API
-        await chat.append_message_stream(res)
+        if convo_id and not bool(prompt_state.get("started")):
+            apply_system_prompt_view(
+                set_system_prompt_state(
+                    convo_id,
+                    prompt=current_prompt,
+                    started=True,
+                    locked=True,
+                )
+            )
 
-    # Add a reactive value to track history refresh needs
-    history_refresh_trigger = reactive.Value(0)
-
-    # Trigger history refresh when messages are sent
     @reactive.Effect
     @reactive.event(input.send)
     def _trigger_history_refresh():
-        # Increment the trigger to force history refresh after sending messages
         history_refresh_trigger.set(history_refresh_trigger.get() + 1)
 
-    # Trigger history refresh when refresh button is clicked
     @reactive.Effect
     @reactive.event(input.refreshHistory)
     def _manual_history_refresh():
-        # Increment the trigger to force history refresh
         history_refresh_trigger.set(history_refresh_trigger.get() + 1)
 
     @render.ui
     @reactive.event(input.convoID, history_refresh_trigger)
     async def historyBox():
-        # Only fetch if conversation ID is provided
-        if not input.convoID():
+        convo_id = input.convoID()
+        if not convo_id:
             return ui.card(
                 ui.markdown(
                     "**No conversation ID provided**\n\nEnter a conversation ID to view history."
                 ),
             )
 
-        convo_history = await fetch_convo_history(input.convoID())
-
-        # Handle empty or error responses
+        convo_history = await fetch_convo_history(convo_id)
         if not convo_history:
             return ui.card(
                 ui.markdown(
-                    f"**No history found for conversation: {input.convoID()}**\n\nThis conversation may not exist or has no messages."
+                    f"**No history found for conversation: {convo_id}**\n\nThis conversation may not exist or has no messages."
                 ),
             )
 
-        # Add timestamp to show when history was last refreshed
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         message_count = len(convo_history) if isinstance(convo_history, list) else None
-        formatted_history = format_history_json(convo_history)
-
         return ui.card(
             ui.markdown(f"**Conversation History** *(refreshed at {timestamp})*"),
             ui.markdown(f"`{message_count} messages`") if message_count is not None else None,
             ui.tags.pre(
-                formatted_history,
+                format_history_json(convo_history),
                 style=(
                     "max-height: 36rem; overflow: auto; white-space: pre-wrap; "
                     "overflow-wrap: anywhere; margin-bottom: 0;"

@@ -96,6 +96,35 @@ async def test_fetch_available_rag_endpoints_filters_unhealthy(monkeypatch):
         choices, selected = await utils.fetch_available_rag_endpoints()
 
     assert choices == {
-        "healthy (http://healthy/api/retrieve)": "http://healthy/api/retrieve"
+        "None": "",
+        "healthy (http://healthy/api/retrieve)": "http://healthy/api/retrieve",
     }
-    assert selected == "http://healthy/api/retrieve"
+    assert selected == ""
+
+
+@pytest.mark.asyncio
+async def test_fetch_available_rag_endpoints_returns_none_when_all_unhealthy(monkeypatch):
+    monkeypatch.setattr(
+        utils,
+        "load_rag_endpoint_config",
+        lambda: (
+            [
+                {
+                    "name": "down",
+                    "retrieve_url": "http://down/api/retrieve",
+                    "health_url": "http://down/api/health",
+                }
+            ],
+            "http://down/api/retrieve",
+        ),
+    )
+
+    with patch("httpx.AsyncClient") as mock_client_class:
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        mock_client.get.side_effect = RuntimeError("unreachable")
+
+        choices, selected = await utils.fetch_available_rag_endpoints()
+
+    assert choices == {"None": ""}
+    assert selected == ""
