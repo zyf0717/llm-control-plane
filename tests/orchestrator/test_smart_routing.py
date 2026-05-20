@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from ..llm_router import RouteDecision, WorkloadType
-from ..proxy import app
+from src.orchestrator.llm_router import RouteDecision, WorkloadType
+from src.orchestrator.proxy import app
 
 
 @pytest.fixture

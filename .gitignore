@@ -214,3 +214,6 @@ nohup.out
 
 # config
 config.yaml
+
+# vscode settings
+.vscode/

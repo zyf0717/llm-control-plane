@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from ..llm_router import (
+from src.orchestrator.llm_router import (
     EndpointConfig,
     LLMRouter,
     RouteDecision,
