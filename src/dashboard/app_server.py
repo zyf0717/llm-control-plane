@@ -208,9 +208,9 @@ def server(input, output, session):
         locked = system_prompt_locked.get()
         prompt_input = ui.input_text_area(
             "systemPrompt",
-            "System Prompt" + " (turn 1 only; locked)" if locked else "System Prompt",
+            "System Prompt" + " (locked after turn 1)" if locked else "System Prompt",
             value=prompt,
-            placeholder="System prompt (optional, turn 1 only)",
+            placeholder="System prompt (optional, locked after turn 1)",
             width="100%",
             rows=4,
         )
