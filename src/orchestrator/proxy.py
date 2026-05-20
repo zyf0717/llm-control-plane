@@ -112,9 +112,16 @@ class RequestProcessor:
         return len(messages)
 
     @staticmethod
-    def _build_rag_message(results: List[Dict]) -> Optional[Dict[str, str]]:
+    def _build_rag_context(results: List[Dict]) -> Optional[Dict[str, str]]:
         """Build a turn-local system message from retrieved RAG results."""
-        return RagPromptBuilder._build_rag_message(results)
+        rag_context = RagPromptBuilder._build_rag_context(results)
+        if not rag_context:
+            return None
+
+        return {
+            "role": "system",
+            "content": f"Retrieved reference excerpts:\n\n{rag_context}",
+        }
 
     @staticmethod
     def _rag_result_label(result: Dict, index: int) -> str:
@@ -224,7 +231,7 @@ class RequestProcessor:
         if raw_results and raw_results[0].get("distance") is not None:
             rag_headers["X-RAG-Distance"] = str(raw_results[0]["distance"])
 
-        rag_message = RequestProcessor._build_rag_message(filtered_results[:RAG_TOP_K])
+        rag_message = RequestProcessor._build_rag_context(filtered_results[:RAG_TOP_K])
         if not rag_message:
             rag_headers["X-RAG-Injected"] = "false"
             rag_headers["X-RAG-Reason"] = "below-threshold"
