@@ -205,28 +205,25 @@ def server(input, output, session):
     @render.ui
     def system_prompt_ui():
         prompt = system_prompt_seed.get()
-        if system_prompt_locked.get():
-            return ui.card(
-                ui.markdown("**System Prompt** *(turn 1 only; locked)*"),
-                ui.tags.pre(
-                    prompt or LOCKED_SYSTEM_PROMPT_MESSAGE,
-                    style=(
-                        "max-height: 12rem; overflow: auto; white-space: pre-wrap; "
-                        "overflow-wrap: anywhere; margin-bottom: 0.5rem;"
-                    ),
-                ),
-                ui.markdown(
-                    "_This prompt was sent only on turn 1 and is not resent on later turns._"
-                ),
-            )
-
-        return ui.input_text_area(
+        locked = system_prompt_locked.get()
+        prompt_input = ui.input_text_area(
             "systemPrompt",
-            "",
-            value=system_prompt_seed.get(),
+            "System Prompt" + " (turn 1 only; locked)" if locked else "System Prompt",
+            value=prompt,
             placeholder="System prompt (optional, turn 1 only)",
             width="100%",
             rows=4,
+        )
+
+        if not locked:
+            return prompt_input
+
+        return ui.div(
+            ui.tags.fieldset(
+                prompt_input,
+                disabled="disabled",
+                style="border: 0; margin: 0; padding: 0; min-inline-size: 0;",
+            ),
         )
 
     @reactive.Effect
@@ -256,7 +253,9 @@ def server(input, output, session):
         if updated_prompt == normalize_system_prompt(current_prompt):
             return
 
-        apply_system_prompt_view(set_system_prompt_state(convo_id, prompt=updated_prompt))
+        apply_system_prompt_view(
+            set_system_prompt_state(convo_id, prompt=updated_prompt)
+        )
 
     @render.ui
     @reactive.event(file_upload_key)
@@ -428,10 +427,14 @@ def server(input, output, session):
                         continue
                     with open(file_info["datapath"], "r", encoding="utf-8") as handle:
                         content = handle.read()
-                    file_contents.append(f"--- File: {file_info['name']} ---\n{content}")
+                    file_contents.append(
+                        f"--- File: {file_info['name']} ---\n{content}"
+                    )
                 except Exception as exc:
                     filename = file_info.get("name", "unknown")
-                    file_contents.append(f"--- Error reading {filename}: {str(exc)} ---")
+                    file_contents.append(
+                        f"--- Error reading {filename}: {str(exc)} ---"
+                    )
             if file_contents:
                 user_input = f"{user_input}\n\n{'\n\n'.join(file_contents)}"
 
@@ -506,7 +509,11 @@ def server(input, output, session):
         message_count = len(convo_history) if isinstance(convo_history, list) else None
         return ui.card(
             ui.markdown(f"**Conversation History** *(refreshed at {timestamp})*"),
-            ui.markdown(f"`{message_count} messages`") if message_count is not None else None,
+            (
+                ui.markdown(f"`{message_count} messages`")
+                if message_count is not None
+                else None
+            ),
             ui.tags.pre(
                 format_history_json(convo_history),
                 style=(

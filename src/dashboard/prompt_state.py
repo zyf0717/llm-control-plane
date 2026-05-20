@@ -2,8 +2,7 @@ from typing import Any, Dict, Optional
 
 RAG_CITATION_SUFFIX = (
     "If you use retrieved reference excerpts in your answer, cite the corresponding "
-    "Source label inline.\n"
-    "If the excerpts do not support the answer, say so."
+    "Source label inline; if the excerpts do not support the answer, be explicit."
 )
 LOCKED_SYSTEM_PROMPT_MESSAGE = "No system prompt was sent on turn 1."
 
