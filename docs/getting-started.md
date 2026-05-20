@@ -7,6 +7,8 @@ conda env create -f environment.yml
 conda activate llm-control-plane
 ```
 
+The conda environment installs the editable local project from `pyproject.toml`.
+
 ## Environment Variables
 
 Set these in your shell or `.env`:
@@ -15,10 +17,12 @@ Set these in your shell or `.env`:
 API_KEY_ID=<CF-Access-Client-Id>
 API_KEY_SECRET=<CF-Access-Client-Secret>
 PROXY_BASE_URL=http://localhost:12340
+HISTORY_DB_PATH=var/history.sqlite3
 ```
 
 - `API_KEY_ID` and `API_KEY_SECRET` are attached to upstream requests.
 - `PROXY_BASE_URL` is used by the dashboard to call the proxy.
+- `HISTORY_DB_PATH` optionally overrides the default local SQLite history database path (`var/history.sqlite3`).
 
 ## Run
 

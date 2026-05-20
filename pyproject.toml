@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-control-plane"
+version = "0.1.0"
+description = "OpenAI-compatible LLM orchestration proxy and dashboard"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "aiosqlite",
+  "aiohttp",
+  "fastapi",
+  "httpx",
+  "pandas",
+  "plotly==5.24.1",
+  "python-dotenv",
+  "PyYAML",
+  "requests",
+  "shiny",
+  "shinyswatch",
+  "shinywidgets",
+  "statsmodels",
+  "uvicorn",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "pytest-asyncio",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

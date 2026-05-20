@@ -4,7 +4,7 @@
 
 | Component | Path | Responsibility |
 |---|---|---|
-| Proxy | `src/orchestrator/proxy.py` | OpenAI-compatible request handling, history, reasoning injection, RAG injection, upstream proxying |
+| Proxy | `src/orchestrator/proxy.py` | OpenAI-compatible request handling, SQLite-backed history, reasoning injection, RAG injection, upstream proxying |
 | LLM Router | `src/orchestrator/llm_router.py` | Workload classification and smart endpoint selection |
 | Dashboard | `src/dashboard/` | Shiny UI for chat, endpoint selection, RAG selection, and runtime inspection |
 | Entry point | `llm_control_plane.py` | Runs proxy and dashboard together |
@@ -41,7 +41,7 @@ flowchart TD
 The proxy processes chat requests in this order:
 
 1. Parse the incoming body and headers.
-2. Apply conversation history if `X-Convo-ID` is present.
+2. Load persisted conversation history and append the current client-supplied messages if `X-Convo-ID` is present.
 3. Inject reasoning control if `X-Reasoning-Effort` is present.
 4. Retrieve RAG context if `X-RAG-Endpoint` is present.
 5. For smart routing, classify the latest user turn and select the best reachable endpoint.

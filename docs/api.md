@@ -52,7 +52,7 @@ curl -X POST http://localhost:12340/smart \
 
 ## Conversation History
 
-The proxy stores conversation history in-process when `X-Convo-ID` is supplied.
+The proxy stores conversation history in a local SQLite database (`var/history.sqlite3` by default) when `X-Convo-ID` is supplied.
 
 Example:
 

@@ -8,7 +8,9 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from src.orchestrator.proxy import RequestProcessor, app, convo_history
+from src.orchestrator import proxy as proxy_module
+from src.orchestrator.history_store import MemoryHistoryStore
+from src.orchestrator.proxy import RequestProcessor, app
 from src.orchestrator.utils import HeaderManager
 
 
@@ -19,9 +21,12 @@ def client():
 
 
 @pytest.fixture(autouse=True)
-def clear_cache():
-    """Clear conversation history before each test."""
-    convo_history.clear()
+def memory_history_store():
+    """Install a fresh in-memory history store for each test."""
+    store = MemoryHistoryStore()
+    proxy_module.set_history_store(store)
+    yield store
+    proxy_module.set_history_store(MemoryHistoryStore())
 
 
 @pytest.fixture
@@ -105,36 +110,32 @@ class TestConversationHistory:
     """Tests for conversation history functionality."""
 
     @pytest.mark.asyncio
-    async def test_conversation_history_basic(self):
+    async def test_conversation_history_basic(self, memory_history_store):
         """Test basic conversation history tracking."""
         convo_id = "test-convo"
-        convo_history.clear()
-
-        # Simulate adding messages to history
         messages = [{"role": "user", "content": "Hello"}]
-        convo_history[convo_id] = messages.copy()
 
-        assert convo_id in convo_history
-        assert convo_history[convo_id] == messages
+        await memory_history_store.append_messages(convo_id, messages)
+
+        assert await memory_history_store.get_conversation(convo_id) == messages
 
     @pytest.mark.asyncio
-    async def test_conversation_history_append(self):
+    async def test_conversation_history_append(self, memory_history_store):
         """Test appending to existing conversation history."""
         convo_id = "test-convo"
-        convo_history.clear()
+        await memory_history_store.append_messages(
+            convo_id, [{"role": "assistant", "content": "Hi there!"}]
+        )
 
-        # Set up existing history
-        convo_history[convo_id] = [{"role": "assistant", "content": "Hi there!"}]
-
-        # Add new message
-        new_message = {"role": "user", "content": "How are you?"}
-        convo_history[convo_id].append(new_message)
+        await memory_history_store.append_messages(
+            convo_id, [{"role": "user", "content": "How are you?"}]
+        )
 
         expected_messages = [
             {"role": "assistant", "content": "Hi there!"},
             {"role": "user", "content": "How are you?"},
         ]
-        assert convo_history[convo_id] == expected_messages
+        assert await memory_history_store.get_conversation(convo_id) == expected_messages
 
 
 class TestRequestPreparation:
@@ -180,7 +181,9 @@ class TestRequestPreparation:
 
     @pytest.mark.asyncio
     async def test_prepare_request_does_not_persist_rag_in_history(self):
-        convo_history["session-1"] = [{"role": "assistant", "content": "Earlier reply"}]
+        await proxy_module.history_store.append_messages(
+            "session-1", [{"role": "assistant", "content": "Earlier reply"}]
+        )
 
         request = Mock()
         request.headers = {
@@ -206,9 +209,35 @@ class TestRequestPreparation:
             {"role": "system", "content": "Retrieved context"},
             {"role": "user", "content": "Current question"},
         ]
-        assert convo_history["session-1"] == [
+        assert await proxy_module.history_store.get_conversation("session-1") == [
             {"role": "assistant", "content": "Earlier reply"},
             {"role": "user", "content": "Current question"},
+        ]
+
+
+    @pytest.mark.asyncio
+    async def test_prepare_request_does_not_persist_reasoning_messages(self):
+        request = Mock()
+        request.headers = {
+            "X-Convo-ID": "session-2",
+            "X-Reasoning-Effort": "high",
+        }
+        request.body = AsyncMock(
+            return_value=json.dumps(
+                {"messages": [{"role": "user", "content": "Reason carefully"}]}
+            ).encode("utf-8")
+        )
+
+        with patch.object(
+            RequestProcessor,
+            "_fetch_rag_message",
+            AsyncMock(return_value=(None, {})),
+        ):
+            body, _response_headers = await RequestProcessor.prepare_request(request)
+
+        assert body["messages"][0] == {"role": "system", "content": "Reasoning: high"}
+        assert await proxy_module.history_store.get_conversation("session-2") == [
+            {"role": "user", "content": "Reason carefully"}
         ]
 
     def test_build_rag_context_makes_matched_entities_authoritative_and_visible(self):
@@ -365,6 +394,24 @@ class TestRequestPreparation:
         assert "RAG retrieved 2 raw hits (2 above threshold" in caplog.text
         assert "chunk-1 conf=0.780" in caplog.text
         assert "Strong semantic match from handbook section" in caplog.text
+
+
+class TestConversationHistoryEndpoint:
+    def test_retrieve_conversation_returns_404_for_unknown_id(self, client):
+        response = client.post("/conversations/retrieve", json={"convo_id": "missing"})
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Conversation 'missing' not found"
+
+    @pytest.mark.asyncio
+    async def test_update_history_persists_assistant_reply(self):
+        await RequestProcessor.update_history(
+            "session-3", "Assistant reply"
+        )
+
+        assert await proxy_module.history_store.get_conversation("session-3") == [
+            {"role": "assistant", "content": "Assistant reply"}
+        ]
 
 
 class TestModelsEndpoint:

@@ -1,6 +1,6 @@
 # Configuration
 
-All runtime configuration lives in `config.yaml`.
+Routing and RAG configuration live in `config.yaml`; runtime environment overrides such as `HISTORY_DB_PATH` live in `.env` or the shell.
 
 ## Full Example
 
@@ -24,7 +24,7 @@ rag:
     - name: "localhost:8100"
       retrieve_url: "http://localhost:8100/api/retrieve"
       health_url: "http://localhost:8100/api/health"
-  top_k: 5
+  top_k: 10
   min_confidence: 0.35
 
 workloads:
@@ -92,6 +92,16 @@ Supported workload types:
 | `classification` | Internal workload classification endpoint choice |
 
 Each `endpoint_preference` list is ordered from most preferred to least preferred.
+
+
+## Runtime Environment
+
+Supported environment variables:
+
+- `API_KEY_ID`
+- `API_KEY_SECRET`
+- `PROXY_BASE_URL`
+- `HISTORY_DB_PATH` to override the default local SQLite history path (`var/history.sqlite3`)
 
 ## Operational Notes
 

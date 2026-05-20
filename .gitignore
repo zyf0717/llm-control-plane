@@ -55,6 +55,10 @@ cover/
 *.mo
 *.pot
 
+var/*.sqlite3
+var/*.sqlite3-wal
+var/*.sqlite3-shm
+
 # Django stuff:
 *.log
 local_settings.py

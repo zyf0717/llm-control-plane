@@ -1,18 +1,8 @@
 name: llm-control-plane
 channels:
   - conda-forge
-  - defaults
 dependencies:
   - python=3.12
-  - plotly=5.24.1
-  - aiohttp
-  - pandas
   - pip
-  - pytest
-  - python-dotenv
-  - shiny
-  - shinywidgets
-  - statsmodels
-  - fastapi
-  - uvicorn
-  - requests
+  - pip:
+      - -e .[dev]

@@ -65,6 +65,10 @@ def server(input, output, session):
             session=session,
         )
 
+    def format_history_json(history_payload) -> str:
+        """Render history payload as readable JSON for the History tab."""
+        return json.dumps(history_payload, indent=2, ensure_ascii=False)
+
     # Initialize endpoints on startup
     @reactive.Effect
     async def _initialize_endpoints():
@@ -736,8 +740,17 @@ def server(input, output, session):
 
         # Add timestamp to show when history was last refreshed
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        message_count = len(convo_history) if isinstance(convo_history, list) else None
+        formatted_history = format_history_json(convo_history)
 
         return ui.card(
             ui.markdown(f"**Conversation History** *(refreshed at {timestamp})*"),
-            ui.markdown(f"```json\n{json.dumps(convo_history, indent=2)}\n```"),
+            ui.markdown(f"`{message_count} messages`") if message_count is not None else None,
+            ui.tags.pre(
+                formatted_history,
+                style=(
+                    "max-height: 36rem; overflow: auto; white-space: pre-wrap; "
+                    "overflow-wrap: anywhere; margin-bottom: 0;"
+                ),
+            ),
         )

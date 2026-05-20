@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
+from .history_store import HistoryStore, MemoryHistoryStore, build_history_store_from_env
 from .llm_router import get_router
 from .rag_prompt_builder import RagPromptBuilder
 from .utils import (
@@ -39,10 +40,44 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 
 # Global conversation store
-convo_history: Dict[str, List[Dict]] = {}
+history_store: HistoryStore = MemoryHistoryStore()
 
 # Global cache of reachable endpoints
 reachable_endpoints: Dict[str, dict] = {}
+
+
+def set_history_store(store: HistoryStore) -> None:
+    """Swap the active history store implementation."""
+    global history_store
+    history_store = store
+
+
+async def initialize_history_store() -> None:
+    """Initialize the configured history store with memory fallback."""
+    global history_store
+
+    candidate = build_history_store_from_env()
+    try:
+        await candidate.initialize()
+    except Exception:
+        logger.exception("Failed to initialize %s history store; falling back to memory", candidate.backend_name)
+        fallback = MemoryHistoryStore()
+        await fallback.initialize()
+        history_store = fallback
+    else:
+        history_store = candidate
+
+    logger.info("Conversation history backend: %s", history_store.backend_name)
+
+
+@app.on_event("startup")
+async def startup_history_store() -> None:
+    await initialize_history_store()
+
+
+@app.on_event("shutdown")
+async def shutdown_history_store() -> None:
+    await history_store.close()
 
 
 class RequestProcessor:
@@ -252,7 +287,6 @@ class RequestProcessor:
         if not isinstance(body, dict):
             return body, {}
 
-        # Get headers
         convo_id = request.headers.get("X-Convo-ID")
         rag_endpoint = request.headers.get("X-RAG-Endpoint")
         reasoning_effort = request.headers.get("X-Reasoning-Effort", "").lower()
@@ -260,35 +294,32 @@ class RequestProcessor:
             reasoning_effort if reasoning_effort in ["low", "medium", "high"] else None
         )
 
-        # Handle conversation history
-        messages = body.get("messages", [])
-        if convo_id and messages:
-            if convo_id not in convo_history:
-                convo_history[convo_id] = []
-            convo_history[convo_id].extend(messages)
-            messages = convo_history[convo_id].copy()
+        incoming_messages = body.get("messages", [])
+        if not isinstance(incoming_messages, list):
+            incoming_messages = []
 
-        # Handle reasoning effort
+        stored_messages = []
+        if convo_id:
+            stored_messages = await history_store.get_conversation(convo_id) or []
+            if incoming_messages:
+                await history_store.append_messages(convo_id, incoming_messages)
+
+        messages = [*stored_messages, *incoming_messages]
+
         if messages:
-            # Remove existing reasoning message
             if (
                 messages
                 and messages[0].get("role") == "system"
                 and "Reasoning:" in messages[0].get("content", "")
             ):
                 messages.pop(0)
-                if convo_id:
-                    convo_history[convo_id] = messages
 
-            # Add new reasoning if provided
             if reasoning_effort:
                 reasoning_msg = {
                     "role": "system",
                     "content": f"Reasoning: {reasoning_effort}",
                 }
                 messages.insert(0, reasoning_msg)
-                if convo_id:
-                    convo_history[convo_id] = messages
                 logger.info(f"Applied reasoning: {reasoning_effort}")
 
         rag_message, rag_headers = await RequestProcessor._fetch_rag_message(
@@ -299,7 +330,6 @@ class RequestProcessor:
                 RequestProcessor._rag_insertion_index(messages), rag_message
             )
 
-        # Update body
         body["messages"] = messages
         if reasoning_effort:
             body["reasoning_effort"] = reasoning_effort
@@ -307,11 +337,11 @@ class RequestProcessor:
         return body, rag_headers
 
     @staticmethod
-    def update_history(convo_id: Optional[str], assistant_text: str) -> None:
+    async def update_history(convo_id: Optional[str], assistant_text: str) -> None:
         """Update conversation history with assistant response."""
-        if assistant_text and convo_id and convo_id in convo_history:
-            convo_history[convo_id].append(
-                {"role": "assistant", "content": assistant_text}
+        if assistant_text and convo_id:
+            await history_store.append_messages(
+                convo_id, [{"role": "assistant", "content": assistant_text}]
             )
 
 
@@ -369,7 +399,7 @@ class ProxyHandler:
                 yield create_error_sse_message("error", detail=str(e))
             finally:
                 try:
-                    RequestProcessor.update_history(convo_id, acc.text())
+                    await RequestProcessor.update_history(convo_id, acc.text())
                 except Exception:
                     pass
 
@@ -417,7 +447,7 @@ class ProxyHandler:
                 assistant_text = None
                 resp_content = resp.content
 
-            RequestProcessor.update_history(convo_id, assistant_text)
+            await RequestProcessor.update_history(convo_id, assistant_text)
 
             response_headers = HeaderManager.create_response_headers(
                 dict(resp.headers), convo_id
@@ -534,15 +564,18 @@ async def retrieve_conversation(request: Request):
         if not convo_id:
             raise HTTPException(status_code=400, detail="Missing convo_id")
 
-        if convo_id not in convo_history:
+        conversation = await history_store.get_conversation(convo_id)
+        if conversation is None:
             raise HTTPException(
                 status_code=404, detail=f"Conversation '{convo_id}' not found"
             )
 
-        return convo_history[convo_id]
+        return conversation
 
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error retrieving conversation: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")

@@ -19,6 +19,8 @@ conda activate llm-control-plane
 python llm_control_plane.py
 ```
 
+`environment.yml` bootstraps the editable local package from `pyproject.toml`.
+
 - Proxy: `http://localhost:12340`
 - Dashboard: `http://localhost:12341`
 
@@ -37,5 +39,7 @@ python llm_control_plane.py
 ```bash
 pytest
 ```
+
+Project dependencies now live in `pyproject.toml`; the conda file is only a thin wrapper for local env creation.
 
 TL;DR: the root README is now the entry point; the detailed docs live under [`docs/`](docs/README.md).
