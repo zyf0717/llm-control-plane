@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from src.orchestrator import proxy as proxy_module
 from src.orchestrator.history_store import MemoryHistoryStore
 from src.orchestrator.proxy import RequestProcessor, app
+from src.orchestrator.rag_prompt_builder import RagPromptBuilder
 from src.orchestrator.utils import HeaderManager
 
 
@@ -142,7 +143,7 @@ class TestRequestPreparation:
     """Tests for proxy request preparation logic."""
 
     @pytest.mark.asyncio
-    async def test_prepare_request_injects_rag_before_latest_user_turn(self):
+    async def test_prepare_request_rewrites_latest_user_turn_with_rag_context(self):
         request = Mock()
         request.headers = {"X-RAG-Endpoint": "http://localhost:8100/api/retrieve"}
         request.body = AsyncMock(
@@ -157,7 +158,7 @@ class TestRequestPreparation:
             ).encode("utf-8")
         )
 
-        rag_message = {"role": "system", "content": "Retrieved context"}
+        rag_user_content = "Retrieved reference excerpts:\n\nSource: doc-1\nExcerpt:\nRetrieved context\n\nCurrent user question:\nNeed context"
         rag_headers = {
             "X-RAG-Injected": "true",
             "X-RAG-Confidence": "0.820",
@@ -167,15 +168,14 @@ class TestRequestPreparation:
         with patch.object(
             RequestProcessor,
             "_fetch_rag_message",
-            AsyncMock(return_value=(rag_message, rag_headers)),
+            AsyncMock(return_value=(rag_user_content, rag_headers)),
         ):
             body, response_headers = await RequestProcessor.prepare_request(request)
 
         assert body["messages"] == [
             {"role": "system", "content": "Base system"},
             {"role": "assistant", "content": "Prior answer"},
-            {"role": "system", "content": "Retrieved context"},
-            {"role": "user", "content": "Need context"},
+            {"role": "user", "content": rag_user_content},
         ]
         assert response_headers == rag_headers
 
@@ -196,18 +196,17 @@ class TestRequestPreparation:
             ).encode("utf-8")
         )
 
-        rag_message = {"role": "system", "content": "Retrieved context"}
+        rag_user_content = "Retrieved reference excerpts:\n\nSource: doc-1\nExcerpt:\nRetrieved context\n\nCurrent user question:\nCurrent question"
         with patch.object(
             RequestProcessor,
             "_fetch_rag_message",
-            AsyncMock(return_value=(rag_message, {"X-RAG-Injected": "true"})),
+            AsyncMock(return_value=(rag_user_content, {"X-RAG-Injected": "true"})),
         ):
             body, _response_headers = await RequestProcessor.prepare_request(request)
 
         assert body["messages"] == [
             {"role": "assistant", "content": "Earlier reply"},
-            {"role": "system", "content": "Retrieved context"},
-            {"role": "user", "content": "Current question"},
+            {"role": "user", "content": rag_user_content},
         ]
         assert await proxy_module.history_store.get_conversation("session-1") == [
             {"role": "assistant", "content": "Earlier reply"},
@@ -240,8 +239,9 @@ class TestRequestPreparation:
             {"role": "user", "content": "Reason carefully"}
         ]
 
-    def test_build_rag_context_makes_matched_entities_authoritative_and_visible(self):
-        rag_message = RequestProcessor._build_rag_context(
+    def test_build_rag_user_content_makes_matched_entities_authoritative_and_visible(self):
+        rag_user_content = RagPromptBuilder.build_user_message_content(
+            "Need context",
             [
                 {
                     "id": "doc-1",
@@ -252,17 +252,17 @@ class TestRequestPreparation:
                         {"text": "project template"},
                     ],
                 }
-            ]
+            ],
         )
 
-        assert rag_message is not None
-        assert rag_message["role"] == "system"
-        assert "Retrieved reference excerpts:" in rag_message["content"]
-        assert "Relevant entities: INSERT_PROJECT_NAME, project template" in rag_message["content"]
-        assert "Excerpt:\nDefinition text" in rag_message["content"]
+        assert rag_user_content is not None
+        assert "Retrieved reference excerpts:" in rag_user_content
+        assert "Relevant entities: INSERT_PROJECT_NAME, project template" in rag_user_content
+        assert "Excerpt:\nDefinition text" in rag_user_content
+        assert "Current user question:\nNeed context" in rag_user_content
 
     @pytest.mark.asyncio
-    async def test_prepare_request_inserts_rag_as_structured_chat_message(self):
+    async def test_prepare_request_rewrites_only_latest_user_turn_when_rag_is_present(self):
         request = Mock()
         request.headers = {"X-RAG-Endpoint": "http://localhost:8100/api/retrieve"}
         request.body = AsyncMock(
@@ -275,24 +275,24 @@ class TestRequestPreparation:
             ).encode("utf-8")
         )
 
+        rag_user_content = (
+            "Retrieved reference excerpts:\n\n"
+            "Source: doc-1\n"
+            "Excerpt:\n"
+            "Definition text\n\n"
+            "Current user question:\n"
+            "Need context"
+        )
         with patch.object(
             RequestProcessor,
             "_fetch_rag_message",
-            AsyncMock(
-                return_value=(
-                    {
-                        "role": "system",
-                        "content": "Retrieved reference excerpts:\n\nSource: doc-1\nExcerpt:\nDefinition text",
-                    },
-                    {"X-RAG-Injected": "true"},
-                )
-            ),
+            AsyncMock(return_value=(rag_user_content, {"X-RAG-Injected": "true"})),
         ):
             body, _response_headers = await RequestProcessor.prepare_request(request)
 
         assert body["messages"][0] == {
-            "role": "system",
-            "content": "Retrieved reference excerpts:\n\nSource: doc-1\nExcerpt:\nDefinition text",
+            "role": "user",
+            "content": rag_user_content,
         }
         assert all(isinstance(message, dict) for message in body["messages"])
 
@@ -310,12 +310,12 @@ class TestRequestPreparation:
             mock_client_class.return_value.__aenter__.return_value = mock_client
             mock_client.post.return_value = mock_response
 
-            rag_message, rag_headers = await RequestProcessor._fetch_rag_message(
+            rag_user_content, rag_headers = await RequestProcessor._fetch_rag_message(
                 [{"role": "user", "content": "Need context"}],
                 "http://localhost:8100/api/retrieve",
             )
 
-        assert rag_message is None
+        assert rag_user_content is None
         assert rag_headers["X-RAG-Injected"] == "false"
         assert rag_headers["X-RAG-Reason"] == "below-threshold"
         assert rag_headers["X-RAG-Confidence"] == "0.200"
@@ -344,7 +344,7 @@ class TestRequestPreparation:
             mock_client_class.return_value.__aenter__.return_value = mock_client
             mock_client.post.return_value = mock_response
 
-            rag_message, rag_headers = await RequestProcessor._fetch_rag_message(
+            rag_user_content, rag_headers = await RequestProcessor._fetch_rag_message(
                 [{"role": "user", "content": "Need context"}],
                 "http://localhost:8100/api/retrieve",
             )
@@ -353,12 +353,13 @@ class TestRequestPreparation:
         post_kwargs = mock_client.post.await_args.kwargs
         assert post_kwargs["json"]["top_k"] == 10
         assert post_kwargs["json"]["limit"] == 10
-        assert rag_message is not None
-        assert "Strong semantic match" in rag_message["content"]
-        assert "Weak semantic match" not in rag_message["content"]
+        assert rag_user_content is not None
+        assert "Strong semantic match" in rag_user_content
+        assert "Weak semantic match" not in rag_user_content
         assert rag_headers["X-RAG-Injected"] == "true"
         assert rag_headers["X-RAG-Confidence"] == "0.780"
         assert rag_headers["X-RAG-Distance"] == "0.22"
+        assert "Current user question:\nNeed context" in rag_user_content
 
     @pytest.mark.asyncio
     async def test_fetch_rag_message_logs_retrieval_summary(self, caplog):

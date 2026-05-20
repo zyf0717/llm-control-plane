@@ -147,23 +147,6 @@ class RequestProcessor:
         return len(messages)
 
     @staticmethod
-    def _build_rag_context(results: List[Dict]) -> Optional[Dict[str, str]]:
-        """Build a turn-local system message from retrieved RAG results."""
-        rag_context = RagPromptBuilder._build_rag_context(results)
-        if not rag_context:
-            return None
-
-        return {
-            "role": "system",
-            "content": f"Retrieved reference excerpts:\n\n{rag_context}",
-        }
-
-    @staticmethod
-    def _rag_result_label(result: Dict, index: int) -> str:
-        """Choose a stable label for a retrieved result."""
-        return RagPromptBuilder._rag_result_label(result, index)
-
-    @staticmethod
     def _summarize_rag_results(results: List[Dict], limit: int = 3) -> str:
         """Summarize retrieved results for logs without dumping full content."""
         if not results:
@@ -171,7 +154,7 @@ class RequestProcessor:
 
         summary_parts = []
         for index, result in enumerate(results[:limit], start=1):
-            label = RequestProcessor._rag_result_label(result, index)
+            label = RagPromptBuilder._rag_result_label(result, index)
             confidence = RequestProcessor._rag_confidence(result)
             content = " ".join(str(result.get("content") or "").split())
             preview = content[:80] + ("..." if len(content) > 80 else "")
@@ -196,8 +179,8 @@ class RequestProcessor:
     @staticmethod
     async def _fetch_rag_message(
         messages: List[Dict], rag_endpoint: Optional[str]
-    ) -> tuple[Optional[Dict[str, str]], Dict[str, str]]:
-        """Fetch RAG context and convert it into an injected system message."""
+    ) -> tuple[Optional[str], Dict[str, str]]:
+        """Fetch RAG context and rewrite the latest user turn when hits are accepted."""
         normalized_endpoint = RequestProcessor._normalize_rag_endpoint(rag_endpoint)
         if not normalized_endpoint:
             return None, {}
@@ -266,14 +249,16 @@ class RequestProcessor:
         if raw_results and raw_results[0].get("distance") is not None:
             rag_headers["X-RAG-Distance"] = str(raw_results[0]["distance"])
 
-        rag_message = RequestProcessor._build_rag_context(filtered_results[:RAG_TOP_K])
-        if not rag_message:
+        rag_user_content = RagPromptBuilder.build_user_message_content(
+            latest_user_message, filtered_results[:RAG_TOP_K]
+        )
+        if rag_user_content == latest_user_message:
             rag_headers["X-RAG-Injected"] = "false"
             rag_headers["X-RAG-Reason"] = "below-threshold"
             return None, rag_headers
 
         rag_headers["X-RAG-Injected"] = "true"
-        return rag_message, rag_headers
+        return rag_user_content, rag_headers
 
     @staticmethod
     async def prepare_request(request: Request) -> tuple[Dict, Dict[str, str]]:
@@ -322,13 +307,14 @@ class RequestProcessor:
                 messages.insert(0, reasoning_msg)
                 logger.info(f"Applied reasoning: {reasoning_effort}")
 
-        rag_message, rag_headers = await RequestProcessor._fetch_rag_message(
+        rag_user_content, rag_headers = await RequestProcessor._fetch_rag_message(
             messages, rag_endpoint
         )
-        if rag_message:
-            messages.insert(
-                RequestProcessor._rag_insertion_index(messages), rag_message
-            )
+        if rag_user_content:
+            latest_user_index = RequestProcessor._rag_insertion_index(messages)
+            rewritten_user_message = dict(messages[latest_user_index])
+            rewritten_user_message["content"] = rag_user_content
+            messages[latest_user_index] = rewritten_user_message
 
         body["messages"] = messages
         if reasoning_effort:
