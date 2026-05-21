@@ -19,7 +19,6 @@ from .formatters import (
     format_timings_info,
 )
 from .prompt_state import (
-    LOCKED_SYSTEM_PROMPT_MESSAGE,
     append_managed_rag_suffix,
     build_system_prompt_state,
     extract_first_system_prompt,
@@ -236,13 +235,19 @@ def server(input, output, session):
 
     @reactive.Effect
     @reactive.event(input.ragEndpoint)
-    def _append_rag_suffix_for_selected_endpoint():
+    async def _append_rag_suffix_for_selected_endpoint():
         convo_id = current_convo_id()
         if not convo_id or system_prompt_locked.get():
             return
 
         rag_endpoint = str(input.ragEndpoint() or "").strip()
-        if not rag_endpoint:
+        rag_choices, _default_selection = await fetch_available_rag_endpoints()
+        configured_rag_endpoints = {
+            str(value).strip()
+            for value in rag_choices.values()
+            if value
+        }
+        if not rag_endpoint or rag_endpoint not in configured_rag_endpoints:
             return
 
         current_prompt = input.systemPrompt()

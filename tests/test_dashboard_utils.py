@@ -58,7 +58,7 @@ def test_load_rag_endpoint_config_falls_back_to_default(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_fetch_available_rag_endpoints_filters_unhealthy(monkeypatch):
+async def test_fetch_available_rag_endpoints_keeps_unhealthy_configured_options(monkeypatch):
     monkeypatch.setattr(
         utils,
         "load_rag_endpoint_config",
@@ -96,14 +96,15 @@ async def test_fetch_available_rag_endpoints_filters_unhealthy(monkeypatch):
         choices, selected = await utils.fetch_available_rag_endpoints()
 
     assert choices == {
-        "None": "",
+        "None": utils.NONE_RAG_OPTION_VALUE,
         "healthy (http://healthy/api/retrieve/context)": "http://healthy/api/retrieve/context",
+        "down (http://down/api/retrieve/context)": "http://down/api/retrieve/context",
     }
-    assert selected == ""
+    assert selected == utils.NONE_RAG_OPTION_VALUE
 
 
 @pytest.mark.asyncio
-async def test_fetch_available_rag_endpoints_returns_none_when_all_unhealthy(monkeypatch):
+async def test_fetch_available_rag_endpoints_does_not_auto_select_configured_default(monkeypatch):
     monkeypatch.setattr(
         utils,
         "load_rag_endpoint_config",
@@ -126,5 +127,8 @@ async def test_fetch_available_rag_endpoints_returns_none_when_all_unhealthy(mon
 
         choices, selected = await utils.fetch_available_rag_endpoints()
 
-    assert choices == {"None": ""}
-    assert selected == ""
+    assert choices == {
+        "None": utils.NONE_RAG_OPTION_VALUE,
+        "down (http://down/api/retrieve/context)": "http://down/api/retrieve/context",
+    }
+    assert selected == utils.NONE_RAG_OPTION_VALUE

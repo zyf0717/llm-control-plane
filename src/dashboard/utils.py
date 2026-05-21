@@ -86,30 +86,27 @@ def load_rag_endpoint_config():
 
 
 async def fetch_available_rag_endpoints():
-    """Return healthy RAG endpoint choices with a persistent None option."""
-    endpoint_configs, _default_endpoint = load_rag_endpoint_config()
-    healthy_choices = {NONE_RAG_OPTION_LABEL: NONE_RAG_OPTION_VALUE}
+    """Return configured RAG endpoint choices with a persistent None option."""
+    endpoint_configs, default_endpoint = load_rag_endpoint_config()
+    rag_choices = {NONE_RAG_OPTION_LABEL: NONE_RAG_OPTION_VALUE}
 
     async with httpx.AsyncClient(timeout=5.0) as client:
         for endpoint in endpoint_configs:
             health_url = endpoint["health_url"]
-            if not health_url:
-                continue
-
-            try:
-                response = await client.get(health_url)
-                response.raise_for_status()
-            except Exception as e:
-                logging.warning("RAG health check failed for %s: %s", health_url, e)
-                continue
+            if health_url:
+                try:
+                    response = await client.get(health_url)
+                    response.raise_for_status()
+                except Exception as e:
+                    logging.warning("RAG health check failed for %s: %s", health_url, e)
 
             retrieve_url = endpoint["retrieve_url"]
             label = endpoint["name"]
             if label != retrieve_url:
                 label = f"{label} ({retrieve_url})"
-            healthy_choices[label] = retrieve_url
+            rag_choices[label] = retrieve_url
 
-    return healthy_choices, NONE_RAG_OPTION_VALUE
+    return rag_choices, NONE_RAG_OPTION_VALUE
 
 
 async def fetch_available_endpoints():
