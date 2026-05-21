@@ -58,7 +58,9 @@ def test_load_rag_endpoint_config_falls_back_to_default(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_fetch_available_rag_endpoints_keeps_unhealthy_configured_options(monkeypatch):
+async def test_fetch_available_rag_endpoints_keeps_unhealthy_configured_options(
+    monkeypatch,
+):
     monkeypatch.setattr(
         utils,
         "load_rag_endpoint_config",
@@ -96,15 +98,17 @@ async def test_fetch_available_rag_endpoints_keeps_unhealthy_configured_options(
         choices, selected = await utils.fetch_available_rag_endpoints()
 
     assert choices == {
-        "None": utils.NONE_RAG_OPTION_VALUE,
-        "healthy (http://healthy/api/retrieve/context)": "http://healthy/api/retrieve/context",
-        "down (http://down/api/retrieve/context)": "http://down/api/retrieve/context",
+        utils.NONE_RAG_OPTION_VALUE: "None",
+        "http://healthy/api/retrieve/context": "healthy (http://healthy/api/retrieve/context)",
+        "http://down/api/retrieve/context": "down (http://down/api/retrieve/context)",
     }
     assert selected == utils.NONE_RAG_OPTION_VALUE
 
 
 @pytest.mark.asyncio
-async def test_fetch_available_rag_endpoints_does_not_auto_select_configured_default(monkeypatch):
+async def test_fetch_available_rag_endpoints_does_not_auto_select_configured_default(
+    monkeypatch,
+):
     monkeypatch.setattr(
         utils,
         "load_rag_endpoint_config",
@@ -128,7 +132,20 @@ async def test_fetch_available_rag_endpoints_does_not_auto_select_configured_def
         choices, selected = await utils.fetch_available_rag_endpoints()
 
     assert choices == {
-        "None": utils.NONE_RAG_OPTION_VALUE,
-        "down (http://down/api/retrieve/context)": "http://down/api/retrieve/context",
+        utils.NONE_RAG_OPTION_VALUE: "None",
+        "http://down/api/retrieve/context": "down (http://down/api/retrieve/context)",
     }
     assert selected == utils.NONE_RAG_OPTION_VALUE
+
+
+def test_create_history_select_choices_uses_convo_id_as_value():
+    conversations = [
+        {
+            "convo_id": "c3630b242ac7",
+            "last_updated": "2026-05-21T05:48:40+00:00",
+        }
+    ]
+
+    assert utils.create_history_select_choices(conversations) == {
+        "c3630b242ac7": "2026-05-21 13:48:40 | c3630b242ac7"
+    }

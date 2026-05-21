@@ -11,7 +11,11 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
-from .history_store import HistoryStore, MemoryHistoryStore, build_history_store_from_env
+from .history_store import (
+    HistoryStore,
+    MemoryHistoryStore,
+    build_history_store_from_env,
+)
 from .llm_router import get_router
 from .utils import (
     HeaderManager,
@@ -58,7 +62,10 @@ async def initialize_history_store() -> None:
     try:
         await candidate.initialize()
     except Exception:
-        logger.exception("Failed to initialize %s history store; falling back to memory", candidate.backend_name)
+        logger.exception(
+            "Failed to initialize %s history store; falling back to memory",
+            candidate.backend_name,
+        )
         fallback = MemoryHistoryStore()
         await fallback.initialize()
         history_store = fallback
@@ -183,7 +190,9 @@ class RequestProcessor:
                 response.raise_for_status()
                 search_response = response.json()
         except Exception as exc:
-            logger.warning("RAG context retrieval failed for %s: %s", normalized_endpoint, exc)
+            logger.warning(
+                "RAG context retrieval failed for %s: %s", normalized_endpoint, exc
+            )
             return None, {
                 "X-RAG-Endpoint": normalized_endpoint,
                 "X-RAG-Injected": "false",
@@ -195,7 +204,10 @@ class RequestProcessor:
             context_blocks = []
 
         grounded_user_message = search_response.get("grounded_user_message")
-        if not isinstance(grounded_user_message, str) or not grounded_user_message.strip():
+        if (
+            not isinstance(grounded_user_message, str)
+            or not grounded_user_message.strip()
+        ):
             logger.info(
                 "RAG context returned no grounded user message via %s",
                 normalized_endpoint,
@@ -214,7 +226,9 @@ class RequestProcessor:
         if search_response.get("mode") is not None:
             rag_headers["X-RAG-Mode"] = str(search_response["mode"])
         if search_response.get("truncated") is not None:
-            rag_headers["X-RAG-Truncated"] = str(bool(search_response["truncated"])).lower()
+            rag_headers["X-RAG-Truncated"] = str(
+                bool(search_response["truncated"])
+            ).lower()
 
         logger.info(
             "RAG context retrieved %d blocks via %s (mode=%s truncated=%s)",
@@ -529,6 +543,16 @@ async def retrieve_conversation(request: Request):
         raise
     except Exception as e:
         logger.error(f"Error retrieving conversation: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/conversations")
+async def list_conversations():
+    """List conversation metadata sorted by most recent activity."""
+    try:
+        return await history_store.list_conversations()
+    except Exception as e:
+        logger.error(f"Error listing conversations: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

@@ -33,12 +33,17 @@ class HistoryStore(ABC):
     async def append_messages(self, convo_id: str, messages: List[Dict]) -> None:
         """Append messages to a stored conversation."""
 
+    @abstractmethod
+    async def list_conversations(self) -> List[Dict[str, object]]:
+        """Return conversation metadata sorted by most recently updated first."""
+
 
 class MemoryHistoryStore(HistoryStore):
     backend_name = "memory"
 
     def __init__(self):
         self.conversations: Dict[str, List[Dict]] = {}
+        self.updated_at: Dict[str, str] = {}
 
     async def initialize(self) -> None:
         return None
@@ -56,9 +61,31 @@ class MemoryHistoryStore(HistoryStore):
         if convo_id not in self.conversations:
             self.conversations[convo_id] = []
         self.conversations[convo_id].extend(deepcopy(messages))
+        self.updated_at[convo_id] = datetime.now(timezone.utc).isoformat()
+
+    async def list_conversations(self) -> List[Dict[str, object]]:
+        conversations = []
+        for convo_id, messages in self.conversations.items():
+            last_updated = self.updated_at.get(convo_id)
+            if not last_updated:
+                continue
+            conversations.append(
+                {
+                    "convo_id": convo_id,
+                    "last_updated": last_updated,
+                    "message_count": len(messages),
+                }
+            )
+
+        return sorted(
+            conversations,
+            key=lambda conversation: str(conversation["last_updated"]),
+            reverse=True,
+        )
 
     def clear(self) -> None:
         self.conversations.clear()
+        self.updated_at.clear()
 
 
 class SQLiteHistoryStore(HistoryStore):
@@ -126,6 +153,25 @@ class SQLiteHistoryStore(HistoryStore):
             payloads,
         )
         await conn.commit()
+
+    async def list_conversations(self) -> List[Dict[str, object]]:
+        conn = self._require_connection()
+        cursor = await conn.execute("""
+            SELECT convo_id, MAX(created_at) AS last_updated, COUNT(*) AS message_count
+            FROM conversation_messages
+            GROUP BY convo_id
+            ORDER BY last_updated DESC, convo_id ASC
+            """)
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [
+            {
+                "convo_id": row[0],
+                "last_updated": row[1],
+                "message_count": row[2],
+            }
+            for row in rows
+        ]
 
     def _require_connection(self) -> aiosqlite.Connection:
         if self._conn is None:

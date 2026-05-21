@@ -1,5 +1,6 @@
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -13,6 +14,7 @@ CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
 DEFAULT_RAG_ENDPOINT = "localhost:8100"
 NONE_RAG_OPTION_LABEL = "None"
 NONE_RAG_OPTION_VALUE = ""
+HISTORY_DISPLAY_TIMEZONE = timezone(timedelta(hours=8))
 
 
 async def fetch_models_data():
@@ -88,7 +90,7 @@ def load_rag_endpoint_config():
 async def fetch_available_rag_endpoints():
     """Return configured RAG endpoint choices with a persistent None option."""
     endpoint_configs, default_endpoint = load_rag_endpoint_config()
-    rag_choices = {NONE_RAG_OPTION_LABEL: NONE_RAG_OPTION_VALUE}
+    rag_choices = {NONE_RAG_OPTION_VALUE: NONE_RAG_OPTION_LABEL}
 
     async with httpx.AsyncClient(timeout=5.0) as client:
         for endpoint in endpoint_configs:
@@ -104,7 +106,7 @@ async def fetch_available_rag_endpoints():
             label = endpoint["name"]
             if label != retrieve_url:
                 label = f"{label} ({retrieve_url})"
-            rag_choices[label] = retrieve_url
+            rag_choices[retrieve_url] = label
 
     return rag_choices, NONE_RAG_OPTION_VALUE
 
@@ -201,3 +203,66 @@ async def fetch_convo_history(convo_id):
     except Exception as e:
         print(f"Failed to fetch conversation history: {e}")
         return {}
+
+
+def format_history_choice_label(conversation):
+    """Build a stable history dropdown label from conversation metadata."""
+    convo_id = str(conversation.get("convo_id") or "").strip()
+    raw_last_updated = conversation.get("last_updated")
+    timestamp_label = str(raw_last_updated or "Unknown time")
+
+    if isinstance(raw_last_updated, str) and raw_last_updated.strip():
+        normalized = raw_last_updated.strip().replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            timestamp_label = parsed.astimezone(HISTORY_DISPLAY_TIMEZONE).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+
+    return f"{timestamp_label} | {convo_id}"
+
+
+def create_history_select_choices(conversations):
+    """Build History tab select choices keyed by convo id."""
+    return {
+        str(conversation.get("convo_id") or "").strip(): format_history_choice_label(
+            conversation
+        )
+        for conversation in conversations
+        if str(conversation.get("convo_id") or "").strip()
+    }
+
+
+async def fetch_conversation_summaries():
+    """Fetch conversation metadata for the History tab selector."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{PROXY_BASE_URL}/conversations")
+            response.raise_for_status()
+            data = response.json()
+    except Exception as e:
+        print(f"Failed to fetch conversation summaries: {e}")
+        return []
+
+    if not isinstance(data, list):
+        return []
+
+    summaries = []
+    for conversation in data:
+        if not isinstance(conversation, dict):
+            continue
+        convo_id = str(conversation.get("convo_id") or "").strip()
+        if not convo_id:
+            continue
+        summaries.append(conversation)
+
+    return sorted(
+        summaries,
+        key=lambda conversation: str(conversation.get("last_updated") or ""),
+        reverse=True,
+    )

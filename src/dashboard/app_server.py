@@ -26,7 +26,9 @@ from .prompt_state import (
     normalize_system_prompt,
 )
 from .utils import (
+    create_history_select_choices,
     create_endpoint_display_choices,
+    fetch_conversation_summaries,
     fetch_available_endpoints,
     fetch_available_rag_endpoints,
     fetch_convo_history,
@@ -48,9 +50,13 @@ def server(input, output, session):
     system_prompt_locked = reactive.Value(False)
     system_prompt_seed = reactive.Value("")
     history_refresh_trigger = reactive.Value(0)
+    history_selected_convo_id = reactive.Value("")
 
-    def current_convo_id() -> str:
+    def current_active_convo_id() -> str:
         return str(input.convoID() or "").strip()
+
+    def current_history_convo_id() -> str:
+        return str(history_selected_convo_id.get() or "").strip()
 
     def get_system_prompt_state(convo_id: str) -> Dict[str, Any]:
         state = system_prompt_states.get().get(convo_id)
@@ -127,13 +133,25 @@ def server(input, output, session):
     async def update_rag_endpoints(current_selection: Optional[str] = None) -> None:
         rag_choices, default_selection = await fetch_available_rag_endpoints()
         selected = (
-            current_selection
-            if current_selection in rag_choices.values()
-            else default_selection
+            current_selection if current_selection in rag_choices else default_selection
         )
         ui.update_select(
             "ragEndpoint",
             choices=rag_choices,
+            selected=selected,
+            session=session,
+        )
+
+    async def update_history_selector() -> None:
+        current_selection = current_history_convo_id()
+        conversations = await fetch_conversation_summaries()
+        history_choices = create_history_select_choices(conversations)
+        selected = current_selection if current_selection in history_choices else None
+        if not selected and conversations:
+            selected = str(conversations[0]["convo_id"])
+        ui.update_select(
+            "historyConvoSelector",
+            choices=history_choices,
             selected=selected,
             session=session,
         )
@@ -144,6 +162,7 @@ def server(input, output, session):
     async def _initialize_endpoints():
         await update_endpoints_and_data()
         await update_rag_endpoints()
+        await update_history_selector()
 
     @reactive.Effect
     def _initialize_convo_id():
@@ -168,7 +187,7 @@ def server(input, output, session):
     @reactive.Effect
     @reactive.event(input.convoID)
     async def _sync_system_prompt_for_conversation():
-        await load_system_prompt_state(current_convo_id())
+        await load_system_prompt_state(current_active_convo_id())
 
     @reactive.Effect
     @reactive.event(input.outputJSON)
@@ -228,7 +247,7 @@ def server(input, output, session):
     @reactive.Effect
     @reactive.event(input.systemPrompt)
     def _store_system_prompt_input():
-        convo_id = current_convo_id()
+        convo_id = current_active_convo_id()
         if not convo_id or system_prompt_locked.get():
             return
         set_system_prompt_state(convo_id, prompt=input.systemPrompt() or "")
@@ -236,16 +255,14 @@ def server(input, output, session):
     @reactive.Effect
     @reactive.event(input.ragEndpoint)
     async def _append_rag_suffix_for_selected_endpoint():
-        convo_id = current_convo_id()
+        convo_id = current_active_convo_id()
         if not convo_id or system_prompt_locked.get():
             return
 
         rag_endpoint = str(input.ragEndpoint() or "").strip()
         rag_choices, _default_selection = await fetch_available_rag_endpoints()
         configured_rag_endpoints = {
-            str(value).strip()
-            for value in rag_choices.values()
-            if value
+            str(value).strip() for value in rag_choices if value
         }
         if not rag_endpoint or rag_endpoint not in configured_rag_endpoints:
             return
@@ -411,7 +428,7 @@ def server(input, output, session):
         display_mapping = endpoint_display_mapping.get()
         current_run_info = run_info.get() or {}
         actual_endpoint_key = display_mapping.get(input.endpoint())
-        convo_id = current_convo_id() or None
+        convo_id = current_active_convo_id() or None
         prompt_state = (
             get_system_prompt_state(convo_id)
             if convo_id
@@ -491,10 +508,20 @@ def server(input, output, session):
     def _manual_history_refresh():
         history_refresh_trigger.set(history_refresh_trigger.get() + 1)
 
+    @reactive.Effect
+    @reactive.event(input.historyConvoSelector)
+    def _sync_history_selector_state():
+        history_selected_convo_id.set(str(input.historyConvoSelector() or "").strip())
+
+    @reactive.Effect
+    @reactive.event(history_refresh_trigger)
+    async def _refresh_history_selector():
+        await update_history_selector()
+
     @render.ui
-    @reactive.event(input.convoID, history_refresh_trigger)
+    @reactive.event(input.historyConvoSelector, history_refresh_trigger)
     async def historyBox():
-        convo_id = input.convoID()
+        convo_id = current_history_convo_id()
         if not convo_id:
             return ui.card(
                 ui.markdown(

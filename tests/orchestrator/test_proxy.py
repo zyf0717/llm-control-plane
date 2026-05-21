@@ -135,8 +135,9 @@ class TestConversationHistory:
             {"role": "assistant", "content": "Hi there!"},
             {"role": "user", "content": "How are you?"},
         ]
-        assert await memory_history_store.get_conversation(convo_id) == expected_messages
-
+        assert (
+            await memory_history_store.get_conversation(convo_id) == expected_messages
+        )
 
 
 class TestRequestPreparation:
@@ -252,15 +253,21 @@ Current question"""
         ]
 
     def test_normalize_rag_endpoint_targets_context_route(self):
-        assert RequestProcessor._normalize_rag_endpoint(
-            "http://localhost:8100/api/retrieve"
-        ) == "http://localhost:8100/api/retrieve/context"
-        assert RequestProcessor._normalize_rag_endpoint(
-            "localhost:8100"
-        ) == "http://localhost:8100/api/retrieve/context"
+        assert (
+            RequestProcessor._normalize_rag_endpoint(
+                "http://localhost:8100/api/retrieve"
+            )
+            == "http://localhost:8100/api/retrieve/context"
+        )
+        assert (
+            RequestProcessor._normalize_rag_endpoint("localhost:8100")
+            == "http://localhost:8100/api/retrieve/context"
+        )
 
     @pytest.mark.asyncio
-    async def test_prepare_request_rewrites_only_latest_user_turn_when_rag_is_present(self):
+    async def test_prepare_request_rewrites_only_latest_user_turn_when_rag_is_present(
+        self,
+    ):
         request = Mock()
         request.headers = {"X-RAG-Endpoint": "http://localhost:8100/api/retrieve"}
         request.body = AsyncMock(
@@ -318,7 +325,9 @@ Need context"""
         assert rag_headers["X-RAG-Reason"] == "empty-grounded-user-message"
 
     @pytest.mark.asyncio
-    async def test_fetch_rag_message_uses_grounded_user_message_from_context_response(self):
+    async def test_fetch_rag_message_uses_grounded_user_message_from_context_response(
+        self,
+    ):
         mock_response = Mock()
         mock_response.raise_for_status = Mock()
         mock_response.json.return_value = {
@@ -369,8 +378,14 @@ Need context""",
         mock_response.raise_for_status = Mock()
         mock_response.json.return_value = {
             "context_blocks": [
-                {"chunk_id": "chunk-1", "content": "Strong semantic match from handbook section"},
-                {"chunk_id": "chunk-2", "content": "Another useful match from release notes"},
+                {
+                    "chunk_id": "chunk-1",
+                    "content": "Strong semantic match from handbook section",
+                },
+                {
+                    "chunk_id": "chunk-2",
+                    "content": "Another useful match from release notes",
+                },
             ],
             "grounded_user_message": "grounded",
             "mode": "hybrid",
@@ -388,12 +403,46 @@ Need context""",
                     "http://localhost:8100/api/retrieve",
                 )
 
-        assert "RAG context retrieved 2 blocks via http://localhost:8100/api/retrieve/context" in caplog.text
+        assert (
+            "RAG context retrieved 2 blocks via http://localhost:8100/api/retrieve/context"
+            in caplog.text
+        )
         assert "mode=hybrid" in caplog.text
         assert "truncated=False" in caplog.text
 
 
 class TestConversationHistoryEndpoint:
+
+    def test_list_conversations_returns_most_recent_first(
+        self, client, memory_history_store
+    ):
+        memory_history_store.updated_at = {
+            "older": "2026-05-20T10:00:00+00:00",
+            "newer": "2026-05-21T10:00:00+00:00",
+        }
+        memory_history_store.conversations = {
+            "older": [{"role": "user", "content": "first"}],
+            "newer": [
+                {"role": "user", "content": "second"},
+                {"role": "assistant", "content": "reply"},
+            ],
+        }
+
+        response = client.get("/conversations")
+
+        assert response.status_code == 200
+        assert response.json() == [
+            {
+                "convo_id": "newer",
+                "last_updated": "2026-05-21T10:00:00+00:00",
+                "message_count": 2,
+            },
+            {
+                "convo_id": "older",
+                "last_updated": "2026-05-20T10:00:00+00:00",
+                "message_count": 1,
+            },
+        ]
 
     def test_retrieve_conversation_returns_404_for_unknown_id(self, client):
         response = client.post("/conversations/retrieve", json={"convo_id": "missing"})
@@ -403,9 +452,7 @@ class TestConversationHistoryEndpoint:
 
     @pytest.mark.asyncio
     async def test_update_history_persists_assistant_reply(self):
-        await RequestProcessor.update_history(
-            "session-3", "Assistant reply"
-        )
+        await RequestProcessor.update_history("session-3", "Assistant reply")
 
         assert await proxy_module.history_store.get_conversation("session-3") == [
             {"role": "assistant", "content": "Assistant reply"}
@@ -456,9 +503,10 @@ class TestModelsEndpoint:
             ]
         }
 
-        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
-            "httpx.AsyncClient"
-        ) as mock_client_class:
+        with (
+            patch("src.orchestrator.proxy.endpoints", mock_endpoints),
+            patch("httpx.AsyncClient") as mock_client_class,
+        ):
 
             mock_client = AsyncMock()
             mock_client_class.return_value.__aenter__.return_value = mock_client
@@ -518,9 +566,10 @@ class TestModelsEndpoint:
             "data": [{"id": "working-model", "object": "model", "created": 1234567890}]
         }
 
-        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
-            "httpx.AsyncClient"
-        ) as mock_client_class:
+        with (
+            patch("src.orchestrator.proxy.endpoints", mock_endpoints),
+            patch("httpx.AsyncClient") as mock_client_class,
+        ):
 
             mock_client = AsyncMock()
             mock_client_class.return_value.__aenter__.return_value = mock_client

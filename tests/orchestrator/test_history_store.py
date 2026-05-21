@@ -73,7 +73,48 @@ class TestSQLiteHistoryStore:
             await store.close()
 
     @pytest.mark.asyncio
-    async def test_sqlite_history_store_returns_none_for_unknown_conversation(self, tmp_path):
+    async def test_sqlite_history_store_lists_conversations_most_recent_first(
+        self, tmp_path
+    ):
+        db_path = tmp_path / "history.sqlite3"
+        store = SQLiteHistoryStore(db_path)
+        await store.initialize()
+
+        try:
+            await store.append_messages(
+                "session-1", [{"role": "user", "content": "Hello"}]
+            )
+            await store.append_messages(
+                "session-2",
+                [
+                    {"role": "user", "content": "Latest"},
+                    {"role": "assistant", "content": "Reply"},
+                ],
+            )
+
+            conversations = await store.list_conversations()
+
+            assert [conversation["convo_id"] for conversation in conversations] == [
+                "session-2",
+                "session-1",
+            ]
+            assert [
+                conversation["message_count"] for conversation in conversations
+            ] == [
+                2,
+                1,
+            ]
+            assert all(
+                isinstance(conversation["last_updated"], str)
+                for conversation in conversations
+            )
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_sqlite_history_store_returns_none_for_unknown_conversation(
+        self, tmp_path
+    ):
         db_path = tmp_path / "history.sqlite3"
         store = SQLiteHistoryStore(db_path)
         await store.initialize()

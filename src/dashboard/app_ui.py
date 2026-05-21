@@ -133,8 +133,17 @@ app_ui = ui.page_fluid(
         ui.nav_panel(
             "History",
             ui.layout_columns(
-                ui.input_action_button("refreshHistory", "Refresh"),
-                col_widths=[2],
+                ui.input_select(
+                    "historyConvoSelector",
+                    "Conversation",
+                    choices={},
+                    width="100%",
+                ),
+                ui.div(
+                    ui.input_action_button("refreshHistory", "Refresh"),
+                    style="display: flex; align-items: flex-end; height: 100%;",
+                ),
+                col_widths=[3, 2],
             ),
             ui.output_ui("historyBox"),
         ),
