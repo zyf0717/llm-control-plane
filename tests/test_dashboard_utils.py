@@ -10,13 +10,13 @@ def test_load_rag_endpoint_config_reads_config(tmp_path, monkeypatch):
     config_path.write_text(
         """
 rag:
-  default_endpoint: "http://localhost:8100/api/retrieve"
+  default_endpoint: "http://localhost:8100/api/retrieve/context"
   endpoints:
     - name: "localhost:8100"
-      retrieve_url: "http://localhost:8100/api/retrieve"
+      retrieve_url: "http://localhost:8100/api/retrieve/context"
       health_url: "http://localhost:8100/api/health"
     - name: "rag.internal:8200"
-      retrieve_url: "http://rag.internal:8200/api/retrieve"
+      retrieve_url: "http://rag.internal:8200/api/retrieve/context"
       health_url: "http://rag.internal:8200/api/health"
 """.strip(),
         encoding="utf-8",
@@ -28,16 +28,16 @@ rag:
     assert endpoints == [
         {
             "name": "localhost:8100",
-            "retrieve_url": "http://localhost:8100/api/retrieve",
+            "retrieve_url": "http://localhost:8100/api/retrieve/context",
             "health_url": "http://localhost:8100/api/health",
         },
         {
             "name": "rag.internal:8200",
-            "retrieve_url": "http://rag.internal:8200/api/retrieve",
+            "retrieve_url": "http://rag.internal:8200/api/retrieve/context",
             "health_url": "http://rag.internal:8200/api/health",
         },
     ]
-    assert default_endpoint == "http://localhost:8100/api/retrieve"
+    assert default_endpoint == "http://localhost:8100/api/retrieve/context"
 
 
 def test_load_rag_endpoint_config_falls_back_to_default(tmp_path, monkeypatch):
@@ -50,11 +50,11 @@ def test_load_rag_endpoint_config_falls_back_to_default(tmp_path, monkeypatch):
     assert endpoints == [
         {
             "name": "localhost:8100",
-            "retrieve_url": "http://localhost:8100/api/retrieve",
+            "retrieve_url": "http://localhost:8100/api/retrieve/context",
             "health_url": "http://localhost:8100/api/health",
         }
     ]
-    assert default_endpoint == "http://localhost:8100/api/retrieve"
+    assert default_endpoint == "http://localhost:8100/api/retrieve/context"
 
 
 @pytest.mark.asyncio
@@ -66,16 +66,16 @@ async def test_fetch_available_rag_endpoints_filters_unhealthy(monkeypatch):
             [
                 {
                     "name": "healthy",
-                    "retrieve_url": "http://healthy/api/retrieve",
+                    "retrieve_url": "http://healthy/api/retrieve/context",
                     "health_url": "http://healthy/api/health",
                 },
                 {
                     "name": "down",
-                    "retrieve_url": "http://down/api/retrieve",
+                    "retrieve_url": "http://down/api/retrieve/context",
                     "health_url": "http://down/api/health",
                 },
             ],
-            "http://healthy/api/retrieve",
+            "http://healthy/api/retrieve/context",
         ),
     )
 
@@ -97,7 +97,7 @@ async def test_fetch_available_rag_endpoints_filters_unhealthy(monkeypatch):
 
     assert choices == {
         "None": "",
-        "healthy (http://healthy/api/retrieve)": "http://healthy/api/retrieve",
+        "healthy (http://healthy/api/retrieve/context)": "http://healthy/api/retrieve/context",
     }
     assert selected == ""
 
@@ -111,11 +111,11 @@ async def test_fetch_available_rag_endpoints_returns_none_when_all_unhealthy(mon
             [
                 {
                     "name": "down",
-                    "retrieve_url": "http://down/api/retrieve",
+                    "retrieve_url": "http://down/api/retrieve/context",
                     "health_url": "http://down/api/health",
                 }
             ],
-            "http://down/api/retrieve",
+            "http://down/api/retrieve/context",
         ),
     )
 

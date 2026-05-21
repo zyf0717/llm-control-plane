@@ -11,7 +11,6 @@ from fastapi.testclient import TestClient
 from src.orchestrator import proxy as proxy_module
 from src.orchestrator.history_store import MemoryHistoryStore
 from src.orchestrator.proxy import RequestProcessor, app
-from src.orchestrator.rag_prompt_builder import RagPromptBuilder
 from src.orchestrator.utils import HeaderManager
 
 
@@ -139,6 +138,7 @@ class TestConversationHistory:
         assert await memory_history_store.get_conversation(convo_id) == expected_messages
 
 
+
 class TestRequestPreparation:
     """Tests for proxy request preparation logic."""
 
@@ -158,11 +158,17 @@ class TestRequestPreparation:
             ).encode("utf-8")
         )
 
-        rag_user_content = "Retrieved reference excerpts:\n\nSource: doc-1\nExcerpt:\nRetrieved context\n\nCurrent user question:\nNeed context"
+        rag_user_content = """Retrieved reference excerpts:
+
+Source: doc-1
+Excerpt:
+Retrieved context
+
+Current user question:
+Need context"""
         rag_headers = {
             "X-RAG-Injected": "true",
-            "X-RAG-Confidence": "0.820",
-            "X-RAG-Threshold": "0.350",
+            "X-RAG-Hits": "1",
         }
 
         with patch.object(
@@ -196,7 +202,14 @@ class TestRequestPreparation:
             ).encode("utf-8")
         )
 
-        rag_user_content = "Retrieved reference excerpts:\n\nSource: doc-1\nExcerpt:\nRetrieved context\n\nCurrent user question:\nCurrent question"
+        rag_user_content = """Retrieved reference excerpts:
+
+Source: doc-1
+Excerpt:
+Retrieved context
+
+Current user question:
+Current question"""
         with patch.object(
             RequestProcessor,
             "_fetch_rag_message",
@@ -212,7 +225,6 @@ class TestRequestPreparation:
             {"role": "assistant", "content": "Earlier reply"},
             {"role": "user", "content": "Current question"},
         ]
-
 
     @pytest.mark.asyncio
     async def test_prepare_request_does_not_persist_reasoning_messages(self):
@@ -239,27 +251,13 @@ class TestRequestPreparation:
             {"role": "user", "content": "Reason carefully"}
         ]
 
-    def test_build_rag_user_content_makes_matched_entities_authoritative_and_visible(self):
-        rag_user_content = RagPromptBuilder.build_user_message_content(
-            "Need context",
-            [
-                {
-                    "id": "doc-1",
-                    "citation_label": "Project Template.pdf#chunk-1",
-                    "content": "Definition text",
-                    "matched_entities": [
-                        "INSERT_PROJECT_NAME",
-                        {"text": "project template"},
-                    ],
-                }
-            ],
-        )
-
-        assert rag_user_content is not None
-        assert "[Retrieved reference excerpts]" in rag_user_content
-        assert "Relevant to: INSERT_PROJECT_NAME, project template" in rag_user_content
-        assert "Excerpt:\nDefinition text" in rag_user_content
-        assert "[Current user question]\nNeed context" in rag_user_content
+    def test_normalize_rag_endpoint_targets_context_route(self):
+        assert RequestProcessor._normalize_rag_endpoint(
+            "http://localhost:8100/api/retrieve"
+        ) == "http://localhost:8100/api/retrieve/context"
+        assert RequestProcessor._normalize_rag_endpoint(
+            "localhost:8100"
+        ) == "http://localhost:8100/api/retrieve/context"
 
     @pytest.mark.asyncio
     async def test_prepare_request_rewrites_only_latest_user_turn_when_rag_is_present(self):
@@ -275,14 +273,14 @@ class TestRequestPreparation:
             ).encode("utf-8")
         )
 
-        rag_user_content = (
-            "[Retrieved reference excerpts]\n\n"
-            "Source: doc-1\n"
-            "Excerpt:\n"
-            "Definition text\n\n"
-            "[Current user question]\n"
-            "Need context"
-        )
+        rag_user_content = """[Retrieved reference excerpts]
+
+Source: doc-1
+Excerpt:
+Definition text
+
+[Current user question]
+Need context"""
         with patch.object(
             RequestProcessor,
             "_fetch_rag_message",
@@ -297,12 +295,12 @@ class TestRequestPreparation:
         assert all(isinstance(message, dict) for message in body["messages"])
 
     @pytest.mark.asyncio
-    async def test_fetch_rag_message_skips_below_threshold_results(self):
+    async def test_fetch_rag_message_returns_none_without_grounded_user_message(self):
         mock_response = Mock()
         mock_response.raise_for_status = Mock()
         mock_response.json.return_value = {
-            "results": [{"id": "doc-1", "content": "Weak match", "score": 0.2}],
-            "method": "vector",
+            "context_blocks": [{"chunk_id": "doc-1"}],
+            "grounded_user_message": "   ",
         }
 
         with patch("httpx.AsyncClient") as mock_client_class:
@@ -317,26 +315,27 @@ class TestRequestPreparation:
 
         assert rag_user_content is None
         assert rag_headers["X-RAG-Injected"] == "false"
-        assert rag_headers["X-RAG-Reason"] == "below-threshold"
-        assert rag_headers["X-RAG-Confidence"] == "0.200"
+        assert rag_headers["X-RAG-Reason"] == "empty-grounded-user-message"
 
     @pytest.mark.asyncio
-    async def test_fetch_rag_message_uses_distance_based_results(self):
+    async def test_fetch_rag_message_uses_grounded_user_message_from_context_response(self):
         mock_response = Mock()
         mock_response.raise_for_status = Mock()
         mock_response.json.return_value = {
-            "results": [
-                {
-                    "chunk_id": "chunk-1",
-                    "content": "Strong semantic match",
-                    "distance": 0.22,
-                },
-                {
-                    "chunk_id": "chunk-2",
-                    "content": "Weak semantic match",
-                    "distance": 0.91,
-                },
-            ]
+            "context_blocks": [
+                {"chunk_id": "chunk-1", "content": "Strong semantic match"},
+                {"chunk_id": "chunk-2", "content": "Another match"},
+            ],
+            "grounded_user_message": """[Retrieved reference excerpts]
+
+Source: chunk-1
+Excerpt:
+Strong semantic match
+
+[Current user question]
+Need context""",
+            "mode": "hybrid",
+            "truncated": True,
         }
 
         with patch("httpx.AsyncClient") as mock_client_class:
@@ -350,35 +349,32 @@ class TestRequestPreparation:
             )
 
         mock_client.post.assert_awaited_once()
+        post_args = mock_client.post.await_args.args
         post_kwargs = mock_client.post.await_args.kwargs
-        assert post_kwargs["json"]["top_k"] == 10
-        assert post_kwargs["json"]["limit"] == 10
+        assert post_args[0] == "http://localhost:8100/api/retrieve/context"
+        assert post_kwargs["json"] == {"query": "Need context", "limit": 10}
         assert rag_user_content is not None
         assert "Strong semantic match" in rag_user_content
-        assert "Weak semantic match" not in rag_user_content
-        assert rag_headers["X-RAG-Injected"] == "true"
-        assert rag_headers["X-RAG-Confidence"] == "0.780"
-        assert rag_headers["X-RAG-Distance"] == "0.22"
-        assert "[Current user question]\nNeed context" in rag_user_content
+        assert rag_headers == {
+            "X-RAG-Endpoint": "http://localhost:8100/api/retrieve/context",
+            "X-RAG-Hits": "2",
+            "X-RAG-Injected": "true",
+            "X-RAG-Mode": "hybrid",
+            "X-RAG-Truncated": "true",
+        }
 
     @pytest.mark.asyncio
-    async def test_fetch_rag_message_logs_retrieval_summary(self, caplog):
+    async def test_fetch_rag_message_logs_context_summary(self, caplog):
         mock_response = Mock()
         mock_response.raise_for_status = Mock()
         mock_response.json.return_value = {
-            "results": [
-                {
-                    "chunk_id": "chunk-1",
-                    "content": "Strong semantic match from handbook section",
-                    "distance": 0.22,
-                },
-                {
-                    "chunk_id": "chunk-2",
-                    "content": "Another useful match from release notes",
-                    "distance": 0.31,
-                },
+            "context_blocks": [
+                {"chunk_id": "chunk-1", "content": "Strong semantic match from handbook section"},
+                {"chunk_id": "chunk-2", "content": "Another useful match from release notes"},
             ],
-            "method": "vector",
+            "grounded_user_message": "grounded",
+            "mode": "hybrid",
+            "truncated": False,
         }
 
         with patch("httpx.AsyncClient") as mock_client_class:
@@ -392,12 +388,13 @@ class TestRequestPreparation:
                     "http://localhost:8100/api/retrieve",
                 )
 
-        assert "RAG retrieved 2 raw hits (2 above threshold" in caplog.text
-        assert "chunk-1 conf=0.780" in caplog.text
-        assert "Strong semantic match from handbook section" in caplog.text
+        assert "RAG context retrieved 2 blocks via http://localhost:8100/api/retrieve/context" in caplog.text
+        assert "mode=hybrid" in caplog.text
+        assert "truncated=False" in caplog.text
 
 
 class TestConversationHistoryEndpoint:
+
     def test_retrieve_conversation_returns_404_for_unknown_id(self, client):
         response = client.post("/conversations/retrieve", json={"convo_id": "missing"})
 

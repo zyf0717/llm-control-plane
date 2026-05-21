@@ -73,7 +73,7 @@ def load_rag_endpoint_config():
         endpoints = [
             {
                 "name": DEFAULT_RAG_ENDPOINT,
-                "retrieve_url": f"http://{DEFAULT_RAG_ENDPOINT}/api/retrieve",
+                "retrieve_url": f"http://{DEFAULT_RAG_ENDPOINT}/api/retrieve/context",
                 "health_url": f"http://{DEFAULT_RAG_ENDPOINT}/api/health",
             }
         ]

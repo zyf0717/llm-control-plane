@@ -13,7 +13,6 @@ from fastapi.responses import Response, StreamingResponse
 
 from .history_store import HistoryStore, MemoryHistoryStore, build_history_store_from_env
 from .llm_router import get_router
-from .rag_prompt_builder import RagPromptBuilder
 from .utils import (
     HeaderManager,
     SSEAccumulator,
@@ -30,7 +29,6 @@ config = yaml.safe_load(CONFIG_FILE.open("r", encoding="utf-8")) or {}
 endpoints = config.get("endpoints", [])
 rag_config = config.get("rag", {})
 RAG_TOP_K = int(rag_config.get("top_k", 3))
-RAG_MIN_CONFIDENCE = float(rag_config.get("min_confidence", 0.35))
 
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -104,7 +102,7 @@ class RequestProcessor:
 
     @staticmethod
     def _normalize_rag_endpoint(rag_endpoint: Optional[str]) -> Optional[str]:
-        """Normalize a configured RAG endpoint into a URL base."""
+        """Normalize a configured RAG endpoint into the context retrieval URL."""
         if not rag_endpoint:
             return None
 
@@ -124,9 +122,16 @@ class RequestProcessor:
         normalized = normalized.rstrip("/")
         if not normalized:
             return None
-        if normalized.startswith(("http://", "https://")):
+        if not normalized.startswith(("http://", "https://")):
+            normalized = f"http://{normalized}"
+
+        if normalized.endswith("/api/retrieve/context"):
             return normalized
-        return f"http://{normalized}"
+        if normalized.endswith("/api/retrieve"):
+            return f"{normalized}/context"
+        if normalized.endswith("/context"):
+            return normalized
+        return f"{normalized}/api/retrieve/context"
 
     @staticmethod
     def _latest_user_message(messages: List[Dict]) -> Optional[str]:
@@ -147,40 +152,10 @@ class RequestProcessor:
         return len(messages)
 
     @staticmethod
-    def _summarize_rag_results(results: List[Dict], limit: int = 3) -> str:
-        """Summarize retrieved results for logs without dumping full content."""
-        if not results:
-            return "no hits"
-
-        summary_parts = []
-        for index, result in enumerate(results[:limit], start=1):
-            label = RagPromptBuilder._rag_result_label(result, index)
-            confidence = RequestProcessor._rag_confidence(result)
-            content = " ".join(str(result.get("content") or "").split())
-            preview = content[:80] + ("..." if len(content) > 80 else "")
-            summary_parts.append(
-                f"{label} conf={confidence:.3f} chars={len(content)} preview={preview!r}"
-            )
-
-        return "; ".join(summary_parts)
-
-    @staticmethod
-    def _rag_confidence(result: Dict) -> float:
-        """Normalize heterogeneous retrieval scores into a confidence value."""
-        try:
-            if result.get("score") is not None:
-                return max(0.0, min(1.0, float(result["score"])))
-            if result.get("distance") is not None:
-                return max(0.0, min(1.0, 1.0 - float(result["distance"])))
-        except (TypeError, ValueError):
-            return 0.0
-        return 0.0
-
-    @staticmethod
     async def _fetch_rag_message(
         messages: List[Dict], rag_endpoint: Optional[str]
     ) -> tuple[Optional[str], Dict[str, str]]:
-        """Fetch RAG context and rewrite the latest user turn when hits are accepted."""
+        """Fetch a pre-grounded user message from the context service."""
         normalized_endpoint = RequestProcessor._normalize_rag_endpoint(rag_endpoint)
         if not normalized_endpoint:
             return None, {}
@@ -190,75 +165,65 @@ class RequestProcessor:
             return None, {
                 "X-RAG-Endpoint": normalized_endpoint,
                 "X-RAG-Injected": "false",
-                "X-RAG-Threshold": str(RAG_MIN_CONFIDENCE),
                 "X-RAG-Reason": "no-user-message",
             }
 
-        search_url = normalized_endpoint
         request_headers = HeaderManager.create_auth_headers()
         request_headers["Content-Type"] = "application/json"
         request_payload = {
             "query": latest_user_message,
-            "top_k": RAG_TOP_K,
             "limit": RAG_TOP_K,
         }
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
-                    search_url, json=request_payload, headers=request_headers
+                    normalized_endpoint, json=request_payload, headers=request_headers
                 )
                 response.raise_for_status()
                 search_response = response.json()
         except Exception as exc:
-            logger.warning("RAG retrieval failed for %s: %s", search_url, exc)
+            logger.warning("RAG context retrieval failed for %s: %s", normalized_endpoint, exc)
             return None, {
                 "X-RAG-Endpoint": normalized_endpoint,
                 "X-RAG-Injected": "false",
-                "X-RAG-Threshold": str(RAG_MIN_CONFIDENCE),
                 "X-RAG-Reason": "request-failed",
             }
 
-        raw_results = search_response.get("results", [])
-        if not isinstance(raw_results, list):
-            raw_results = []
+        context_blocks = search_response.get("context_blocks", [])
+        if not isinstance(context_blocks, list):
+            context_blocks = []
 
-        filtered_results = [
-            result
-            for result in raw_results
-            if RequestProcessor._rag_confidence(result) >= RAG_MIN_CONFIDENCE
-        ]
-        logger.info(
-            "RAG retrieved %d raw hits (%d above threshold %.3f) via %s: %s",
-            len(raw_results),
-            len(filtered_results),
-            RAG_MIN_CONFIDENCE,
-            str(search_response.get("method") or "unknown"),
-            RequestProcessor._summarize_rag_results(filtered_results or raw_results),
-        )
-        top_confidence = (
-            RequestProcessor._rag_confidence(raw_results[0]) if raw_results else 0.0
-        )
+        grounded_user_message = search_response.get("grounded_user_message")
+        if not isinstance(grounded_user_message, str) or not grounded_user_message.strip():
+            logger.info(
+                "RAG context returned no grounded user message via %s",
+                normalized_endpoint,
+            )
+            return None, {
+                "X-RAG-Endpoint": normalized_endpoint,
+                "X-RAG-Injected": "false",
+                "X-RAG-Reason": "empty-grounded-user-message",
+            }
+
         rag_headers = {
             "X-RAG-Endpoint": normalized_endpoint,
-            "X-RAG-Confidence": f"{top_confidence:.3f}",
-            "X-RAG-Threshold": f"{RAG_MIN_CONFIDENCE:.3f}",
-            "X-RAG-Hits": str(len(filtered_results)),
-            "X-RAG-Method": str(search_response.get("method") or ""),
+            "X-RAG-Hits": str(len(context_blocks)),
+            "X-RAG-Injected": "true",
         }
-        if raw_results and raw_results[0].get("distance") is not None:
-            rag_headers["X-RAG-Distance"] = str(raw_results[0]["distance"])
+        if search_response.get("mode") is not None:
+            rag_headers["X-RAG-Mode"] = str(search_response["mode"])
+        if search_response.get("truncated") is not None:
+            rag_headers["X-RAG-Truncated"] = str(bool(search_response["truncated"])).lower()
 
-        rag_user_content = RagPromptBuilder.build_user_message_content(
-            latest_user_message, filtered_results[:RAG_TOP_K]
+        logger.info(
+            "RAG context retrieved %d blocks via %s (mode=%s truncated=%s)",
+            len(context_blocks),
+            normalized_endpoint,
+            str(search_response.get("mode") or "unknown"),
+            bool(search_response.get("truncated", False)),
         )
-        if rag_user_content == latest_user_message:
-            rag_headers["X-RAG-Injected"] = "false"
-            rag_headers["X-RAG-Reason"] = "below-threshold"
-            return None, rag_headers
-
-        rag_headers["X-RAG-Injected"] = "true"
-        return rag_user_content, rag_headers
+        return grounded_user_message.strip(), rag_headers
 
     @staticmethod
     async def prepare_request(request: Request) -> tuple[Dict, Dict[str, str]]:
