@@ -1,3 +1,4 @@
+import asyncio
 import os
 import uuid
 from datetime import datetime
@@ -43,6 +44,8 @@ def server(input, output, session):
     last_runtime = reactive.Value(None)
     run_info = reactive.Value(None)
     send_button_state = reactive.Value("ready")
+    active_stop_event = reactive.Value(None)
+    active_request_streaming = reactive.Value(False)
     info_accordion_open = reactive.Value(True)
     file_upload_key = reactive.Value(0)
     current_files = reactive.Value({"key": 0, "files": None})
@@ -219,6 +222,32 @@ def server(input, output, session):
             set_system_prompt_state(new_uuid, prompt="", started=False, locked=False)
         )
         ui.update_text("convoID", value=new_uuid, session=session)
+
+    @render.ui
+    def stop_control_ui():
+        is_enabled = (
+            send_button_state.get() == "busy" and active_request_streaming.get()
+        )
+        button = ui.input_action_button(
+            "stopResponse",
+            "Stop",
+            class_="btn btn-outline-danger w-100",
+        )
+        if is_enabled:
+            return button
+
+        return ui.tags.fieldset(
+            button,
+            disabled="disabled",
+            style="border: 0; margin: 0; padding: 0; min-inline-size: 0;",
+        )
+
+    @reactive.Effect
+    @reactive.event(input.stopResponse)
+    def _stop_active_stream():
+        stop_event = active_stop_event.get()
+        if stop_event is not None and not stop_event.is_set():
+            stop_event.set()
 
     @render.ui
     def system_prompt_ui():
@@ -424,6 +453,9 @@ def server(input, output, session):
 
     @chat.on_user_submit
     async def _handle_chat_input(user_input: str):
+        if send_button_state.get() == "busy":
+            return
+
         current_endpoints = available_endpoints.get()
         display_mapping = endpoint_display_mapping.get()
         current_run_info = run_info.get() or {}
@@ -470,6 +502,10 @@ def server(input, output, session):
             bool(prompt_state.get("started")),
         )
 
+        stop_event = asyncio.Event()
+        active_stop_event.set(stop_event)
+        active_request_streaming.set(bool(input.stream()))
+
         response_stream = stream_chat_response(
             endpoint_key=actual_endpoint_key,
             text=user_input,
@@ -482,11 +518,17 @@ def server(input, output, session):
             current_routing_info=current_run_info.get("routing", {}),
             system_prompt=system_prompt_to_send,
             rag_endpoint=input.ragEndpoint() if input.ragEndpoint() else None,
+            stop_event=stop_event,
             on_metadata=run_info.set,
             on_send_button_state=send_button_state.set,
             on_runtime=last_runtime.set,
         )
-        await chat.append_message_stream(response_stream)
+        try:
+            await chat.append_message_stream(response_stream)
+        finally:
+            if active_stop_event.get() is stop_event:
+                active_stop_event.set(None)
+                active_request_streaming.set(False)
 
         if convo_id and not bool(prompt_state.get("started")):
             apply_system_prompt_view(

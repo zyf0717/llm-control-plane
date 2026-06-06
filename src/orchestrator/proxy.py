@@ -339,6 +339,10 @@ class ProxyHandler:
                         start_reasoning_buffer = ""
                         end_reasoning_buffer = ""
                         async for line in resp.aiter_lines():
+                            if await request.is_disconnected():
+                                logger.info("Downstream client disconnected during stream")
+                                break
+
                             (
                                 chunk,
                                 start_reasoning_buffer,
@@ -353,14 +357,22 @@ class ProxyHandler:
 
                             if not should_continue:
                                 break
-
+            except asyncio.CancelledError:
+                logger.info("Streaming response cancelled by downstream client")
+                return
             except httpx.HTTPStatusError as e:
+                if await request.is_disconnected():
+                    logger.info("Downstream client disconnected before HTTP error delivery")
+                    return
                 yield create_error_sse_message(
                     "error",
                     status=e.response.status_code,
                     detail=f"HTTP {e.response.status_code}",
                 )
             except Exception as e:
+                if await request.is_disconnected():
+                    logger.info("Downstream client disconnected before error delivery")
+                    return
                 yield create_error_sse_message("error", detail=str(e))
             finally:
                 try:

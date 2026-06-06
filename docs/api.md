@@ -124,11 +124,15 @@ Streaming behavior:
 - media type: `text/event-stream`
 - proxy appends `stream_options.include_usage = true`
 - reasoning is emitted as `delta.reasoning`
+- interruption is client-driven: close the downstream SSE/HTTP connection to stop the active stream
+- for `llama.cpp` / `llama-server` upstreams, that connection close propagates as upstream stream termination and stops generation
+- partial assistant text emitted before interruption is still persisted to conversation history when `X-Convo-ID` is set
 
 Non-streaming behavior:
 
 - response is standard JSON
 - reasoning is moved to `choices[0].message.reasoning`
+- mid-response interruption is not supported because the upstream request completes before the proxy responds
 
 ## Model Discovery
 

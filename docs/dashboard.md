@@ -10,6 +10,7 @@ The dashboard runs on `http://localhost:12341` and communicates only with the pr
 - RAG endpoint selector
 - Dedicated RAG refresh action
 - Streaming and non-streaming chat
+- Stop control for active streamed responses
 - Reasoning effort selector
 - File upload for inline prompt augmentation
 - Conversation history viewer
@@ -39,6 +40,8 @@ When the user submits a message, the dashboard sends:
 - optional `X-Reasoning-Effort`
 - optional `X-RAG-Endpoint`
 - optional system prompt as the first explicit system message
+
+For streamed requests, the sidebar `Stop` control closes the active proxy stream. That preserves already-rendered partial output in the chat transcript and, when conversation history is enabled, the proxy persists the partial assistant text that was emitted before the stop.
 
 The dashboard does not inject retrieved context itself. It only selects the RAG endpoint; the proxy performs retrieval and request-body augmentation.
 

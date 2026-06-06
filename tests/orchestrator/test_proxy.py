@@ -614,3 +614,76 @@ class TestModelsEndpoint:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+class _FakeStreamResponse:
+    def __init__(self, lines):
+        self._lines = list(lines)
+        self.headers = {"content-type": "text/event-stream"}
+        self.closed = False
+
+    def raise_for_status(self):
+        return None
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.closed = True
+
+
+class _FakeAsyncClient:
+    def __init__(self, response):
+        self.response = response
+        self.closed = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.closed = True
+
+    def stream(self, *_args, **_kwargs):
+        return self.response
+
+
+class TestStreamingInterruptions:
+    @pytest.mark.asyncio
+    async def test_stream_response_persists_partial_history_on_generator_close(self):
+        request = Mock()
+        request.headers = {
+            "content-type": "application/json",
+            "user-agent": "test-client",
+        }
+        request.is_disconnected = AsyncMock(return_value=False)
+
+        fake_response = _FakeStreamResponse(
+            [
+                'data: {"choices": [{"delta": {"content": "Hello"}}]}',
+                'data: {"choices": [{"delta": {"content": " world"}}]}',
+            ]
+        )
+        fake_client = _FakeAsyncClient(fake_response)
+
+        with patch("httpx.AsyncClient", return_value=fake_client):
+            streaming_response = await proxy_module.ProxyHandler.stream_response(
+                request,
+                "https://test.example.com/v1/chat/completions",
+                {"messages": [{"role": "user", "content": "Hi"}]},
+                "session-stop",
+            )
+
+            body_iter = streaming_response.body_iterator
+            first_chunk = await anext(body_iter)
+            await body_iter.aclose()
+
+        assert b"Hello" in first_chunk
+        assert await proxy_module.history_store.get_conversation("session-stop") == [
+            {"role": "assistant", "content": "Hello"}
+        ]
+        assert fake_response.closed is True
+        assert fake_client.closed is True
