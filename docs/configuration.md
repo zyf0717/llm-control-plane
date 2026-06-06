@@ -27,6 +27,23 @@ rag:
   top_k: 10
   min_confidence: 0.35
 
+search:
+  enabled: true
+  default_provider: "duckduckgo_html"
+  timeout_ms: 7000
+  max_results: 10
+  cache_ttl_seconds: 900
+  providers:
+    duckduckgo_html:
+      enabled: true
+      priority: 10
+    marginalia_html:
+      enabled: true
+      priority: 20
+    mojeek_html:
+      enabled: false
+      priority: 30
+
 workloads:
   - type: "reasoning"
     endpoint_preference: ["my-server", "mac-mini"]
@@ -93,6 +110,33 @@ Supported workload types:
 
 Each `endpoint_preference` list is ordered from most preferred to least preferred.
 
+## Search Configuration
+
+The `search` block enables the lightweight candidate-discovery module exposed at `POST /search/web`.
+
+### Fields
+
+| Field | Meaning |
+|---|---|
+| `enabled` | Enables the `/search/web` endpoint and internal provider router |
+| `default_provider` | Default provider id when `provider=auto` |
+| `timeout_ms` | Per-provider request timeout |
+| `max_results` | Hard cap on normalized results returned |
+| `cache_ttl_seconds` | Parsed-response cache TTL |
+| `providers[].enabled` | Explicit allowlist toggle per provider |
+| `providers[].priority` | Lower values are tried first |
+| `providers[].fallback_only` | Only try after non-fallback providers |
+| `providers[].cache_ttl_seconds` | Optional provider-specific TTL override |
+| `providers[].min_interval_seconds` | Optional minimum delay between requests to the same provider |
+
+Supported built-in provider ids:
+
+- `duckduckgo_html`
+- `marginalia_html`
+- `mojeek_html`
+- `wikipedia_opensearch`
+- `searxng_html` when `providers.searxng_html.endpoint` is configured
+
 
 ## Runtime Environment
 
@@ -109,4 +153,4 @@ Supported environment variables:
 - Dashboard RAG choices are filtered by live `health_url` checks on page load and explicit RAG refresh.
 - `default_endpoint` is only used if it is healthy and present in the configured list.
 
-TL;DR: `config.yaml` controls upstream models, smart routing preference order, and RAG discovery/retrieval behavior.
+TL;DR: `config.yaml` controls upstream models, smart routing preference order, RAG discovery/retrieval behavior, and the optional lightweight search module.

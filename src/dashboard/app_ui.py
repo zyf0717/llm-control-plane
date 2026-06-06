@@ -114,6 +114,12 @@ app_ui = ui.page_fluid(
                             ),
                             col_widths=[10, 2],
                         ),
+                        ui.input_select(
+                            "searchProvider",
+                            "Search Provider",
+                            choices=[],
+                            width="100%",
+                        ),
                         ui.output_ui("file_upload_ui"),
                         ui.div(
                             ui.output_ui("outputRunInfo"),

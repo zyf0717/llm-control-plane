@@ -2,6 +2,7 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import httpx
 import yaml
@@ -14,7 +15,16 @@ CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
 DEFAULT_RAG_ENDPOINT = "localhost:8100"
 NONE_RAG_OPTION_LABEL = "None"
 NONE_RAG_OPTION_VALUE = ""
+NONE_SEARCH_PROVIDER_LABEL = "None"
+NONE_SEARCH_PROVIDER_VALUE = ""
 HISTORY_DISPLAY_TIMEZONE = timezone(timedelta(hours=8))
+SEARCH_PROVIDER_DISPLAY_NAMES = {
+    "duckduckgo_html": "DuckDuckGo",
+    "marginalia_html": "Marginalia",
+    "mojeek_html": "Mojeek",
+    "searxng_html": "SearXNG",
+    "wikipedia_opensearch": "Wikipedia",
+}
 
 
 async def fetch_models_data():
@@ -109,6 +119,83 @@ async def fetch_available_rag_endpoints():
             rag_choices[retrieve_url] = label
 
     return rag_choices, NONE_RAG_OPTION_VALUE
+
+
+def format_search_provider_label(provider_id: str) -> str:
+    """Return a stable display label for a configured search provider id."""
+    normalized = str(provider_id or "").strip()
+    if not normalized:
+        return "Unknown"
+    return SEARCH_PROVIDER_DISPLAY_NAMES.get(
+        normalized,
+        normalized.replace("_", " ").title(),
+    )
+
+
+def load_search_provider_config() -> list[dict[str, Any]]:
+    """Load enabled search providers from config.yaml, ordered by priority."""
+    try:
+        config = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
+    except FileNotFoundError:
+        logging.warning("config.yaml not found; search providers disabled")
+        return []
+    except yaml.YAMLError as e:
+        logging.warning("Failed to parse config.yaml for search providers: %s", e)
+        return []
+
+    if not isinstance(config, dict):
+        return []
+
+    search_config = config.get("search", {})
+    if not isinstance(search_config, dict) or not bool(search_config.get("enabled")):
+        return []
+
+    provider_configs = search_config.get("providers", {})
+    if not isinstance(provider_configs, dict):
+        return []
+
+    providers = []
+    for provider_id, provider_config in provider_configs.items():
+        if not isinstance(provider_config, dict) or not provider_config.get("enabled"):
+            continue
+        providers.append(
+            {
+                "id": str(provider_id).strip(),
+                "name": format_search_provider_label(provider_id),
+                "priority": int(provider_config.get("priority", 100)),
+            }
+        )
+
+    providers.sort(key=lambda item: (item["priority"], item["name"], item["id"]))
+    return providers
+
+
+def fetch_available_search_providers() -> tuple[dict[str, str], str]:
+    """Return enabled search provider choices with a persistent None option."""
+    choices = {NONE_SEARCH_PROVIDER_VALUE: NONE_SEARCH_PROVIDER_LABEL}
+
+    for provider in load_search_provider_config():
+        provider_id = provider["id"]
+        provider_name = provider["name"]
+        choices[provider_id] = f"{provider_name} ({provider_id})"
+
+    return choices, NONE_SEARCH_PROVIDER_VALUE
+
+
+async def fetch_search_results(
+    *, query: str, provider: str, count: int = 5
+) -> dict[str, Any]:
+    """Fetch normalized search candidates from the proxy search endpoint."""
+    payload = {
+        "query": str(query or "").strip(),
+        "provider": str(provider or "").strip(),
+        "count": int(count),
+    }
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.post(f"{PROXY_BASE_URL}/search/web", json=payload)
+        response.raise_for_status()
+        return response.json()
 
 
 async def fetch_available_endpoints():

@@ -146,4 +146,33 @@ The response is OpenAI-compatible and includes endpoint metadata such as `endpoi
 
 This endpoint also refreshes the router’s internal reachable-endpoint cache.
 
-TL;DR: the proxy API is OpenAI-compatible plus control headers for smart routing, conversation history, reasoning, and RAG retrieval.
+## Lightweight Search
+
+Search discovery is available when `search.enabled: true` in `config.yaml`.
+
+```text
+POST /search/web
+```
+
+Example:
+
+```bash
+curl -X POST http://localhost:12340/search/web \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "qwen mtp llama.cpp",
+    "provider": "auto",
+    "count": 5,
+    "freshness": "week"
+  }'
+```
+
+Behavior:
+
+- sends one HTTP request to each selected search provider in priority order
+- parses only the returned SERP payload
+- never fetches result pages or executes JavaScript
+- returns normalized result candidates plus degradation warnings
+- includes `wrapped_results`, a JSON string marked as untrusted for downstream LLM use
+
+TL;DR: the proxy API is OpenAI-compatible plus control headers for smart routing, conversation history, reasoning, RAG retrieval, and an optional lightweight search-discovery endpoint.
