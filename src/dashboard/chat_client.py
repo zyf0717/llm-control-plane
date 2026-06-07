@@ -17,6 +17,32 @@ StateCallback = Callable[[str], None]
 RuntimeCallback = Callable[[float], None]
 
 
+def build_chat_messages(
+    *,
+    text: str,
+    system_prompt: Optional[str] = None,
+    extra_turn_messages: Optional[list[dict[str, Any]]] = None,
+) -> list[dict[str, str]]:
+    """Build outbound chat messages in stable order for one dashboard turn."""
+    messages: list[dict[str, str]] = []
+
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+
+    if extra_turn_messages:
+        for message in extra_turn_messages:
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role") or "").strip()
+            content = message.get("content")
+            if not role or not isinstance(content, str) or not content.strip():
+                continue
+            messages.append({"role": role, "content": content.strip()})
+
+    messages.append({"role": "user", "content": text})
+    return messages
+
+
 def _extract_metadata(
     obj: Dict[str, Any],
     *,
@@ -78,6 +104,7 @@ async def stream_chat_response(
     convo_id: Optional[str] = None,
     current_routing_info: Optional[Dict[str, Any]] = None,
     system_prompt: Optional[str] = None,
+    extra_turn_messages: Optional[list[dict[str, Any]]] = None,
     rag_endpoint: Optional[str] = None,
     on_metadata: Optional[MetadataCallback] = None,
     on_send_button_state: Optional[StateCallback] = None,
@@ -102,12 +129,13 @@ async def stream_chat_response(
                 return
             url = f"{PROXY_BASE_URL}/{endpoint_key}"
 
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": text})
-
-        payload = {"messages": messages}
+        payload = {
+            "messages": build_chat_messages(
+                text=text,
+                system_prompt=system_prompt,
+                extra_turn_messages=extra_turn_messages,
+            )
+        }
         headers = {
             "CF-Access-Client-Id": API_KEY_ID,
             "CF-Access-Client-Secret": API_KEY_SECRET,

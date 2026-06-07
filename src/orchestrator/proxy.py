@@ -10,6 +10,7 @@ import yaml
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
+from src.search import SearchArgs, build_search_router, wrap_search_results
 
 from .history_store import (
     HistoryStore,
@@ -33,6 +34,7 @@ config = yaml.safe_load(CONFIG_FILE.open("r", encoding="utf-8")) or {}
 endpoints = config.get("endpoints", [])
 rag_config = config.get("rag", {})
 RAG_TOP_K = int(rag_config.get("top_k", 3))
+search_service = build_search_router(config.get("search", {}))
 
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -664,6 +666,39 @@ async def list_models():
         set(model.get("endpoint") for model in models if model.get("endpoint"))
     )
     return {"object": "list", "data": models}
+
+
+@app.post("/search/web")
+async def search_web(request: Request):
+    """Return normalized candidate links from configured search providers."""
+    try:
+        body = await request.json()
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from exc
+
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON object")
+
+    try:
+        args = SearchArgs(
+            query=str(body.get("query", "")).strip(),
+            count=body.get("count"),
+            provider=str(body.get("provider", "auto") or "auto"),
+            language=body.get("language"),
+            region=body.get("region"),
+            safe_search=body.get("safeSearch") or body.get("safe_search"),
+            freshness=body.get("freshness"),
+        )
+        response = await search_service.search(args)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        status_code = 503 if "disabled" in str(exc).lower() else 500
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+    payload = response.to_dict()
+    payload["wrapped_results"] = wrap_search_results(response)
+    return payload
 
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])

@@ -57,6 +57,82 @@ def test_load_rag_endpoint_config_falls_back_to_default(tmp_path, monkeypatch):
     assert default_endpoint == "http://localhost:8100/api/retrieve/context"
 
 
+def test_load_search_provider_config_reads_enabled_providers_in_priority_order(
+    tmp_path, monkeypatch
+):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+search:
+  enabled: true
+  providers:
+    mojeek_html:
+      enabled: true
+      priority: 30
+    duckduckgo_html:
+      enabled: true
+      priority: 10
+    marginalia_html:
+      enabled: false
+      priority: 20
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(utils, "CONFIG_PATH", config_path)
+
+    providers = utils.load_search_provider_config()
+
+    assert providers == [
+        {"id": "duckduckgo_html", "name": "DuckDuckGo", "priority": 10},
+        {"id": "mojeek_html", "name": "Mojeek", "priority": 30},
+    ]
+
+
+def test_fetch_available_search_providers_returns_none_when_search_disabled(
+    tmp_path, monkeypatch
+):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("search: {enabled: false}", encoding="utf-8")
+    monkeypatch.setattr(utils, "CONFIG_PATH", config_path)
+
+    choices, selected = utils.fetch_available_search_providers()
+
+    assert choices == {
+        utils.NONE_SEARCH_PROVIDER_VALUE: utils.NONE_SEARCH_PROVIDER_LABEL
+    }
+    assert selected == utils.NONE_SEARCH_PROVIDER_VALUE
+
+
+@pytest.mark.asyncio
+async def test_fetch_search_results_posts_to_proxy(monkeypatch):
+    monkeypatch.setattr(utils, "PROXY_BASE_URL", "http://proxy.local")
+
+    response = Mock()
+    response.raise_for_status = Mock()
+    response.json.return_value = {"provider": "duckduckgo_html", "results": []}
+
+    with patch("httpx.AsyncClient") as mock_client_class:
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        mock_client.post.return_value = response
+
+        payload = await utils.fetch_search_results(
+            query="Ada Lovelace",
+            provider="duckduckgo_html",
+            count=5,
+        )
+
+    assert payload == {"provider": "duckduckgo_html", "results": []}
+    mock_client.post.assert_awaited_once_with(
+        "http://proxy.local/search/web",
+        json={
+            "query": "Ada Lovelace",
+            "provider": "duckduckgo_html",
+            "count": 5,
+        },
+    )
+
+
 @pytest.mark.asyncio
 async def test_fetch_available_rag_endpoints_keeps_unhealthy_configured_options(
     monkeypatch,

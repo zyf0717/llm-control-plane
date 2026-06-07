@@ -11,6 +11,7 @@ requires-python = ">=3.12"
 dependencies = [
   "aiosqlite",
   "aiohttp",
+  "beautifulsoup4",
   "fastapi",
   "httpx",
   "pandas",

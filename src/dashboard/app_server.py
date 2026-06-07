@@ -31,9 +31,123 @@ from .utils import (
     fetch_conversation_summaries,
     fetch_available_endpoints,
     fetch_available_rag_endpoints,
+    fetch_available_search_providers,
     fetch_convo_history,
+    fetch_search_results,
+    format_search_provider_label,
     find_model_by_endpoint,
 )
+
+
+def build_search_success_state(search_response: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize a successful proxy search response for UI and request shaping."""
+    provider_id = str(search_response.get("provider") or "").strip()
+    warnings = [
+        str(warning).strip()
+        for warning in search_response.get("warnings", [])
+        if str(warning).strip()
+    ]
+    results = search_response.get("results", [])
+    if not isinstance(results, list):
+        results = []
+
+    return {
+        "provider": provider_id,
+        "provider_label": format_search_provider_label(provider_id),
+        "degraded": bool(search_response.get("degraded", False)),
+        "warnings": warnings,
+        "results": results,
+        "result_count": len(results),
+        "wrapped_results": (
+            search_response.get("wrapped_results")
+            if isinstance(search_response.get("wrapped_results"), str)
+            else None
+        ),
+        "show_preface": True,
+    }
+
+
+def build_search_failure_state(provider_id: str, error: Any) -> Dict[str, Any]:
+    """Build a non-blocking search failure state for metadata only."""
+    return {
+        "provider": str(provider_id or "").strip(),
+        "provider_label": format_search_provider_label(provider_id),
+        "degraded": True,
+        "warnings": [f"search request failed: {str(error)}"],
+        "results": [],
+        "result_count": 0,
+        "wrapped_results": None,
+        "show_preface": False,
+    }
+
+
+def build_search_turn_messages(search_state: Optional[Dict[str, Any]]) -> list[Dict[str, str]]:
+    """Convert successful search state into turn-local injected messages."""
+    if not isinstance(search_state, dict):
+        return []
+
+    wrapped_results = search_state.get("wrapped_results")
+    results = search_state.get("results")
+    if not isinstance(wrapped_results, str) or not wrapped_results.strip():
+        return []
+    if not isinstance(results, list) or not results:
+        return []
+
+    return [{"role": "system", "content": wrapped_results.strip()}]
+
+
+def build_search_preface(search_state: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Render a markdown transcript preface for successful search calls."""
+    if not isinstance(search_state, dict) or not search_state.get("show_preface"):
+        return None
+
+    provider_label = str(search_state.get("provider_label") or "Search").strip()
+    results = search_state.get("results")
+    warnings = search_state.get("warnings") or []
+    degraded = bool(search_state.get("degraded", False))
+    lines = [f"**Search candidates** via {provider_label}"]
+
+    if degraded:
+        lines.append("_Search returned degraded results._")
+
+    if isinstance(results, list) and results:
+        for index, result in enumerate(results, start=1):
+            if not isinstance(result, dict):
+                continue
+            title = str(result.get("title") or result.get("url") or f"Result {index}")
+            url = str(result.get("url") or "").strip()
+            snippet = str(result.get("snippet") or "").strip()
+            line = f"{index}. [{title}]({url})" if url else f"{index}. {title}"
+            if snippet:
+                line = f"{line} - {snippet}"
+            lines.append(line)
+    else:
+        lines.append("No candidates found.")
+
+    if warnings:
+        lines.append(f"Warnings: {'; '.join(str(warning) for warning in warnings)}")
+
+    return "\n".join(lines)
+
+
+def merge_run_info(
+    metadata: Optional[Dict[str, Any]], search_state: Optional[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """Merge search metadata into the runtime panel payload."""
+    merged = dict(metadata or {})
+
+    if isinstance(search_state, dict):
+        merged["search"] = {
+            "provider": search_state.get("provider_label")
+            or search_state.get("provider")
+            or "Unknown",
+            "provider_id": search_state.get("provider") or "",
+            "result_count": search_state.get("result_count", 0),
+            "degraded": bool(search_state.get("degraded", False)),
+            "warnings": list(search_state.get("warnings") or []),
+        }
+
+    return merged or None
 
 
 def server(input, output, session):
@@ -142,6 +256,22 @@ def server(input, output, session):
             session=session,
         )
 
+    async def update_search_providers(
+        current_selection: Optional[str] = None,
+    ) -> None:
+        search_choices, default_selection = fetch_available_search_providers()
+        selected = (
+            current_selection
+            if current_selection in search_choices
+            else default_selection
+        )
+        ui.update_select(
+            "searchProvider",
+            choices=search_choices,
+            selected=selected,
+            session=session,
+        )
+
     async def update_history_selector() -> None:
         current_selection = current_history_convo_id()
         conversations = await fetch_conversation_summaries()
@@ -162,6 +292,7 @@ def server(input, output, session):
     async def _initialize_endpoints():
         await update_endpoints_and_data()
         await update_rag_endpoints()
+        await update_search_providers()
         await update_history_selector()
 
     @reactive.Effect
@@ -177,6 +308,7 @@ def server(input, output, session):
     @reactive.event(input.refreshRagEndpoints)
     async def _refresh_rag_endpoints():
         await update_rag_endpoints(str(input.ragEndpoint() or ""))
+        await update_search_providers(str(input.searchProvider() or ""))
 
     @reactive.Effect
     @reactive.event(input.endpoint)
@@ -384,6 +516,21 @@ def server(input, output, session):
             if rag_lines:
                 sections.append("**RAG**<br>" + "<br>".join(rag_lines))
 
+        if info and "search" in info:
+            search = info["search"]
+            search_lines = []
+            if search.get("provider"):
+                search_lines.append(f"Provider: {search['provider']}")
+            if "result_count" in search:
+                search_lines.append(f"Results: {search['result_count']}")
+            if "degraded" in search:
+                search_lines.append(f"Degraded: {search['degraded']}")
+            warnings = search.get("warnings") or []
+            if warnings:
+                search_lines.append(f"Warnings: {'; '.join(str(item) for item in warnings)}")
+            if search_lines:
+                sections.append("**Search**<br>" + "<br>".join(search_lines))
+
         if info:
             sections.extend(format_response_info(info, fmt))
             sections.extend(format_timings_info(info, fmt))
@@ -429,6 +576,7 @@ def server(input, output, session):
         current_run_info = run_info.get() or {}
         actual_endpoint_key = display_mapping.get(input.endpoint())
         convo_id = current_active_convo_id() or None
+        search_query = str(user_input or "").strip()
         prompt_state = (
             get_system_prompt_state(convo_id)
             if convo_id
@@ -470,6 +618,32 @@ def server(input, output, session):
             bool(prompt_state.get("started")),
         )
 
+        search_state = None
+        selected_search_provider = str(input.searchProvider() or "").strip()
+        if selected_search_provider and search_query:
+            try:
+                search_response = await fetch_search_results(
+                    query=search_query,
+                    provider=selected_search_provider,
+                    count=5,
+                )
+                search_state = build_search_success_state(search_response)
+            except Exception as exc:
+                search_state = build_search_failure_state(
+                    selected_search_provider, exc
+                )
+
+        search_preface = build_search_preface(search_state)
+        if search_preface:
+            await chat.append_message({"role": "assistant", "content": search_preface})
+
+        extra_turn_messages = build_search_turn_messages(search_state)
+        if search_state:
+            run_info.set(merge_run_info({}, search_state))
+
+        def publish_run_info(metadata: Optional[Dict[str, Any]]) -> None:
+            run_info.set(merge_run_info(metadata, search_state))
+
         response_stream = stream_chat_response(
             endpoint_key=actual_endpoint_key,
             text=user_input,
@@ -481,8 +655,9 @@ def server(input, output, session):
             convo_id=convo_id,
             current_routing_info=current_run_info.get("routing", {}),
             system_prompt=system_prompt_to_send,
+            extra_turn_messages=extra_turn_messages,
             rag_endpoint=input.ragEndpoint() if input.ragEndpoint() else None,
-            on_metadata=run_info.set,
+            on_metadata=publish_run_info,
             on_send_button_state=send_button_state.set,
             on_runtime=last_runtime.set,
         )
