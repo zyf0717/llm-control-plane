@@ -10,7 +10,12 @@ import yaml
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
-from src.search import SearchArgs, build_search_router, wrap_search_results
+from src.search import (
+    EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER,
+    SearchArgs,
+    build_search_router,
+    wrap_search_results,
+)
 
 from .history_store import (
     HistoryStore,
@@ -161,6 +166,53 @@ class RequestProcessor:
         return len(messages)
 
     @staticmethod
+    def _is_ephemeral_search_message(message: Dict) -> bool:
+        """Identify turn-local search wrappers that must not persist or replay."""
+        if not isinstance(message, dict):
+            return False
+
+        content = message.get("content")
+        if not isinstance(content, str):
+            return False
+
+        return content.strip().startswith(EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER)
+
+    @staticmethod
+    def _filter_ephemeral_search_messages(messages: List[Dict]) -> List[Dict]:
+        """Drop synthetic search context from durable history/replay boundaries."""
+        return [
+            message
+            for message in messages
+            if not RequestProcessor._is_ephemeral_search_message(message)
+        ]
+
+    @staticmethod
+    def _merge_ephemeral_search_context(messages: List[Dict]) -> List[Dict]:
+        """Attach ephemeral search context to the next user turn for upstream chat."""
+        merged: List[Dict] = []
+        pending_context: List[str] = []
+
+        for message in messages:
+            if RequestProcessor._is_ephemeral_search_message(message):
+                content = message.get("content")
+                if isinstance(content, str) and content.strip():
+                    pending_context.append(content.strip())
+                continue
+
+            if pending_context and message.get("role") == "user":
+                content = message.get("content")
+                if isinstance(content, str):
+                    message = dict(message)
+                    message["content"] = "\n\n".join(
+                        [*pending_context, f"Current user question:\n{content}"]
+                    )
+                    pending_context = []
+
+            merged.append(message)
+
+        return merged
+
+    @staticmethod
     async def _fetch_rag_message(
         messages: List[Dict], rag_endpoint: Optional[str]
     ) -> tuple[Optional[str], Dict[str, str]]:
@@ -266,9 +318,16 @@ class RequestProcessor:
 
         stored_messages = []
         if convo_id:
-            stored_messages = await history_store.get_conversation(convo_id) or []
-            if incoming_messages:
-                await history_store.append_messages(convo_id, incoming_messages)
+            stored_messages = RequestProcessor._filter_ephemeral_search_messages(
+                await history_store.get_conversation(convo_id) or []
+            )
+            durable_incoming_messages = (
+                RequestProcessor._filter_ephemeral_search_messages(incoming_messages)
+            )
+            if durable_incoming_messages:
+                await history_store.append_messages(
+                    convo_id, durable_incoming_messages
+                )
 
         messages = [*stored_messages, *incoming_messages]
 
@@ -297,6 +356,7 @@ class RequestProcessor:
             rewritten_user_message["content"] = rag_user_content
             messages[latest_user_index] = rewritten_user_message
 
+        messages = RequestProcessor._merge_ephemeral_search_context(messages)
         body["messages"] = messages
         if reasoning_effort:
             body["reasoning_effort"] = reasoning_effort
@@ -537,7 +597,7 @@ async def retrieve_conversation(request: Request):
                 status_code=404, detail=f"Conversation '{convo_id}' not found"
             )
 
-        return conversation
+        return RequestProcessor._filter_ephemeral_search_messages(conversation)
 
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON")

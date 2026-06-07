@@ -5,6 +5,7 @@ from src.dashboard.app_server import (
     build_search_turn_messages,
     merge_run_info,
 )
+from src.search.safety import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER
 
 
 def test_build_search_success_state_normalizes_proxy_payload():
@@ -28,6 +29,31 @@ def test_build_search_success_state_normalizes_proxy_payload():
     assert state["result_count"] == 1
     assert state["wrapped_results"] == '{"source":"web_search"}'
     assert state["show_preface"] is True
+
+
+def test_build_search_turn_messages_uses_ephemeral_user_context():
+    state = build_search_success_state(
+        {
+            "provider": "duckduckgo_html",
+            "query": "Ada Lovelace",
+            "results": [
+                {
+                    "title": "Ada Lovelace",
+                    "url": "https://example.com/ada",
+                    "snippet": "Computing pioneer",
+                }
+            ],
+            "wrapped_results": '{"source":"web_search"}',
+        }
+    )
+
+    messages = build_search_turn_messages(state)
+
+    assert messages[0]["role"] == "user"
+    assert messages[0]["content"].startswith(EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER)
+    assert "Ada Lovelace" in messages[0]["content"]
+    assert "https://example.com/ada" in messages[0]["content"]
+    assert '{"source"' not in messages[0]["content"]
 
 
 def test_build_search_failure_state_disables_preface_and_injection():

@@ -1,11 +1,12 @@
 """Lightweight search discovery package."""
 
 from .index import build_search_router
-from .safety import wrap_search_results
+from .safety import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER, wrap_search_results
 from .search_router import SearchConfig, SearchProviderConfig, SearchRouter
 from .types import SearchArgs, SearchResponse, SearchResult
 
 __all__ = [
+    "EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER",
     "SearchArgs",
     "SearchConfig",
     "SearchProviderConfig",

@@ -12,6 +12,7 @@ from src.orchestrator import proxy as proxy_module
 from src.orchestrator.history_store import MemoryHistoryStore
 from src.orchestrator.proxy import RequestProcessor, app
 from src.orchestrator.utils import HeaderManager
+from src.search.safety import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER
 
 
 @pytest.fixture
@@ -252,6 +253,132 @@ Current question"""
             {"role": "user", "content": "Reason carefully"}
         ]
 
+    @pytest.mark.asyncio
+    async def test_prepare_request_does_not_persist_search_context(self):
+        search_context = (
+            f"{EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER}\n"
+            "Untrusted web search candidates for this turn only.\n"
+            "1. Mac mini M5 status\n"
+            "   URL: https://example.com/mac-mini"
+        )
+        request = Mock()
+        request.headers = {"X-Convo-ID": "session-search"}
+        request.body = AsyncMock(
+            return_value=json.dumps(
+                {
+                    "messages": [
+                        {"role": "user", "content": search_context},
+                        {"role": "user", "content": "What is the status?"},
+                    ]
+                }
+            ).encode("utf-8")
+        )
+
+        with patch.object(
+            RequestProcessor,
+            "_fetch_rag_message",
+            AsyncMock(return_value=(None, {})),
+        ):
+            body, _response_headers = await RequestProcessor.prepare_request(request)
+
+        assert body["messages"] == [
+            {
+                "role": "user",
+                "content": (
+                    f"{search_context}\n\n"
+                    "Current user question:\nWhat is the status?"
+                ),
+            }
+        ]
+        assert await proxy_module.history_store.get_conversation("session-search") == [
+            {"role": "user", "content": "What is the status?"}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_prepare_request_uses_actual_user_for_rag_with_search_context(self):
+        search_context = (
+            f"{EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER}\n"
+            "Untrusted web search candidates for this turn only.\n"
+            "1. Mac mini M5 status"
+        )
+        request = Mock()
+        request.headers = {
+            "X-Convo-ID": "session-search-rag",
+            "X-RAG-Endpoint": "http://localhost:8100/api/retrieve",
+        }
+        request.body = AsyncMock(
+            return_value=json.dumps(
+                {
+                    "messages": [
+                        {"role": "user", "content": search_context},
+                        {"role": "user", "content": "What is the status?"},
+                    ]
+                }
+            ).encode("utf-8")
+        )
+        rag_messages_at_call = []
+
+        async def fetch_rag(messages, _rag_endpoint):
+            rag_messages_at_call.extend(dict(message) for message in messages)
+            return "Grounded user question", {}
+
+        with patch.object(RequestProcessor, "_fetch_rag_message", fetch_rag):
+            body, _response_headers = await RequestProcessor.prepare_request(request)
+
+        assert (
+            RequestProcessor._latest_user_message(rag_messages_at_call)
+            == "What is the status?"
+        )
+        assert body["messages"] == [
+            {
+                "role": "user",
+                "content": (
+                    f"{search_context}\n\n"
+                    "Current user question:\nGrounded user question"
+                ),
+            }
+        ]
+        assert await proxy_module.history_store.get_conversation(
+            "session-search-rag"
+        ) == [{"role": "user", "content": "What is the status?"}]
+
+    @pytest.mark.asyncio
+    async def test_prepare_request_does_not_replay_stored_search_context(self):
+        search_context = (
+            f"{EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER}\n"
+            "Untrusted web search candidates for this turn only.\n"
+            "1. Prior result"
+        )
+        await proxy_module.history_store.append_messages(
+            "session-contaminated",
+            [
+                {"role": "system", "content": search_context},
+                {"role": "user", "content": "Prior question"},
+                {"role": "assistant", "content": "Prior answer"},
+            ],
+        )
+
+        request = Mock()
+        request.headers = {"X-Convo-ID": "session-contaminated"}
+        request.body = AsyncMock(
+            return_value=json.dumps(
+                {"messages": [{"role": "user", "content": "Follow-up"}]}
+            ).encode("utf-8")
+        )
+
+        with patch.object(
+            RequestProcessor,
+            "_fetch_rag_message",
+            AsyncMock(return_value=(None, {})),
+        ):
+            body, _response_headers = await RequestProcessor.prepare_request(request)
+
+        assert body["messages"] == [
+            {"role": "user", "content": "Prior question"},
+            {"role": "assistant", "content": "Prior answer"},
+            {"role": "user", "content": "Follow-up"},
+        ]
+
     def test_normalize_rag_endpoint_targets_context_route(self):
         assert (
             RequestProcessor._normalize_rag_endpoint(
@@ -449,6 +576,31 @@ class TestConversationHistoryEndpoint:
 
         assert response.status_code == 404
         assert response.json()["detail"] == "Conversation 'missing' not found"
+
+    def test_retrieve_conversation_omits_search_context(
+        self, client, memory_history_store
+    ):
+        search_context = (
+            f"{EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER}\n"
+            "Untrusted web search candidates for this turn only.\n"
+            "1. Prior result"
+        )
+        memory_history_store.conversations = {
+            "session-contaminated": [
+                {"role": "system", "content": search_context},
+                {"role": "user", "content": "Prior question"},
+            ]
+        }
+        memory_history_store.updated_at = {
+            "session-contaminated": "2026-06-07T00:00:00+00:00"
+        }
+
+        response = client.post(
+            "/conversations/retrieve", json={"convo_id": "session-contaminated"}
+        )
+
+        assert response.status_code == 200
+        assert response.json() == [{"role": "user", "content": "Prior question"}]
 
     @pytest.mark.asyncio
     async def test_update_history_persists_assistant_reply(self):

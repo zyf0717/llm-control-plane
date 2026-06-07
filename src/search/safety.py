@@ -7,6 +7,9 @@ import json
 from .types import SearchResponse
 
 
+EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER = "[[EPHEMERAL_WEB_SEARCH_CONTEXT]]"
+
+
 def wrap_search_results(response: SearchResponse) -> str:
     """Serialize search results as explicitly untrusted content."""
     payload = {
