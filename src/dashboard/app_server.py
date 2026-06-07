@@ -14,6 +14,7 @@ load_dotenv()
 from .chat_client import stream_chat_response
 from .formatters import (
     format_all_available_models,
+    format_cache_info,
     format_hardware_info,
     format_history_json,
     format_model_details,
@@ -119,7 +120,9 @@ def _format_search_context(search_state: Dict[str, Any]) -> Optional[str]:
     return "\n".join(lines)
 
 
-def build_search_turn_messages(search_state: Optional[Dict[str, Any]]) -> list[Dict[str, str]]:
+def build_search_turn_messages(
+    search_state: Optional[Dict[str, Any]],
+) -> list[Dict[str, str]]:
     """Convert successful search state into turn-local injected messages."""
     if not isinstance(search_state, dict):
         return []
@@ -562,11 +565,14 @@ def server(input, output, session):
                 search_lines.append(f"Degraded: {search['degraded']}")
             warnings = search.get("warnings") or []
             if warnings:
-                search_lines.append(f"Warnings: {'; '.join(str(item) for item in warnings)}")
+                search_lines.append(
+                    f"Warnings: {'; '.join(str(item) for item in warnings)}"
+                )
             if search_lines:
                 sections.append("**Search**<br>" + "<br>".join(search_lines))
 
         if info:
+            sections.extend(format_cache_info(info, fmt))
             sections.extend(format_response_info(info, fmt))
             sections.extend(format_timings_info(info, fmt))
 
@@ -664,9 +670,7 @@ def server(input, output, session):
                 )
                 search_state = build_search_success_state(search_response)
             except Exception as exc:
-                search_state = build_search_failure_state(
-                    selected_search_provider, exc
-                )
+                search_state = build_search_failure_state(selected_search_provider, exc)
 
         search_preface = build_search_preface(search_state)
         if search_preface:

@@ -76,7 +76,10 @@ def format_response_info(
         if section_data and isinstance(section_data, dict):
             title = section_name.replace("_", " ").title()
             lines = [f"**{title}**"]
+            _skip_detail_keys = {"prompt_tokens_details", "input_tokens_details"}
             for key, value in section_data.items():
+                if section_name == "usage" and key in _skip_detail_keys:
+                    continue
                 lines.append(f"{key}: {fmt_func(value)}")
             sections.append("<br>".join(lines))
     return sections
@@ -97,3 +100,50 @@ def format_timings_info(
     if not timings_info:
         return []
     return ["**Timings**<br>" + "<br>".join(timings_info)]
+
+
+def format_cache_info(
+    info: Dict[str, Any], fmt_func: Callable[[Any], str]
+) -> List[str]:
+    cache = info.get("cache")
+    if not isinstance(cache, dict):
+        return []
+
+    lines = ["**KV Cache**"]
+
+    status = cache.get("status")
+    if status:
+        lines.append(f"status: {status}")
+
+    if cache.get("cache_tokens") is not None:
+        lines.append(f"reused_prompt_tokens: {fmt_func(cache['cache_tokens'])}")
+
+    if cache.get("processed_prompt_tokens") is not None:
+        lines.append(
+            f"new_prompt_tokens_processed: {fmt_func(cache['processed_prompt_tokens'])}"
+        )
+
+    if cache.get("prompt_tokens") is not None:
+        lines.append(f"logical_prompt_tokens: {fmt_func(cache['prompt_tokens'])}")
+
+    if cache.get("cache_ratio") is not None:
+        lines.append(f"cache_reuse_ratio: {cache['cache_ratio']:.1%}")
+
+    if cache.get("generated_tokens") is not None:
+        lines.append(f"generated_tokens: {fmt_func(cache['generated_tokens'])}")
+
+    if cache.get("approx_context_tokens") is not None:
+        lines.append(
+            f"approx_context_tokens: {fmt_func(cache['approx_context_tokens'])}"
+        )
+
+    if cache.get("source"):
+        lines.append(f"source: {cache['source']}")
+
+    if cache.get("fields_disagree"):
+        lines.append("warning: usage/timings cache fields disagree")
+
+    if cache.get("reason"):
+        lines.append(f"interpretation: {cache['reason']}")
+
+    return ["<br>".join(lines)]

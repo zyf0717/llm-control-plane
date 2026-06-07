@@ -12,6 +12,8 @@ API_KEY_SECRET = os.getenv("API_KEY_SECRET")
 PROXY_BASE_URL = os.getenv("PROXY_BASE_URL")
 
 
+from .cache_telemetry import normalize_cache_telemetry
+
 MetadataCallback = Callable[[Optional[Dict[str, Any]]], None]
 StateCallback = Callable[[str], None]
 RuntimeCallback = Callable[[float], None]
@@ -148,6 +150,7 @@ async def stream_chat_response(
             headers["X-RAG-Endpoint"] = rag_endpoint
         timeout = httpx.Timeout(connect=5, read=None, write=5, pool=10)
         routing_info_holder = {"routing": current_routing_info or {}}
+        metadata_holder: Dict[str, Any] = {}
 
         def publish_metadata(
             obj: Dict[str, Any], response_headers: Optional[Dict[str, Any]] = None
@@ -158,16 +161,28 @@ async def stream_chat_response(
                 response_headers=response_headers,
                 preserve_routing_from=routing_info_holder,
             )
+            if not combined:
+                return
+
             if "routing" in combined:
                 routing_info_holder["routing"] = combined["routing"]
+
+            cache = normalize_cache_telemetry(combined)
+            if cache["status"] != "unknown":
+                combined["cache"] = cache
+
+            metadata_holder.update(combined)
+
             if on_metadata:
-                on_metadata(combined if combined else None)
+                on_metadata(dict(metadata_holder))
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             if stream:
                 payload["stream"] = True
                 payload["stream_options"] = {"include_usage": True}
-                async with client.stream("POST", url, headers=headers, json=payload) as response:
+                async with client.stream(
+                    "POST", url, headers=headers, json=payload
+                ) as response:
                     response.raise_for_status()
                     publish_metadata({}, dict(response.headers))
 
@@ -206,7 +221,9 @@ async def stream_chat_response(
                                         yield "<em>"
                                     yield reasoning_chunk
 
-                            content_chunk = choices[0].get("delta", {}).get("content", "")
+                            content_chunk = (
+                                choices[0].get("delta", {}).get("content", "")
+                            )
                             if content_chunk:
                                 if reasoning_chunk_found:
                                     yield "</em>\n\n---\n\n"
@@ -218,7 +235,9 @@ async def stream_chat_response(
                     if not md_code_wrap:
                         yield "```\n"
             else:
-                response = await client.post(url, headers=headers, json=payload, timeout=timeout)
+                response = await client.post(
+                    url, headers=headers, json=payload, timeout=timeout
+                )
                 response.raise_for_status()
                 data = response.json()
                 publish_metadata(data, dict(response.headers))
@@ -234,7 +253,9 @@ async def stream_chat_response(
                         if reasoning:
                             yield f"<em>{str(reasoning)}</em>\n\n---\n\n"
                     content = (
-                        data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                        data.get("choices", [{}])[0]
+                        .get("message", {})
+                        .get("content", "")
                     )
                     content = content.replace("<think>", "<em>")
                     content = content.replace("</think>", "</em>\n\n---\n\n")
