@@ -171,7 +171,13 @@ async def stream_chat_response(
             if cache["status"] != "unknown":
                 combined["cache"] = cache
 
-            metadata_holder.update(combined)
+            updated_metadata = dict(metadata_holder)
+            updated_metadata.update(combined)
+            if updated_metadata == metadata_holder:
+                return
+
+            metadata_holder.clear()
+            metadata_holder.update(updated_metadata)
 
             if on_metadata:
                 on_metadata(dict(metadata_holder))
