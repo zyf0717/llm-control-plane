@@ -2,11 +2,9 @@ import asyncio
 import json
 import logging
 from datetime import datetime
-from pathlib import Path
 from typing import Dict, List, Optional
 
 import httpx
-import yaml
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
@@ -17,12 +15,14 @@ from src.search import (
     wrap_search_results,
 )
 
+from .config import CONFIG_FILE, load_config
 from .history_store import (
     HistoryStore,
     MemoryHistoryStore,
     build_history_store_from_env,
 )
 from .llm_router import get_router
+from .trace import RequestTrace
 from .utils import (
     HeaderManager,
     SSEAccumulator,
@@ -34,8 +34,7 @@ from .utils import (
 
 # Configuration
 load_dotenv()
-CONFIG_FILE = Path("config.yaml")
-config = yaml.safe_load(CONFIG_FILE.open("r", encoding="utf-8")) or {}
+config = load_config(CONFIG_FILE)
 endpoints = config.get("endpoints", [])
 rag_config = config.get("rag", {})
 RAG_TOP_K = int(rag_config.get("top_k", 3))
@@ -385,6 +384,7 @@ class ProxyHandler:
         body: Dict,
         convo_id: str,
         extra_headers: Dict = None,
+        trace: RequestTrace = None,
     ) -> StreamingResponse:
         """Handle streaming response."""
         timeout = httpx.Timeout(connect=20, read=None, write=20, pool=20)
@@ -438,6 +438,8 @@ class ProxyHandler:
         )
         if extra_headers:
             response_headers.update(extra_headers)
+        if trace:
+            trace.apply_headers(response_headers)
 
         return StreamingResponse(
             stream(), media_type="text/event-stream", headers=response_headers
@@ -450,6 +452,7 @@ class ProxyHandler:
         body: Dict,
         convo_id: str,
         extra_headers: Dict = None,
+        trace: RequestTrace = None,
     ) -> Response:
         """Handle non-streaming response."""
         headers = HeaderManager.prepare_upstream_headers(request)
@@ -484,6 +487,9 @@ class ProxyHandler:
             )
             if extra_headers:
                 response_headers.update(extra_headers)
+            if trace:
+                trace.mark_elapsed()
+                trace.apply_headers(response_headers)
 
             return Response(resp_content, resp.status_code, response_headers)
 
@@ -500,9 +506,11 @@ async def proxy_request(
         "1",
     }
     convo_id = request.headers.get("X-Convo-ID")
+    trace = RequestTrace(convo_id=convo_id, endpoint=path.lstrip("/").split("/")[0])
     combined_headers = dict(rag_headers)
     if extra_headers:
         combined_headers.update(extra_headers)
+    trace.capture_headers(combined_headers)
 
     # Get target endpoint
     target_url = RequestProcessor.get_endpoint_url(path)
@@ -516,11 +524,11 @@ async def proxy_request(
     # Route to appropriate handler
     if is_streaming:
         return await ProxyHandler.stream_response(
-            request, target_url, body, convo_id, combined_headers
+            request, target_url, body, convo_id, combined_headers, trace
         )
     else:
         return await ProxyHandler.non_stream_response(
-            request, target_url, body, convo_id, combined_headers
+            request, target_url, body, convo_id, combined_headers, trace
         )
 
 

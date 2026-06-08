@@ -74,6 +74,7 @@ That avoids stale retrieval content persisting across turns and keeps prompt res
 The runtime panel may show:
 
 - elapsed time
+- trace ID
 - routing decision and workload type
 - token usage and timings
 - selected model and hardware metadata

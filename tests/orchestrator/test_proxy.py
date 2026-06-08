@@ -41,6 +41,43 @@ def mock_request():
     return request
 
 
+class _MockUpstreamResponse:
+    def __init__(self, payload):
+        self._payload = payload
+        self.status_code = 200
+        self.headers = {}
+        self.content = json.dumps(payload).encode("utf-8")
+        self.text = self.content.decode("utf-8")
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class _FakeStreamingResponse:
+    headers = {}
+
+    def raise_for_status(self):
+        return None
+
+    async def aiter_lines(self):
+        yield 'data: {"choices":[{"delta":{"content":"Hello"}}]}'
+        yield "data: [DONE]"
+
+
+class _FakeStreamContext:
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self._response
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
 class TestEndpointRouting:
     """Tests for endpoint routing functionality."""
 
@@ -80,6 +117,52 @@ class TestEndpointRouting:
             # Should extract the first part of the path
             result = RequestProcessor.get_endpoint_url("/test-endpoint/some/subpath")
             assert result == "https://test.example.com/v1/chat/completions"
+
+    def test_custom_endpoint_non_stream_includes_trace_header(self, client):
+        mock_endpoints = [{"name": "test-endpoint", "url": "https://test.example.com"}]
+        payload = {"choices": [{"message": {"content": "Hello"}}]}
+
+        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+            "httpx.AsyncClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = _MockUpstreamResponse(payload)
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            response = client.post(
+                "/test-endpoint",
+                json={"messages": [{"role": "user", "content": "hello"}]},
+            )
+
+        trace_id = response.headers.get("x-trace-id")
+        assert response.status_code == 200
+        assert trace_id is not None
+        assert len(trace_id) == 32
+
+    def test_custom_endpoint_stream_includes_trace_header(self, client):
+        mock_endpoints = [{"name": "test-endpoint", "url": "https://test.example.com"}]
+
+        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+            "httpx.AsyncClient"
+        ) as mock_client_class:
+            mock_client = Mock()
+            mock_client.stream.return_value = _FakeStreamContext(
+                _FakeStreamingResponse()
+            )
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            response = client.post(
+                "/test-endpoint",
+                json={
+                    "stream": True,
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+            )
+
+        trace_id = response.headers.get("x-trace-id")
+        assert response.status_code == 200
+        assert trace_id is not None
+        assert len(trace_id) == 32
 
 
 class TestHeaderPreparation:

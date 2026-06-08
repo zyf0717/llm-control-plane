@@ -64,6 +64,7 @@ async def test_stream_chat_response_does_not_emit_metadata_for_content_only_chun
 
     response = _FakeStreamingResponse(
         headers={
+            "x-trace-id": "abc123",
             "x-route-decision": "gpu-node-a",
             "x-rag-endpoint": "http://rag.local/context",
         },
@@ -97,10 +98,12 @@ async def test_stream_chat_response_does_not_emit_metadata_for_content_only_chun
     assert "".join(chunks) == "Hello"
     assert metadata_events == [
         {
+            "trace": {"id": "abc123"},
             "routing": {"decision": "gpu-node-a"},
             "rag": {"endpoint": "http://rag.local/context"},
         },
         {
+            "trace": {"id": "abc123"},
             "routing": {"decision": "gpu-node-a"},
             "rag": {"endpoint": "http://rag.local/context"},
             "usage": {"prompt_tokens": 12},

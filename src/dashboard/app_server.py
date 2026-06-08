@@ -619,6 +619,11 @@ def server(input, output, session):
         if runtime is not None:
             sections.append(f"**Elapsed Time**: {runtime:.2f}s")
 
+        if info and "trace" in info:
+            trace = info["trace"]
+            if isinstance(trace, dict) and trace.get("id"):
+                sections.append(f"**Trace**<br>Trace ID: {trace['id']}")
+
         routing_info = None
         if info and "routing" in info:
             routing_info = info["routing"]

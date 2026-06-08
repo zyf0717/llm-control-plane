@@ -50,6 +50,16 @@ curl -X POST http://localhost:12340/smart \
 | `X-Route-Strategy` | Classified workload type |
 | `X-Route-GPU` / `X-Route-VRAM` / `X-Route-SOC` / `X-Route-CPU` / `X-Route-RAM` | Selected endpoint hardware metadata |
 
+## Request Trace
+
+Every successful proxied chat response includes:
+
+| Header | Meaning |
+|---|---|
+| `X-Trace-ID` | Per-request trace identifier for correlating dashboard/runtime metadata |
+
+The trace object is intentionally in-memory only in this phase; it is not persisted.
+
 ## Conversation History
 
 The proxy stores conversation history in a local SQLite database (`var/history.sqlite3` by default) only when `X-Convo-ID` is supplied.

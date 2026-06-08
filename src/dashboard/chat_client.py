@@ -83,6 +83,14 @@ def _extract_metadata(
             combined["routing"] = routing_info
 
     if response_headers:
+        trace_id = ""
+        for header_name, header_value in response_headers.items():
+            if header_name.lower() == "x-trace-id":
+                trace_id = str(header_value or "").strip()
+                break
+        if trace_id:
+            combined["trace"] = {"id": trace_id}
+
         rag_info = {}
         for header_name, header_value in response_headers.items():
             if header_name.lower().startswith("x-rag-"):

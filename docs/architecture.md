@@ -46,7 +46,7 @@ The proxy processes chat requests in this order:
 4. Retrieve RAG context if `X-RAG-Endpoint` is present.
 5. For smart routing, classify the latest user turn and select the best reachable endpoint. Dashboard Auto conversations perform this only until the first decision is pinned for the active `convo_id`.
 6. Forward the final request to the selected upstream model endpoint.
-7. Normalize streaming/non-streaming reasoning content and attach response metadata headers.
+7. Normalize streaming/non-streaming reasoning content and attach response metadata headers, including `X-Trace-ID`.
 
 ## Smart Routing Logic
 
