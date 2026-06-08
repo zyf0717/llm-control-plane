@@ -97,10 +97,10 @@ X-RAG-Endpoint: http://localhost:8100/api/retrieve
 
 When present, the proxy:
 
-1. uses the latest user turn as the retrieval query
-2. POSTs to the selected retrieve endpoint
-3. filters results by `min_confidence`
-4. injects accepted chunks as a turn-local `system` message before the latest user turn
+1. uses the latest real user turn as the retrieval query
+2. POSTs `{query, limit}` to the selected retrieve endpoint, normalized to `/api/retrieve/context`
+3. expects the RAG service to perform retrieval, ranking, thresholding, and grounding
+4. rewrites only the latest user turn with the returned `grounded_user_message`
 
 ### RAG Response Headers
 
@@ -108,11 +108,9 @@ When present, the proxy:
 |---|---|
 | `X-RAG-Endpoint` | Retrieve endpoint used |
 | `X-RAG-Injected` | `true` if context was injected |
-| `X-RAG-Confidence` | Top normalized confidence |
-| `X-RAG-Distance` | Raw top distance when provided by the backend |
-| `X-RAG-Threshold` | Configured injection threshold |
-| `X-RAG-Hits` | Number of accepted chunks |
-| `X-RAG-Method` | Backend retrieval method, if provided |
+| `X-RAG-Hits` | Number of context blocks returned by the RAG service |
+| `X-RAG-Mode` | Backend retrieval mode, if provided |
+| `X-RAG-Truncated` | `true` if the grounded message was truncated by the backend |
 | `X-RAG-Reason` | Failure/skip reason when no context was injected |
 
 ## Streaming and Non-Streaming
@@ -178,7 +176,7 @@ Request fields:
 
 Behavior:
 
-- may rewrite the explicit query through a bounded SearchPlanner when configured
+- may plan one or more provider-ready queries through a bounded SearchPlanner when configured
 - may run async provider fanout when the planner returns multiple queries
 - sends one HTTP request to each selected search provider in priority order per planned query
 - parses only the returned SERP payload

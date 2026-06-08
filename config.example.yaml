@@ -1,0 +1,69 @@
+# Copy to config.yaml and replace URLs/model names for your deployment.
+endpoints:
+  - name: "primary"
+    url: "http://localhost:8000"
+    gpu: "NVIDIA GPU"
+    vram: "24GB"
+    cpu: "x86_64"
+    ram: "64GB"
+
+  - name: "fast-local"
+    url: "http://localhost:8001"
+    soc: "Apple Silicon"
+    ram: "16GB"
+
+rag:
+  default_endpoint: "http://localhost:8100/api/retrieve/context"
+  endpoints:
+    - name: "local-rag"
+      retrieve_url: "http://localhost:8100/api/retrieve/context"
+      health_url: "http://localhost:8100/api/health"
+  top_k: 10
+
+search:
+  enabled: false
+  model_endpoint: ""
+  model: "search-planner"
+  planner_enabled: false
+  planner_timeout_ms: 7000
+  planner_max_context_chars: 12000
+  planner_max_output_tokens: 512
+  planner_max_queries: 1
+  search_max_total_results: 10
+  default_provider: "duckduckgo_html"
+  timeout_ms: 7000
+  max_results: 10
+  cache_ttl_seconds: 900
+  max_body_bytes: 2500000
+  max_retries: 1
+  providers:
+    duckduckgo_html:
+      enabled: true
+      priority: 10
+    marginalia_html:
+      enabled: true
+      priority: 20
+    mojeek_html:
+      enabled: false
+      priority: 30
+    wikipedia_opensearch:
+      enabled: false
+      priority: 40
+      fallback_only: true
+    searxng_html:
+      enabled: false
+      priority: 50
+      fallback_only: true
+      endpoint: "http://localhost:8080/search"
+
+workloads:
+  - type: "reasoning"
+    endpoint_preference: ["primary", "fast-local"]
+  - type: "programming"
+    endpoint_preference: ["primary", "fast-local"]
+  - type: "tokens_per_second"
+    endpoint_preference: ["fast-local", "primary"]
+  - type: "ttft_content"
+    endpoint_preference: ["fast-local", "primary"]
+  - type: "classification"
+    endpoint_preference: ["fast-local", "primary"]

@@ -25,7 +25,6 @@ rag:
       retrieve_url: "http://localhost:8100/api/retrieve"
       health_url: "http://localhost:8100/api/health"
   top_k: 10
-  min_confidence: 0.35
 
 search:
   enabled: true
@@ -96,13 +95,11 @@ The `rag` block configures dashboard-visible RAG endpoints and proxy retrieval b
 | `endpoints[].name` | Display label in the dashboard |
 | `endpoints[].retrieve_url` | POST endpoint used by the proxy for retrieval |
 | `endpoints[].health_url` | GET endpoint used by the dashboard for health checks |
-| `top_k` | Max retrieved chunks requested and injected |
-| `min_confidence` | Minimum normalized confidence required for injection |
+| `top_k` | Max retrieved chunks requested from the RAG service |
 
-### Confidence Semantics
+### Grounding Contract
 
-- If the RAG backend returns `score`, the proxy uses it directly.
-- If the backend returns `distance`, the proxy converts confidence as `1.0 - distance`.
+The proxy sends the latest real user turn and `top_k` as `{query, limit}` to the normalized `/api/retrieve/context` route. The RAG service owns retrieval, ranking, thresholding, and prompt assembly. To inject context, it must return a non-empty `grounded_user_message`; the proxy rewrites only the latest user turn with that grounded message and does not persist the rewritten content to conversation history.
 
 ## Workload Preferences
 
@@ -145,7 +142,7 @@ The `search` block enables the lightweight candidate-discovery module exposed at
 | `providers[].cache_ttl_seconds` | Optional provider-specific TTL override |
 | `providers[].min_interval_seconds` | Optional minimum delay between requests to the same provider |
 
-When `search.model_endpoint` is configured, `/search/web` may run a bounded, non-persisted `SearchPlanner` call before provider execution. The planner rewrites the submitted query into one or more concise provider-ready queries. If `planner_max_queries` is greater than 1, provider searches run as an async fanout and results are deduped before applying `search_max_total_results`. Planner failure degrades to the original query and adds a warning.
+When `search.model_endpoint` is configured and planning is enabled, `/search/web` may run a bounded, non-persisted `SearchPlanner` call before provider execution. The planner returns one or more concise provider-ready queries; the first query becomes the effective search query. If `planner_max_queries` is greater than 1, provider searches run as an async fanout and results are deduped before applying `search_max_total_results`. Planner failure degrades to the original query and adds a warning.
 
 Supported built-in provider ids:
 

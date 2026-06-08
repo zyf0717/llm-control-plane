@@ -30,7 +30,9 @@ python llm_control_plane.py
 |---|---|
 | `src/orchestrator/` | FastAPI proxy, smart router, request/response shaping |
 | `src/dashboard/` | Shiny dashboard UI and server logic |
-| `config.yaml` | Endpoint, routing, and RAG configuration |
+| `config.yaml` | Local endpoint, routing, RAG, and search configuration |
+| `config.example.yaml` | Checked-in configuration template |
+| `.env.example` | Checked-in environment variable template |
 | `llm_control_plane.py` | Starts proxy and dashboard together |
 | `docs/` | Operational and architectural documentation |
 

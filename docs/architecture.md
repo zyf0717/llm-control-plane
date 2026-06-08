@@ -76,9 +76,9 @@ The proxy normalizes these reasoning formats:
 - In streaming mode, reasoning is emitted as `delta.reasoning`.
 - In non-streaming mode, reasoning is moved to `choices[0].message.reasoning`.
 
-## RAG Injection Model
+## RAG Grounding Model
 
-RAG context is not merged into the dashboard system prompt field. It is injected by the proxy as a turn-local `system` message immediately before the latest user turn.
+RAG context is not merged into the dashboard system prompt field. When `X-RAG-Endpoint` is set, the proxy sends the latest real user turn to the normalized `/api/retrieve/context` route with a `limit`, then rewrites only that latest user turn with the backend's returned `grounded_user_message`.
 
 That preserves:
 
@@ -86,6 +86,6 @@ That preserves:
 - turn-local retrieval semantics
 - conversation history without stale retrieved context
 
-For backends that return `score`, that value is used directly as confidence. For backends that return `distance`, confidence is normalized as `1.0 - distance` before thresholding.
+The RAG service owns retrieval, ranking, thresholding, and prompt assembly. The proxy reports endpoint, hit count, injection status, backend mode, truncation, and skip reason headers when available.
 
 TL;DR: the proxy is the integration point; the dashboard selects endpoints and shows metadata, but the proxy owns history, routing, reasoning, and RAG injection.

@@ -9,6 +9,15 @@ conda activate llm-control-plane
 
 The conda environment installs the editable local project from `pyproject.toml`.
 
+## Configuration Files
+
+Create local runtime files from the checked-in examples:
+
+```bash
+cp config.example.yaml config.yaml
+cp .env.example .env
+```
+
 ## Environment Variables
 
 Set these in your shell or `.env`:

@@ -52,11 +52,11 @@ When the user submits a message, the dashboard sends:
 - optional `X-Reasoning-Effort`
 - optional `X-RAG-Endpoint`
 - optional system prompt as the first explicit system message
-- optional turn-local search context injected as a synthetic `system` message when a search provider is selected
+- optional turn-local search context injected as a synthetic `user` message when a search provider is selected
 
 The dashboard does not inject retrieved context itself. It only selects the RAG endpoint; the proxy performs retrieval and request-body augmentation.
 
-When a search provider is selected, the dashboard first calls the proxy `POST /search/web`, renders an inline search-candidate preface in the transcript, and injects only the proxy-provided `wrapped_results` payload into the outgoing request for that turn.
+When a search provider is selected, the dashboard first calls the proxy `POST /search/web`, renders an inline search-candidate preface in the transcript, and adds one turn-local synthetic `user` message whose content is the ephemeral marker plus the proxy-provided `wrapped_results` JSON string. The proxy merges that ephemeral search message into the next real user turn before forwarding upstream and excludes it from durable history.
 
 ## RAG Semantics
 
@@ -65,7 +65,7 @@ RAG context should usually not be merged into the dashboard’s editable system 
 The current design is intentional:
 
 - user system prompt: stable behavioral instructions
-- proxy-injected RAG message: turn-local retrieval context
+- proxy-rewritten latest user turn: turn-local grounded retrieval context
 
 That avoids stale retrieval content persisting across turns and keeps prompt responsibilities separate.
 
@@ -78,7 +78,7 @@ The runtime panel may show:
 - token usage and timings
 - selected model and hardware metadata
 - search provider, result count, degraded state, and warnings
-- RAG endpoint, confidence, threshold, method, hit count, and injection result
+- RAG endpoint, hit count, injection result, and skip reason
 
 ## Logout and Themes
 

@@ -51,7 +51,8 @@ def test_build_search_success_state_normalizes_proxy_payload():
     assert state["show_preface"] is True
 
 
-def test_build_search_turn_messages_uses_ephemeral_user_context():
+def test_build_search_turn_messages_uses_wrapped_results_as_ephemeral_user_context():
+    wrapped_results = '{"source":"web_search","untrusted":true}'
     state = build_search_success_state(
         {
             "provider": "duckduckgo_html",
@@ -63,17 +64,36 @@ def test_build_search_turn_messages_uses_ephemeral_user_context():
                     "snippet": "Computing pioneer",
                 }
             ],
-            "wrapped_results": '{"source":"web_search"}',
+            "wrapped_results": wrapped_results,
         }
     )
 
     messages = build_search_turn_messages(state)
 
     assert messages[0]["role"] == "user"
-    assert messages[0]["content"].startswith(EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER)
-    assert "Ada Lovelace" in messages[0]["content"]
-    assert "https://example.com/ada" in messages[0]["content"]
-    assert '{"source"' not in messages[0]["content"]
+    assert messages[0]["content"] == (
+        f"{EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER}\n{wrapped_results}"
+    )
+    assert "URL:" not in messages[0]["content"]
+    assert "Snippet:" not in messages[0]["content"]
+
+
+def test_build_search_turn_messages_requires_wrapped_results():
+    state = build_search_success_state(
+        {
+            "provider": "duckduckgo_html",
+            "query": "Ada Lovelace",
+            "results": [
+                {
+                    "title": "Ada Lovelace",
+                    "url": "https://example.com/ada",
+                    "snippet": "Computing pioneer",
+                }
+            ],
+        }
+    )
+
+    assert build_search_turn_messages(state) == []
 
 
 def test_build_search_failure_state_disables_preface_and_injection():
