@@ -669,8 +669,9 @@ def server(input, output, session):
         current_run_info = run_info.get() or {}
         selected_endpoint_key = display_mapping.get(input.endpoint())
         convo_id = current_active_convo_id() or None
+        auto_route_pins_snapshot = dict(auto_route_pins.get())
         actual_endpoint_key = resolve_auto_endpoint_key(
-            selected_endpoint_key, convo_id, auto_route_pins.get()
+            selected_endpoint_key, convo_id, auto_route_pins_snapshot
         )
         search_query = str(user_input or "").strip()
         prompt_state = (
@@ -735,14 +736,19 @@ def server(input, output, session):
         if search_state:
             run_info.set(merge_run_info({}, search_state))
 
+        local_auto_route_pins = auto_route_pins_snapshot
+
         def publish_run_info(metadata: Optional[Dict[str, Any]]) -> None:
+            nonlocal local_auto_route_pins
+
             merged_info = merge_run_info(metadata, search_state)
             run_info.set(merged_info)
 
             updated_pins = pin_auto_route_decision(
-                auto_route_pins.get(), convo_id, selected_endpoint_key, merged_info
+                local_auto_route_pins, convo_id, selected_endpoint_key, merged_info
             )
-            if updated_pins != auto_route_pins.get():
+            if updated_pins != local_auto_route_pins:
+                local_auto_route_pins = updated_pins
                 auto_route_pins.set(updated_pins)
 
         response_stream = stream_chat_response(
