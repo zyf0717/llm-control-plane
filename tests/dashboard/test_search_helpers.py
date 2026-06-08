@@ -4,6 +4,8 @@ from src.dashboard.app_server import (
     build_search_success_state,
     build_search_turn_messages,
     merge_run_info,
+    pin_auto_route_decision,
+    resolve_auto_endpoint_key,
 )
 from src.search.safety import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER
 
@@ -131,3 +133,35 @@ def test_merge_run_info_adds_search_block_without_dropping_existing_metadata():
             "warnings": ["timeout"],
         },
     }
+
+
+def test_resolve_auto_endpoint_key_uses_first_pinned_decision_for_convo():
+    pins = {"convo-a": "gmktec-evo-x2"}
+
+    assert resolve_auto_endpoint_key("Auto", "convo-a", pins) == "gmktec-evo-x2"
+    assert resolve_auto_endpoint_key("Auto", "convo-b", pins) == "Auto"
+    assert resolve_auto_endpoint_key("mac-mini", "convo-a", pins) == "mac-mini"
+
+
+def test_pin_auto_route_decision_records_only_first_auto_decision():
+    pins = pin_auto_route_decision(
+        {},
+        "convo-a",
+        "Auto",
+        {"routing": {"decision": "gmktec-evo-x2", "strategy": "programming"}},
+    )
+
+    assert pins == {"convo-a": "gmktec-evo-x2"}
+    assert pin_auto_route_decision(
+        pins,
+        "convo-a",
+        "Auto",
+        {"routing": {"decision": "mac-mini", "strategy": "ttft_content"}},
+    ) == {"convo-a": "gmktec-evo-x2"}
+
+
+def test_pin_auto_route_decision_ignores_static_endpoint_and_missing_convo():
+    metadata = {"routing": {"decision": "gmktec-evo-x2"}}
+
+    assert pin_auto_route_decision({}, "convo-a", "mac-mini", metadata) == {}
+    assert pin_auto_route_decision({}, "", "Auto", metadata) == {}

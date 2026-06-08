@@ -23,7 +23,7 @@ curl -X POST http://localhost:12340/my-server \
 
 ## Smart Routing
 
-Smart routing uses the latest user message to classify workload and select a reachable endpoint:
+Smart routing uses the latest user message to classify workload and select a reachable endpoint. It is intended for isolated, non-agentic tasks where the request itself contains all needed context. Without `X-Convo-ID`, the proxy does not persist conversation history. For multi-turn or agentic flows, call `/smart` once, persist `X-Route-Decision`, and send follow-up turns to that concrete endpoint.
 
 ```text
 POST /smart
@@ -52,7 +52,7 @@ curl -X POST http://localhost:12340/smart \
 
 ## Conversation History
 
-The proxy stores conversation history in a local SQLite database (`var/history.sqlite3` by default) when `X-Convo-ID` is supplied.
+The proxy stores conversation history in a local SQLite database (`var/history.sqlite3` by default) only when `X-Convo-ID` is supplied.
 
 Example:
 

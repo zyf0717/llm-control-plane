@@ -1,6 +1,6 @@
 # llm-control-plane
 
-A self-hosted LLM orchestration layer that sits in front of multiple local or remote LLM endpoints. It exposes an OpenAI-compatible HTTP API, supports workload-aware routing, and provides a Shiny dashboard for interactive use.
+A self-hosted LLM orchestration layer that sits in front of multiple local or remote LLM endpoints. It exposes an OpenAI-compatible HTTP API, supports workload-aware routing for isolated tasks, and provides a Shiny dashboard for interactive use. Auto routing is intended for stateless, non-agentic requests; without `X-Convo-ID` there is no proxy-persisted conversation history, and dashboard conversations that do have a conversation id pin Auto to the first selected concrete endpoint.
 
 ## Documentation
 

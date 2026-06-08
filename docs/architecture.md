@@ -44,11 +44,13 @@ The proxy processes chat requests in this order:
 2. Load persisted conversation history and append the current client-supplied messages if `X-Convo-ID` is present.
 3. Inject reasoning control if `X-Reasoning-Effort` is present.
 4. Retrieve RAG context if `X-RAG-Endpoint` is present.
-5. For smart routing, classify the latest user turn and select the best reachable endpoint.
+5. For smart routing, classify the latest user turn and select the best reachable endpoint. Dashboard Auto conversations perform this only until the first decision is pinned for the active `convo_id`.
 6. Forward the final request to the selected upstream model endpoint.
 7. Normalize streaming/non-streaming reasoning content and attach response metadata headers.
 
 ## Smart Routing Logic
+
+Smart routing is designed for isolated task routing, not for persistent conversational or agentic execution. It assumes the request contains enough context to classify the work; without `X-Convo-ID`, the proxy has no persisted conversation history. In dashboard Auto mode, the first smart-routing decision for a `convo_id` is pinned and later turns bypass `/smart` by calling the selected endpoint directly. API clients that need the same behavior should persist `X-Route-Decision` themselves and use the concrete endpoint for follow-up turns.
 
 Smart routing proceeds in three steps:
 

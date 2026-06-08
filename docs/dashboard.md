@@ -41,6 +41,10 @@ The dashboard runs on `http://localhost:12341` and communicates only with the pr
 
 ## Request Behavior
 
+Auto mode is a first-turn triage control in the dashboard. When Auto receives a routing decision for a `convo_id`, subsequent turns for that conversation are sent directly to the selected concrete endpoint instead of re-running smart routing. Without a `convo_id`, the proxy has no persisted conversation history and Auto remains stateless per-request routing.
+
+Auto is meant for isolated, non-agentic tasks where the request itself contains all needed context. For ongoing chats, workflows, or agents with a `convo_id`, choose a fixed endpoint directly or let the dashboard pin Auto after the first decision.
+
 When the user submits a message, the dashboard sends:
 
 - selected model endpoint or Auto route
@@ -81,4 +85,4 @@ The runtime panel may show:
 - theme switching is handled through `shinyswatch`
 - logout redirects to the configured Cloudflare Access logout URL
 
-TL;DR: the dashboard is a thin operational UI over the proxy; it selects model, RAG, and optional search targets, while the proxy still owns search execution, retrieval, routing, and final request shaping.
+TL;DR: the dashboard is a thin operational UI over the proxy; Auto triages once per conversation id and then pins to the selected endpoint, while the proxy still owns search execution, retrieval, routing, and final request shaping.

@@ -42,6 +42,9 @@ from .utils import (
 )
 
 
+AUTO_ENDPOINT_KEY = "Auto"
+
+
 def build_search_success_state(search_response: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize a successful proxy search response for UI and request shaping."""
     provider_id = str(search_response.get("provider") or "").strip()
@@ -188,6 +191,54 @@ def merge_run_info(
     return merged or None
 
 
+def resolve_auto_endpoint_key(
+    endpoint_key: Optional[str],
+    convo_id: Optional[str],
+    auto_route_pins: Optional[Dict[str, str]],
+) -> Optional[str]:
+    """Resolve Auto to a previously pinned endpoint for this conversation."""
+    if endpoint_key != AUTO_ENDPOINT_KEY:
+        return endpoint_key
+
+    normalized_convo_id = str(convo_id or "").strip()
+    if not normalized_convo_id:
+        return endpoint_key
+
+    pinned_endpoint = str((auto_route_pins or {}).get(normalized_convo_id) or "").strip()
+    if pinned_endpoint and pinned_endpoint != AUTO_ENDPOINT_KEY:
+        return pinned_endpoint
+
+    return endpoint_key
+
+
+def pin_auto_route_decision(
+    auto_route_pins: Optional[Dict[str, str]],
+    convo_id: Optional[str],
+    selected_endpoint_key: Optional[str],
+    metadata: Optional[Dict[str, Any]],
+) -> Dict[str, str]:
+    """Pin the first Auto routing decision for a conversation."""
+    pins = dict(auto_route_pins or {})
+    normalized_convo_id = str(convo_id or "").strip()
+    if (
+        selected_endpoint_key != AUTO_ENDPOINT_KEY
+        or not normalized_convo_id
+        or normalized_convo_id in pins
+        or not isinstance(metadata, dict)
+    ):
+        return pins
+
+    routing_info = metadata.get("routing")
+    if not isinstance(routing_info, dict):
+        return pins
+
+    decision = str(routing_info.get("decision") or "").strip()
+    if decision and decision != AUTO_ENDPOINT_KEY:
+        pins[normalized_convo_id] = decision
+
+    return pins
+
+
 def server(input, output, session):
     available_endpoints = reactive.Value({})
     endpoint_info = reactive.Value({})
@@ -203,6 +254,7 @@ def server(input, output, session):
     system_prompt_seed = reactive.Value("")
     history_refresh_trigger = reactive.Value(0)
     history_selected_convo_id = reactive.Value("")
+    auto_route_pins = reactive.Value({})
 
     def current_active_convo_id() -> str:
         return str(input.convoID() or "").strip()
@@ -615,8 +667,11 @@ def server(input, output, session):
         current_endpoints = available_endpoints.get()
         display_mapping = endpoint_display_mapping.get()
         current_run_info = run_info.get() or {}
-        actual_endpoint_key = display_mapping.get(input.endpoint())
+        selected_endpoint_key = display_mapping.get(input.endpoint())
         convo_id = current_active_convo_id() or None
+        actual_endpoint_key = resolve_auto_endpoint_key(
+            selected_endpoint_key, convo_id, auto_route_pins.get()
+        )
         search_query = str(user_input or "").strip()
         prompt_state = (
             get_system_prompt_state(convo_id)
@@ -681,7 +736,14 @@ def server(input, output, session):
             run_info.set(merge_run_info({}, search_state))
 
         def publish_run_info(metadata: Optional[Dict[str, Any]]) -> None:
-            run_info.set(merge_run_info(metadata, search_state))
+            merged_info = merge_run_info(metadata, search_state)
+            run_info.set(merged_info)
+
+            updated_pins = pin_auto_route_decision(
+                auto_route_pins.get(), convo_id, selected_endpoint_key, merged_info
+            )
+            if updated_pins != auto_route_pins.get():
+                auto_route_pins.set(updated_pins)
 
         response_stream = stream_chat_response(
             endpoint_key=actual_endpoint_key,
