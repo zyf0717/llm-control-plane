@@ -706,6 +706,61 @@ class TestModelsEndpoint:
             assert "vram" not in model2  # Should not have vram since not in config
 
     @pytest.mark.asyncio
+    async def test_list_models_keeps_evo_x2_primary_secondary_distinct(self):
+        """Test /models exposes the two Evo X2 servers as distinct endpoints."""
+        test_client = TestClient(app)
+        mock_endpoints = [
+            {
+                "name": "gmktec-evo-x2-primary",
+                "url": "https://llm-evo-x2.paperclips.dev",
+                "soc": "AMD Ryzen AI Max+ 395",
+                "ram": "128GB",
+            },
+            {
+                "name": "gmktec-evo-x2-secondary",
+                "url": "https://llm-evo-x2-2.paperclips.dev",
+                "soc": "AMD Ryzen AI Max+ 395",
+                "ram": "128GB",
+            },
+        ]
+
+        with (
+            patch("src.orchestrator.proxy.endpoints", mock_endpoints),
+            patch("httpx.AsyncClient") as mock_client_class,
+        ):
+            mock_client = AsyncMock()
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            async def mock_get(url, **_kwargs):
+                mock_response = Mock()
+                mock_response.raise_for_status = Mock()
+                if "evo-x2-2" in url:
+                    mock_response.json.return_value = {
+                        "data": [{"id": "secondary-model", "object": "model"}]
+                    }
+                else:
+                    mock_response.json.return_value = {
+                        "data": [{"id": "primary-model", "object": "model"}]
+                    }
+                return mock_response
+
+            mock_client.get = mock_get
+
+            response = test_client.get("/models")
+
+        assert response.status_code == 200
+        models = response.json()["data"]
+        assert {
+            (model["endpoint"], model["id"])
+            for model in models
+        } == {
+            ("gmktec-evo-x2-primary", "primary-model"),
+            ("gmktec-evo-x2-secondary", "secondary-model"),
+        }
+        assert all(model["soc"] == "AMD Ryzen AI Max+ 395" for model in models)
+        assert all(model["ram"] == "128GB" for model in models)
+
+    @pytest.mark.asyncio
     async def test_list_models_endpoint_failure(self):
         """Test models endpoint handles individual endpoint failures gracefully."""
         test_client = TestClient(app)

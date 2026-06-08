@@ -39,7 +39,7 @@ def mock_config():
                 "viable_models": ["qwen3-4b-2507"],
             },
             {
-                "name": "gmktec-evo-x2",
+                "name": "gmktec-evo-x2-primary",
                 "url": "https://llm-evo-x2.paperclips.dev",
                 "soc": "AMD Ryzen AI Max+ 395",
                 "ram": "128GB",
@@ -49,19 +49,19 @@ def mock_config():
         "workloads": [
             {
                 "type": "reasoning",
-                "endpoint_preference": ["gmktec-evo-x2", "hrpc-cisr-hpc", "mac-mini"],
+                "endpoint_preference": ["gmktec-evo-x2-primary", "hrpc-cisr-hpc", "mac-mini"],
             },
             {
                 "type": "programming",
-                "endpoint_preference": ["gmktec-evo-x2", "hrpc-cisr-hpc", "mac-mini"],
+                "endpoint_preference": ["gmktec-evo-x2-primary", "hrpc-cisr-hpc", "mac-mini"],
             },
             {
                 "type": "ttft_content",
-                "endpoint_preference": ["mac-mini", "hrpc-cisr-hpc", "gmktec-evo-x2"],
+                "endpoint_preference": ["mac-mini", "hrpc-cisr-hpc", "gmktec-evo-x2-primary"],
             },
             {
                 "type": "tokens_per_second",
-                "endpoint_preference": ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2"],
+                "endpoint_preference": ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2-primary"],
             },
         ],
     }
@@ -87,8 +87,8 @@ def mock_endpoints():
             soc="Apple M4",
             ram="16GB",
         ),
-        "gmktec-evo-x2": EndpointConfig(
-            name="gmktec-evo-x2",
+        "gmktec-evo-x2-primary": EndpointConfig(
+            name="gmktec-evo-x2-primary",
             url="https://llm-evo-x2.paperclips.dev",
             viable_models=["gpt-oss-120b", "Llama-3.3-70B-Instruct"],
             soc="AMD Ryzen AI Max+ 395",
@@ -101,10 +101,10 @@ def mock_endpoints():
 def workload_preferences():
     """Mock workload preferences."""
     return {
-        WorkloadType.REASONING: ["gmktec-evo-x2", "hrpc-cisr-hpc", "mac-mini"],
-        WorkloadType.PROGRAMMING: ["gmktec-evo-x2", "hrpc-cisr-hpc", "mac-mini"],
-        WorkloadType.TTFT_CONTENT: ["mac-mini", "hrpc-cisr-hpc", "gmktec-evo-x2"],
-        WorkloadType.TOKENS_PER_SECOND: ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2"],
+        WorkloadType.REASONING: ["gmktec-evo-x2-primary", "hrpc-cisr-hpc", "mac-mini"],
+        WorkloadType.PROGRAMMING: ["gmktec-evo-x2-primary", "hrpc-cisr-hpc", "mac-mini"],
+        WorkloadType.TTFT_CONTENT: ["mac-mini", "hrpc-cisr-hpc", "gmktec-evo-x2-primary"],
+        WorkloadType.TOKENS_PER_SECOND: ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2-primary"],
     }
 
 
@@ -231,7 +231,7 @@ class TestLLMRouter:
         assert len(llm_router.endpoints) == 3
         assert "hrpc-cisr-hpc" in llm_router.endpoints
         assert "mac-mini" in llm_router.endpoints
-        assert "gmktec-evo-x2" in llm_router.endpoints
+        assert "gmktec-evo-x2-primary" in llm_router.endpoints
 
         assert len(llm_router.workload_preferences) == 4
         assert WorkloadType.REASONING in llm_router.workload_preferences
@@ -240,14 +240,14 @@ class TestLLMRouter:
     @pytest.mark.asyncio
     async def test_route_reasoning_request(self, llm_router):
         """Test routing a reasoning request."""
-        reachable = ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2"]
+        reachable = ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2-primary"]
         decision = await llm_router.route_request(
             "Analyze this complex problem step by step",
             reachable,
             WorkloadType.REASONING,
         )
 
-        assert decision.endpoint == "gmktec-evo-x2"  # First in reasoning preferences
+        assert decision.endpoint == "gmktec-evo-x2-primary"  # First in reasoning preferences
         assert decision.workload_type == WorkloadType.REASONING
         assert decision.confidence == 0.9
         assert "reasoning workload" in decision.reason
@@ -255,12 +255,12 @@ class TestLLMRouter:
     @pytest.mark.asyncio
     async def test_route_programming_request(self, llm_router):
         """Test routing a programming request."""
-        reachable = ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2"]
+        reachable = ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2-primary"]
         decision = await llm_router.route_request(
             "Write a Python function to parse JSON", reachable, WorkloadType.PROGRAMMING
         )
 
-        assert decision.endpoint == "gmktec-evo-x2"  # First in programming preferences
+        assert decision.endpoint == "gmktec-evo-x2-primary"  # First in programming preferences
         assert decision.workload_type == WorkloadType.PROGRAMMING
         assert decision.confidence == 0.9
         assert "programming workload" in decision.reason
@@ -268,7 +268,7 @@ class TestLLMRouter:
     @pytest.mark.asyncio
     async def test_route_content_request(self, llm_router):
         """Test routing a simple content request."""
-        reachable = ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2"]
+        reachable = ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2-primary"]
         decision = await llm_router.route_request(
             "Tell me a joke", reachable, WorkloadType.TTFT_CONTENT
         )
@@ -281,7 +281,7 @@ class TestLLMRouter:
     @pytest.mark.asyncio
     async def test_route_with_explicit_workload(self, llm_router):
         """Test routing with explicitly specified workload type."""
-        reachable = ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2"]
+        reachable = ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2-primary"]
         decision = await llm_router.route_request(
             "Hello world", reachable, workload_type=WorkloadType.TOKENS_PER_SECOND
         )
@@ -292,9 +292,54 @@ class TestLLMRouter:
         assert decision.workload_type == WorkloadType.TOKENS_PER_SECOND
         assert decision.confidence == 0.9
 
+    @pytest.mark.asyncio
+    async def test_route_evo_x2_primary_secondary_preferences(self):
+        """Test routing with distinct Evo X2 primary/secondary endpoint ids."""
+        config = {
+            "endpoints": [
+                {
+                    "name": "gmktec-evo-x2-primary",
+                    "url": "https://llm-evo-x2.paperclips.dev",
+                    "soc": "AMD Ryzen AI Max+ 395",
+                    "ram": "128GB",
+                },
+                {
+                    "name": "gmktec-evo-x2-secondary",
+                    "url": "https://llm-evo-x2-2.paperclips.dev",
+                    "soc": "AMD Ryzen AI Max+ 395",
+                    "ram": "128GB",
+                },
+            ],
+            "workloads": [
+                {
+                    "type": "reasoning",
+                    "endpoint_preference": [
+                        "gmktec-evo-x2-primary",
+                        "gmktec-evo-x2-secondary",
+                    ],
+                }
+            ],
+        }
+        with patch("yaml.safe_load", return_value=config), patch("pathlib.Path.open"):
+            router = LLMRouter()
+
+        decision = await router.route_request(
+            "Analyze this problem",
+            ["gmktec-evo-x2-secondary", "gmktec-evo-x2-primary"],
+            WorkloadType.REASONING,
+        )
+        assert decision.endpoint == "gmktec-evo-x2-primary"
+
+        decision = await router.route_request(
+            "Analyze this problem",
+            ["gmktec-evo-x2-secondary"],
+            WorkloadType.REASONING,
+        )
+        assert decision.endpoint == "gmktec-evo-x2-secondary"
+
     def test_get_fastest_endpoint(self, llm_router):
         """Test getting the fastest endpoint (prefers classification preferences)."""
-        reachable = ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2"]
+        reachable = ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2-primary"]
         fastest = llm_router._get_fastest_endpoint(reachable)
         assert fastest is not None
         assert fastest.name in reachable
@@ -311,7 +356,7 @@ class TestLLMRouter:
     def test_list_endpoints(self, llm_router):
         """Test listing all endpoint names."""
         endpoints = llm_router.list_endpoints()
-        expected = ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2"]
+        expected = ["hrpc-cisr-hpc", "mac-mini", "gmktec-evo-x2-primary"]
         assert set(endpoints) == set(expected)
 
 

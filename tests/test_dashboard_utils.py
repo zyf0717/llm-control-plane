@@ -214,6 +214,27 @@ async def test_fetch_available_rag_endpoints_does_not_auto_select_configured_def
     assert selected == utils.NONE_RAG_OPTION_VALUE
 
 
+def test_create_endpoint_display_choices_keeps_evo_x2_routes_distinct():
+    endpoints_data = {
+        "gmktec-evo-x2-primary": {
+            "endpoint_url": "https://llm-evo-x2.paperclips.dev",
+            "models": [{"id": "primary-model"}],
+        },
+        "gmktec-evo-x2-secondary": {
+            "endpoint_url": "https://llm-evo-x2-2.paperclips.dev",
+            "models": [{"id": "secondary-model"}],
+        },
+    }
+
+    choices, mapping = utils.create_endpoint_display_choices(endpoints_data)
+
+    assert choices == {
+        "gmktec-evo-x2-primary (primary-model)": "gmktec-evo-x2-primary",
+        "gmktec-evo-x2-secondary (secondary-model)": "gmktec-evo-x2-secondary",
+    }
+    assert mapping == choices
+
+
 def test_create_history_select_choices_uses_convo_id_as_value():
     conversations = [
         {
