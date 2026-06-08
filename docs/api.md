@@ -179,11 +179,12 @@ Request fields:
 Behavior:
 
 - may rewrite the explicit query through a bounded SearchPlanner when configured
-- sends one HTTP request to each selected search provider in priority order
+- may run async provider fanout when the planner returns multiple queries
+- sends one HTTP request to each selected search provider in priority order per planned query
 - parses only the returned SERP payload
 - never fetches result pages or executes JavaScript
 - returns normalized result candidates plus degradation warnings
-- may include `original_query` and filtered `planner` metadata when planning ran
+- may include `original_query` and filtered `planner` metadata, including `queries`, when planning ran
 - includes `wrapped_results`, a JSON string marked as untrusted for downstream LLM use
 
 TL;DR: the proxy API is OpenAI-compatible plus control headers for smart routing, conversation history, reasoning, RAG retrieval, and an optional lightweight search-discovery endpoint.

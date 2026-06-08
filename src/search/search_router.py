@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 from typing import Optional
 
 from .http_client import SearchHttpClient, SearchHttpClientConfig
+from .normalize import dedupe_results
 from .planner import SearchPlanner
 from .search_cache import SearchCache
 from .types import SearchArgs, SearchProvider, SearchResponse
@@ -28,6 +29,7 @@ class SearchConfig:
     default_provider: str = "duckduckgo_html"
     timeout_ms: int = 7000
     max_results: int = 10
+    max_total_results: int = 10
     cache_ttl_seconds: int = 900
     max_body_bytes: int = 2_500_000
     max_retries: int = 1
@@ -83,12 +85,14 @@ class SearchRouter:
         warnings: list[str] = []
         original_query = args.query
         planner_metadata: dict[str, object] = {}
+        query_args = [args]
 
         if self.planner is not None:
             plan = await self.planner.plan(args)
             planner_metadata = plan.to_public_dict()
             if plan.warning:
                 warnings.append(f"planner: {plan.warning}")
+
             updates: dict[str, object] = {}
             if plan.effective_query and plan.effective_query != args.query:
                 updates["query"] = plan.effective_query
@@ -97,7 +101,77 @@ class SearchRouter:
             if updates:
                 args = replace(args, **updates)
 
+            planned_queries = self._planned_queries(plan.queries, args.query)
+            query_args = [replace(args, query=query) for query in planned_queries]
+
         explicit_provider = args.provider not in {None, "", "auto"}
+
+        if len(query_args) == 1:
+            response = await self._search_one_query(query_args[0], explicit_provider)
+            if warnings:
+                response.warnings = [*warnings, *response.warnings]
+            self._attach_planner_metadata(
+                response,
+                original_query=original_query,
+                effective_query=query_args[0].query,
+                planner_metadata=planner_metadata,
+            )
+            return response
+
+        branch_results = await asyncio.gather(
+            *(self._search_one_query(query_arg, explicit_provider) for query_arg in query_args),
+            return_exceptions=True,
+        )
+        responses: list[SearchResponse] = []
+        for query_arg, branch_result in zip(query_args, branch_results):
+            if isinstance(branch_result, Exception):
+                if explicit_provider:
+                    raise branch_result
+                warnings.append(f"{query_arg.query}: {branch_result}")
+                continue
+            responses.append(branch_result)
+            warnings.extend(
+                f"{branch_result.query}: {warning}"
+                for warning in branch_result.warnings
+            )
+
+        merged_results = dedupe_results(
+            (result for response in responses for result in response.results),
+            self.config.max_total_results,
+        )
+        primary_query = query_args[0].query
+
+        if merged_results:
+            provider_ids = {response.provider for response in responses if response.results}
+            provider_id = next(iter(provider_ids)) if len(provider_ids) == 1 else "fanout"
+            response = SearchResponse(
+                query=primary_query,
+                provider=provider_id,
+                results=merged_results,
+                degraded=bool(warnings),
+                warnings=warnings,
+            )
+        else:
+            response = SearchResponse(
+                query=primary_query,
+                provider="none",
+                results=[],
+                degraded=True,
+                warnings=warnings,
+            )
+
+        self._attach_planner_metadata(
+            response,
+            original_query=original_query,
+            effective_query=primary_query,
+            planner_metadata=planner_metadata,
+        )
+        return response
+
+    async def _search_one_query(
+        self, args: SearchArgs, explicit_provider: bool
+    ) -> SearchResponse:
+        warnings: list[str] = []
 
         for provider in self._select_providers(args):
             provider_config = self.provider_configs[provider.id]
@@ -119,10 +193,6 @@ class SearchRouter:
             if response.results:
                 if warnings:
                     response.warnings = [*warnings, *response.warnings]
-                if original_query != args.query:
-                    response.original_query = original_query
-                if planner_metadata:
-                    response.planner = planner_metadata
                 return response
 
             warnings.append(f"{provider.id}: empty results")
@@ -133,9 +203,32 @@ class SearchRouter:
             results=[],
             degraded=True,
             warnings=warnings,
-            original_query=original_query if original_query != args.query else None,
-            planner=planner_metadata,
         )
+
+    def _planned_queries(self, queries: list[str], fallback_query: str) -> list[str]:
+        planned: list[str] = []
+        seen: set[str] = set()
+        for query in [*queries, fallback_query]:
+            candidate = str(query or "").strip()
+            key = " ".join(candidate.lower().split())
+            if not candidate or key in seen:
+                continue
+            seen.add(key)
+            planned.append(candidate)
+        return planned or [fallback_query]
+
+    def _attach_planner_metadata(
+        self,
+        response: SearchResponse,
+        *,
+        original_query: str,
+        effective_query: str,
+        planner_metadata: dict[str, object],
+    ) -> None:
+        if original_query != effective_query:
+            response.original_query = original_query
+        if planner_metadata:
+            response.planner = planner_metadata
 
     def _select_providers(self, args: SearchArgs) -> list[SearchProvider]:
         explicit_provider = args.provider not in {None, "", "auto"}

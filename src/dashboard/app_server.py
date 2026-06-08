@@ -173,6 +173,21 @@ def build_search_turn_messages(
     return [{"role": "user", "content": content}]
 
 
+def _search_planner_queries(planner: Dict[str, Any], fallback_query: str) -> list[str]:
+    raw_queries = planner.get("queries")
+    queries = raw_queries if isinstance(raw_queries, list) else []
+    cleaned = []
+    seen = set()
+    for item in [*queries, fallback_query]:
+        query = " ".join(str(item or "").split())
+        key = query.lower()
+        if not query or key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(query)
+    return cleaned
+
+
 def build_search_preface(search_state: Optional[Dict[str, Any]]) -> Optional[str]:
     """Render a markdown transcript preface for successful search calls."""
     if not isinstance(search_state, dict) or not search_state.get("show_preface"):
@@ -185,12 +200,14 @@ def build_search_preface(search_state: Optional[Dict[str, Any]]) -> Optional[str
         else {}
     )
     query = " ".join(str(search_state.get("query") or "").split())
+    planner_queries = _search_planner_queries(planner, query)
     results = search_state.get("results")
     warnings = search_state.get("warnings") or []
     degraded = bool(search_state.get("degraded", False))
     heading = f"**Search candidates** via {provider_label}"
-    if planner.get("used") is True and query:
-        heading = f'{heading} for "{query}"'
+    if planner.get("used") is True and planner_queries:
+        quoted_queries = "; ".join(f'"{item}"' for item in planner_queries)
+        heading = f"{heading} for {quoted_queries}"
     lines = [heading]
 
     if degraded:
@@ -236,6 +253,9 @@ def merge_run_info(
         query = str(search_state.get("query") or "").strip()
         if isinstance(planner, dict) and planner.get("used") is True and query:
             merged["search"]["query"] = query
+            queries = _search_planner_queries(planner, query)
+            if len(queries) > 1:
+                merged["search"]["queries"] = queries
 
     return merged or None
 
@@ -660,6 +680,13 @@ def server(input, output, session):
             search_lines = []
             if search.get("provider"):
                 search_lines.append(f"Provider: {search['provider']}")
+            queries = search.get("queries")
+            if isinstance(queries, list) and queries:
+                search_lines.append(
+                    "Queries: " + "; ".join(str(query) for query in queries)
+                )
+            elif search.get("query"):
+                search_lines.append(f"Query: {search['query']}")
             if "result_count" in search:
                 search_lines.append(f"Results: {search['result_count']}")
             if "degraded" in search:

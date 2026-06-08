@@ -39,7 +39,10 @@ config = yaml.safe_load(CONFIG_FILE.open("r", encoding="utf-8")) or {}
 endpoints = config.get("endpoints", [])
 rag_config = config.get("rag", {})
 RAG_TOP_K = int(rag_config.get("top_k", 3))
-search_service = build_search_router(config.get("search", {}))
+search_service = build_search_router(
+    config.get("search", {}),
+    planner_headers=HeaderManager.create_auth_headers(),
+)
 
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

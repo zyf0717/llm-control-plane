@@ -33,8 +33,10 @@ search:
   model: "search-planner"
   planner_enabled: true
   planner_timeout_ms: 7000
-  planner_max_context_chars: 12000
-  planner_max_output_tokens: 512
+  planner_max_context_chars: 24000
+  planner_max_output_tokens: 1024
+  planner_max_queries: 3
+  search_max_total_results: 10
   default_provider: "duckduckgo_html"
   timeout_ms: 7000
   max_results: 10
@@ -131,6 +133,8 @@ The `search` block enables the lightweight candidate-discovery module exposed at
 | `planner_timeout_ms` | Planner request timeout; defaults to `timeout_ms` or 7000 |
 | `planner_max_context_chars` | Max optional context characters sent to the planner |
 | `planner_max_output_tokens` | Max planner response tokens |
+| `planner_max_queries` | Max planned query fanout; defaults to 1 |
+| `search_max_total_results` | Max deduped results returned across all planned queries |
 | `default_provider` | Default provider id when `provider=auto` |
 | `timeout_ms` | Per-provider request timeout |
 | `max_results` | Hard cap on normalized results returned |
@@ -141,7 +145,7 @@ The `search` block enables the lightweight candidate-discovery module exposed at
 | `providers[].cache_ttl_seconds` | Optional provider-specific TTL override |
 | `providers[].min_interval_seconds` | Optional minimum delay between requests to the same provider |
 
-When `search.model_endpoint` is configured, `/search/web` may run a bounded, non-persisted `SearchPlanner` call before provider execution. The planner rewrites the submitted query into a concise provider-ready query. Planner failure degrades to the original query and adds a warning.
+When `search.model_endpoint` is configured, `/search/web` may run a bounded, non-persisted `SearchPlanner` call before provider execution. The planner rewrites the submitted query into one or more concise provider-ready queries. If `planner_max_queries` is greater than 1, provider searches run as an async fanout and results are deduped before applying `search_max_total_results`. Planner failure degrades to the original query and adds a warning.
 
 Supported built-in provider ids:
 

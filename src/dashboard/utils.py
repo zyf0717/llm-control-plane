@@ -283,10 +283,6 @@ def create_endpoint_display_choices(endpoints_data):
     choices = {}
     mapping = {}
 
-    if "Auto" in endpoints_data:
-        choices["Auto (auto-router)"] = "Auto"
-        mapping["Auto (auto-router)"] = "Auto"
-
     for endpoint_name, endpoint_data in endpoints_data.items():
         if endpoint_name == "Auto":
             continue

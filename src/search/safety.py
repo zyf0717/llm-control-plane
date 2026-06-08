@@ -30,9 +30,13 @@ def wrap_search_results(response: SearchResponse) -> str:
     if response.original_query:
         payload["original_query"] = response.original_query
     if response.planner:
-        payload["planner"] = {
+        planner_payload = {
             "used": response.planner.get("used"),
             "effective_query": response.query,
             "degraded": response.planner.get("degraded"),
         }
+        queries = response.planner.get("queries")
+        if isinstance(queries, list):
+            planner_payload["queries"] = [str(query) for query in queries if str(query).strip()]
+        payload["planner"] = planner_payload
     return json.dumps(payload, ensure_ascii=True)

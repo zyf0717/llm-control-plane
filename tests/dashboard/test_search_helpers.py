@@ -138,6 +138,27 @@ def test_build_search_preface_shows_optimized_query_when_planner_used():
     assert merged["search"]["query"] == "llama.cpp server KV cache metrics cached_tokens"
 
 
+def test_build_search_preface_shows_all_fanout_queries_when_planner_used():
+    state = build_search_success_state(
+        {
+            "provider": "duckduckgo_html",
+            "query": "q1",
+            "planner": {"used": True, "queries": ["q1", "q2", "q1"]},
+            "results": [],
+            "wrapped_results": '{"source":"web_search"}',
+        }
+    )
+
+    preface = build_search_preface(state)
+
+    assert preface is not None
+    assert '**Search candidates** via DuckDuckGo for "q1"; "q2"' in preface
+
+    merged = merge_run_info({}, state)
+    assert merged["search"]["query"] == "q1"
+    assert merged["search"]["queries"] == ["q1", "q2"]
+
+
 def test_build_search_preface_keeps_legacy_heading_without_planner_use():
     state = build_search_success_state(
         {

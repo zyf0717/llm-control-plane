@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from src.search.planner import SearchPlan
@@ -236,3 +238,73 @@ async def test_planner_warning_does_not_stop_provider_search():
     assert provider.calls == 1
     assert response.warnings == ["planner: planner-failed: TimeoutException"]
     assert response.planner["degraded"] is True
+
+
+class FanoutProvider:
+    id = "winner"
+    engine = "winner"
+    response_type = "html"
+    fallback_only = False
+
+    def __init__(self):
+        self.calls = []
+        self.active = 0
+        self.max_active = 0
+
+    async def search(self, args, client, cache, config, provider_config=None):
+        self.calls.append(args.query)
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            await asyncio.sleep(0.01)
+            urls_by_query = {
+                "q1": ["https://example.com/a", "https://example.com/b"],
+                "q2": ["https://example.com/b", "https://example.com/c"],
+            }
+            results = [
+                SearchResult(
+                    title=url.rsplit("/", 1)[-1],
+                    url=url,
+                    snippet=args.query,
+                    rank=index,
+                    provider=self.id,
+                    engine=self.engine,
+                    fetched_at="2026-06-06T00:00:00+00:00",
+                )
+                for index, url in enumerate(urls_by_query.get(args.query, []), start=1)
+            ]
+            return SearchResponse(query=args.query, provider=self.id, results=results)
+        finally:
+            self.active -= 1
+
+
+@pytest.mark.asyncio
+async def test_router_fans_out_planned_queries_and_dedupes_results():
+    provider = FanoutProvider()
+    planner = StubPlanner(
+        SearchPlan(
+            effective_query="q1",
+            queries=["q1", "q2"],
+            used=True,
+        )
+    )
+    router = SearchRouter(
+        SearchConfig(default_provider="winner", max_results=10, max_total_results=2),
+        providers={"winner": provider},
+        provider_configs={"winner": SearchProviderConfig(enabled=True, priority=10)},
+        planner=planner,
+    )
+
+    response = await router.search(SearchArgs(query="original query"))
+
+    assert sorted(provider.calls) == ["q1", "q2"]
+    assert provider.max_active == 2
+    assert response.query == "q1"
+    assert response.provider == "winner"
+    assert response.original_query == "original query"
+    assert response.planner["queries"] == ["q1", "q2"]
+    assert [result.url for result in response.results] == [
+        "https://example.com/a",
+        "https://example.com/b",
+    ]
+    assert [result.rank for result in response.results] == [1, 2]

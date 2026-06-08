@@ -15,9 +15,14 @@ from .planner import SearchPlanner, SearchPlannerConfig
 from .search_router import SearchConfig, SearchProviderConfig, SearchRouter
 
 
-def build_search_router(search_config: dict[str, Any] | None = None) -> SearchRouter:
+def build_search_router(
+    search_config: dict[str, Any] | None = None,
+    *,
+    planner_headers: dict[str, str] | None = None,
+) -> SearchRouter:
     """Build a config-driven search router with explicit provider allowlist."""
     search_config = search_config or {}
+    planner_headers = planner_headers or {}
     provider_settings = search_config.get("providers", {})
     providers = {
         "duckduckgo_html": DuckDuckGoHtmlProvider(),
@@ -42,6 +47,12 @@ def build_search_router(search_config: dict[str, Any] | None = None) -> SearchRo
         default_provider=str(search_config.get("default_provider", "duckduckgo_html")),
         timeout_ms=int(search_config.get("timeout_ms", 7000)),
         max_results=int(search_config.get("max_results", 10)),
+        max_total_results=int(
+            search_config.get(
+                "search_max_total_results",
+                search_config.get("max_results", 10),
+            )
+        ),
         cache_ttl_seconds=int(search_config.get("cache_ttl_seconds", 900)),
         max_body_bytes=int(search_config.get("max_body_bytes", 2_500_000)),
         max_retries=int(search_config.get("max_retries", 1)),
@@ -63,6 +74,8 @@ def build_search_router(search_config: dict[str, Any] | None = None) -> SearchRo
         ),
         max_context_chars=int(search_config.get("planner_max_context_chars", 12000)),
         max_output_tokens=int(search_config.get("planner_max_output_tokens", 512)),
+        max_queries=int(search_config.get("planner_max_queries", 1)),
+        headers=dict(planner_headers),
     )
     planner = (
         SearchPlanner(planner_config)

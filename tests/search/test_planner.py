@@ -66,6 +66,69 @@ async def test_valid_planner_response_rewrites_query():
 
 
 @pytest.mark.asyncio
+async def test_planner_response_supports_capped_query_fanout():
+    payload = json.dumps(
+        {
+            "query": "llama.cpp metrics GitHub",
+            "queries": [
+                "llama.cpp metrics GitHub",
+                "llama.cpp release notes cached_tokens",
+                "llama.cpp server metrics documentation",
+                "extra query should be capped",
+            ],
+        }
+    )
+    planner = SearchPlanner(
+        SearchPlannerConfig(
+            enabled=True,
+            model_endpoint="https://planner.local",
+            max_queries=3,
+            max_output_tokens=1024,
+        )
+    )
+
+    with patch(
+        "httpx.AsyncClient.post",
+        AsyncMock(return_value=FakePlannerResponse(payload)),
+    ) as post:
+        plan = await planner.plan(SearchArgs(query="does llama cpp expose metrics?"))
+
+    body = post.await_args.kwargs["json"]
+    user_payload = json.loads(body["messages"][1]["content"])
+    assert user_payload["max_queries"] == 3
+    assert body["max_tokens"] == 1024
+    assert plan.effective_query == "llama.cpp metrics GitHub"
+    assert plan.queries == [
+        "llama.cpp metrics GitHub",
+        "llama.cpp release notes cached_tokens",
+        "llama.cpp server metrics documentation",
+    ]
+    assert plan.to_public_dict()["queries"] == plan.queries
+
+
+@pytest.mark.asyncio
+async def test_planner_posts_configured_headers():
+    planner = SearchPlanner(
+        SearchPlannerConfig(
+            enabled=True,
+            model_endpoint="https://planner.local",
+            headers={"CF-Access-Client-Id": "id", "CF-Access-Client-Secret": "secret"},
+        )
+    )
+
+    with patch(
+        "httpx.AsyncClient.post",
+        AsyncMock(return_value=FakePlannerResponse('{"query": "planned"}')),
+    ) as post:
+        await planner.plan(SearchArgs(query="original"))
+
+    assert post.await_args.kwargs["headers"] == {
+        "CF-Access-Client-Id": "id",
+        "CF-Access-Client-Secret": "secret",
+    }
+
+
+@pytest.mark.asyncio
 async def test_invalid_json_falls_back():
     planner = SearchPlanner(
         SearchPlannerConfig(enabled=True, model_endpoint="https://planner.local")
