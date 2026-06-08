@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 from .http_client import SearchHttpClient, SearchHttpClientConfig
+from .planner import SearchPlanner
 from .search_cache import SearchCache
 from .types import SearchArgs, SearchProvider, SearchResponse
 
@@ -57,6 +58,7 @@ class SearchRouter:
         provider_configs: dict[str, SearchProviderConfig],
         http_client: Optional[SearchHttpClient] = None,
         cache: Optional[SearchCache] = None,
+        planner: Optional[SearchPlanner] = None,
     ):
         self.config = config
         self.providers = providers
@@ -69,6 +71,7 @@ class SearchRouter:
             )
         )
         self.cache = cache or SearchCache(default_ttl_seconds=config.cache_ttl_seconds)
+        self.planner = planner
         self._last_request_at: dict[str, float] = {}
         self._rate_limit_lock = asyncio.Lock()
 
@@ -78,6 +81,22 @@ class SearchRouter:
             raise RuntimeError("Search module is disabled")
 
         warnings: list[str] = []
+        original_query = args.query
+        planner_metadata: dict[str, object] = {}
+
+        if self.planner is not None:
+            plan = await self.planner.plan(args)
+            planner_metadata = plan.to_public_dict()
+            if plan.warning:
+                warnings.append(f"planner: {plan.warning}")
+            updates: dict[str, object] = {}
+            if plan.effective_query and plan.effective_query != args.query:
+                updates["query"] = plan.effective_query
+            if plan.freshness and plan.freshness != args.freshness:
+                updates["freshness"] = plan.freshness
+            if updates:
+                args = replace(args, **updates)
+
         explicit_provider = args.provider not in {None, "", "auto"}
 
         for provider in self._select_providers(args):
@@ -100,6 +119,10 @@ class SearchRouter:
             if response.results:
                 if warnings:
                     response.warnings = [*warnings, *response.warnings]
+                if original_query != args.query:
+                    response.original_query = original_query
+                if planner_metadata:
+                    response.planner = planner_metadata
                 return response
 
             warnings.append(f"{provider.id}: empty results")
@@ -110,6 +133,8 @@ class SearchRouter:
             results=[],
             degraded=True,
             warnings=warnings,
+            original_query=original_query if original_query != args.query else None,
+            planner=planner_metadata,
         )
 
     def _select_providers(self, args: SearchArgs) -> list[SearchProvider]:

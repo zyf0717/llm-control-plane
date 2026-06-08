@@ -88,6 +88,23 @@ search:
     ]
 
 
+def test_load_search_planner_max_context_chars_reads_config(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "search: {planner_max_context_chars: 24}",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(utils, "CONFIG_PATH", config_path)
+
+    assert utils.load_search_planner_max_context_chars() == 24
+
+
+def test_trim_search_context_preserves_tail():
+    trimmed = utils.trim_search_context("abcdef", 4)
+
+    assert trimmed == "cdef"
+
+
 def test_fetch_available_search_providers_returns_none_when_search_disabled(
     tmp_path, monkeypatch
 ):
@@ -106,6 +123,7 @@ def test_fetch_available_search_providers_returns_none_when_search_disabled(
 @pytest.mark.asyncio
 async def test_fetch_search_results_posts_to_proxy(monkeypatch):
     monkeypatch.setattr(utils, "PROXY_BASE_URL", "http://proxy.local")
+    monkeypatch.setattr(utils, "load_search_planner_max_context_chars", lambda: 12000)
 
     response = Mock()
     response.raise_for_status = Mock()
@@ -131,6 +149,31 @@ async def test_fetch_search_results_posts_to_proxy(monkeypatch):
             "count": 5,
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_fetch_search_results_posts_trimmed_context(monkeypatch):
+    monkeypatch.setattr(utils, "PROXY_BASE_URL", "http://proxy.local")
+    monkeypatch.setattr(utils, "load_search_planner_max_context_chars", lambda: 12)
+
+    response = Mock()
+    response.raise_for_status = Mock()
+    response.json.return_value = {"provider": "duckduckgo_html", "results": []}
+
+    with patch("httpx.AsyncClient") as mock_client_class:
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        mock_client.post.return_value = response
+
+        await utils.fetch_search_results(
+            query="Ada Lovelace",
+            provider="duckduckgo_html",
+            count=5,
+            context="0123456789abcdef",
+        )
+
+    sent = mock_client.post.await_args.kwargs["json"]
+    assert sent["context"] == "456789abcdef"
 
 
 @pytest.mark.asyncio

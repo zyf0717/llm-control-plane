@@ -17,6 +17,7 @@ NONE_RAG_OPTION_LABEL = "None"
 NONE_RAG_OPTION_VALUE = ""
 NONE_SEARCH_PROVIDER_LABEL = "None"
 NONE_SEARCH_PROVIDER_VALUE = ""
+DEFAULT_SEARCH_PLANNER_MAX_CONTEXT_CHARS = 12000
 HISTORY_DISPLAY_TIMEZONE = timezone(timedelta(hours=8))
 SEARCH_PROVIDER_DISPLAY_NAMES = {
     "duckduckgo_html": "DuckDuckGo",
@@ -182,8 +183,42 @@ def fetch_available_search_providers() -> tuple[dict[str, str], str]:
     return choices, NONE_SEARCH_PROVIDER_VALUE
 
 
+def load_search_planner_max_context_chars() -> int:
+    """Return the configured client-side planner context bound."""
+    try:
+        config = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
+    except (FileNotFoundError, yaml.YAMLError):
+        return DEFAULT_SEARCH_PLANNER_MAX_CONTEXT_CHARS
+
+    search_config = config.get("search", {}) if isinstance(config, dict) else {}
+    try:
+        value = int(
+            search_config.get(
+                "planner_max_context_chars",
+                DEFAULT_SEARCH_PLANNER_MAX_CONTEXT_CHARS,
+            )
+        )
+    except (TypeError, ValueError):
+        return DEFAULT_SEARCH_PLANNER_MAX_CONTEXT_CHARS
+    return max(0, value)
+
+
+def trim_search_context(context: Any, max_chars: int) -> str:
+    """Trim planner context from the front, preserving the newest request tail."""
+    text = str(context or "").strip()
+    if not text or max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
+        return text
+
+    marker = "[trimmed earlier context]\n"
+    if max_chars <= len(marker):
+        return text[-max_chars:]
+    return marker + text[-(max_chars - len(marker)) :]
+
+
 async def fetch_search_results(
-    *, query: str, provider: str, count: int = 5
+    *, query: str, provider: str, count: int = 5, context: Any = None
 ) -> dict[str, Any]:
     """Fetch normalized search candidates from the proxy search endpoint."""
     payload = {
@@ -191,6 +226,12 @@ async def fetch_search_results(
         "provider": str(provider or "").strip(),
         "count": int(count),
     }
+    trimmed_context = trim_search_context(
+        context,
+        load_search_planner_max_context_chars(),
+    )
+    if trimmed_context:
+        payload["context"] = trimmed_context
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.post(f"{PROXY_BASE_URL}/search/web", json=payload)

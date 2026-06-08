@@ -57,10 +57,15 @@ def build_search_success_state(search_response: Dict[str, Any]) -> Dict[str, Any
     if not isinstance(results, list):
         results = []
 
+    planner = search_response.get("planner")
+    if not isinstance(planner, dict):
+        planner = {}
+
     return {
         "provider": provider_id,
         "provider_label": format_search_provider_label(provider_id),
         "query": str(search_response.get("query") or "").strip(),
+        "planner": planner,
         "degraded": bool(search_response.get("degraded", False)),
         "warnings": warnings,
         "results": results,
@@ -72,6 +77,37 @@ def build_search_success_state(search_response: Dict[str, Any]) -> Dict[str, Any
         ),
         "show_preface": True,
     }
+
+
+def build_search_planner_context(
+    *,
+    system_prompt: Optional[str],
+    history: Any,
+    user_input: str,
+) -> str:
+    """Build compact source context for search planning."""
+    sections = []
+    prompt = normalize_system_prompt(system_prompt)
+    if prompt:
+        sections.append(f"System prompt:\n{prompt}")
+
+    history_lines = []
+    if isinstance(history, list):
+        for message in history:
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role") or "").strip()
+            content = str(message.get("content") or "").strip()
+            if role and content:
+                history_lines.append(f"{role}: {content}")
+    if history_lines:
+        sections.append("Conversation history:\n" + "\n".join(history_lines))
+
+    request = str(user_input or "").strip()
+    if request:
+        sections.append(f"Current user request:\n{request}")
+
+    return "\n\n".join(sections)
 
 
 def build_search_failure_state(provider_id: str, error: Any) -> Dict[str, Any]:
@@ -143,10 +179,19 @@ def build_search_preface(search_state: Optional[Dict[str, Any]]) -> Optional[str
         return None
 
     provider_label = str(search_state.get("provider_label") or "Search").strip()
+    planner = (
+        search_state.get("planner")
+        if isinstance(search_state.get("planner"), dict)
+        else {}
+    )
+    query = " ".join(str(search_state.get("query") or "").split())
     results = search_state.get("results")
     warnings = search_state.get("warnings") or []
     degraded = bool(search_state.get("degraded", False))
-    lines = [f"**Search candidates** via {provider_label}"]
+    heading = f"**Search candidates** via {provider_label}"
+    if planner.get("used") is True and query:
+        heading = f'{heading} for "{query}"'
+    lines = [heading]
 
     if degraded:
         lines.append("_Search returned degraded results._")
@@ -187,6 +232,10 @@ def merge_run_info(
             "degraded": bool(search_state.get("degraded", False)),
             "warnings": list(search_state.get("warnings") or []),
         }
+        planner = search_state.get("planner")
+        query = str(search_state.get("query") or "").strip()
+        if isinstance(planner, dict) and planner.get("used") is True and query:
+            merged["search"]["query"] = query
 
     return merged or None
 
@@ -719,10 +768,17 @@ def server(input, output, session):
         selected_search_provider = str(input.searchProvider() or "").strip()
         if selected_search_provider and search_query:
             try:
+                planner_history = await fetch_convo_history(convo_id) if convo_id else []
+                planner_context = build_search_planner_context(
+                    system_prompt=current_prompt,
+                    history=planner_history,
+                    user_input=user_input,
+                )
                 search_response = await fetch_search_results(
                     query=search_query,
                     provider=selected_search_provider,
                     count=5,
+                    context=planner_context,
                 )
                 search_state = build_search_success_state(search_response)
             except Exception as exc:

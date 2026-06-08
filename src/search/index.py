@@ -11,6 +11,7 @@ from .providers import (
     SearxngHtmlProvider,
     WikipediaOpenSearchProvider,
 )
+from .planner import SearchPlanner, SearchPlannerConfig
 from .search_router import SearchConfig, SearchProviderConfig, SearchRouter
 
 
@@ -45,11 +46,35 @@ def build_search_router(search_config: dict[str, Any] | None = None) -> SearchRo
         max_body_bytes=int(search_config.get("max_body_bytes", 2_500_000)),
         max_retries=int(search_config.get("max_retries", 1)),
     )
+    planner_config = SearchPlannerConfig(
+        enabled=bool(
+            search_config.get(
+                "planner_enabled",
+                bool(search_config.get("model_endpoint")),
+            )
+        ),
+        model_endpoint=search_config.get("model_endpoint"),
+        model=str(search_config.get("model", "search-planner")),
+        timeout_ms=int(
+            search_config.get(
+                "planner_timeout_ms",
+                search_config.get("timeout_ms", 7000),
+            )
+        ),
+        max_context_chars=int(search_config.get("planner_max_context_chars", 12000)),
+        max_output_tokens=int(search_config.get("planner_max_output_tokens", 512)),
+    )
+    planner = (
+        SearchPlanner(planner_config)
+        if planner_config.enabled and planner_config.model_endpoint
+        else None
+    )
 
     return SearchRouter(
         config,
         providers=providers,
         provider_configs=provider_configs,
+        planner=planner,
     )
 
 

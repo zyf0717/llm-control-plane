@@ -1,6 +1,7 @@
 from src.dashboard.app_server import (
     build_search_failure_state,
     build_search_preface,
+    build_search_planner_context,
     build_search_success_state,
     build_search_turn_messages,
     merge_run_info,
@@ -8,6 +9,23 @@ from src.dashboard.app_server import (
     resolve_auto_endpoint_key,
 )
 from src.search.safety import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER
+
+
+def test_build_search_planner_context_includes_prompt_history_and_current_request():
+    context = build_search_planner_context(
+        system_prompt="Prefer primary sources.",
+        history=[
+            {"role": "user", "content": "Earlier question"},
+            {"role": "assistant", "content": "Earlier answer"},
+            {"role": "ignored", "content": ""},
+        ],
+        user_input="Current question",
+    )
+
+    assert "System prompt:\nPrefer primary sources." in context
+    assert "Conversation history:\nuser: Earlier question" in context
+    assert "assistant: Earlier answer" in context
+    assert "Current user request:\nCurrent question" in context
 
 
 def test_build_search_success_state_normalizes_proxy_payload():
@@ -92,6 +110,50 @@ def test_build_search_preface_renders_results_and_warnings():
     assert "Computing pioneer" in preface
     assert "selector drift" in preface
     assert "degraded" in preface.lower()
+
+
+def test_build_search_preface_shows_optimized_query_when_planner_used():
+    state = build_search_success_state(
+        {
+            "provider": "duckduckgo_html",
+            "query": "llama.cpp server KV cache metrics cached_tokens",
+            "planner": {
+                "used": True,
+                "effective_query": "llama.cpp server KV cache metrics cached_tokens",
+            },
+            "results": [],
+            "wrapped_results": '{"source":"web_search"}',
+        }
+    )
+
+    preface = build_search_preface(state)
+
+    assert preface is not None
+    assert (
+        '**Search candidates** via DuckDuckGo for "llama.cpp server KV cache metrics cached_tokens"'
+        in preface
+    )
+
+    merged = merge_run_info({}, state)
+    assert merged["search"]["query"] == "llama.cpp server KV cache metrics cached_tokens"
+
+
+def test_build_search_preface_keeps_legacy_heading_without_planner_use():
+    state = build_search_success_state(
+        {
+            "provider": "duckduckgo_html",
+            "query": "Ada Lovelace",
+            "planner": {"used": False},
+            "results": [],
+            "wrapped_results": '{"source":"web_search"}',
+        }
+    )
+
+    preface = build_search_preface(state)
+
+    assert preface is not None
+    assert '**Search candidates** via DuckDuckGo\n' in preface
+    assert 'for "Ada Lovelace"' not in preface
 
 
 def test_build_search_preface_handles_empty_successful_search():

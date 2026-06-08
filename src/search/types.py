@@ -17,6 +17,7 @@ class SearchArgs:
     region: Optional[str] = None
     safe_search: Optional[str] = None
     freshness: Optional[str] = None
+    context: Optional[str] = None
 
 
 @dataclass(slots=True)
@@ -54,10 +55,16 @@ class SearchResponse:
     results: list[SearchResult]
     degraded: bool = False
     warnings: list[str] = field(default_factory=list)
+    original_query: Optional[str] = None
+    planner: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
         payload["results"] = [result.to_dict() for result in self.results]
+        if not self.original_query:
+            payload.pop("original_query", None)
+        if not self.planner:
+            payload.pop("planner", None)
         return payload
 
 

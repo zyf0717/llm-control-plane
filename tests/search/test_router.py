@@ -1,5 +1,6 @@
 import pytest
 
+from src.search.planner import SearchPlan
 from src.search.search_router import SearchConfig, SearchRouter, SearchProviderConfig
 from src.search.types import SearchArgs, SearchResponse, SearchResult
 
@@ -13,9 +14,11 @@ class StubProvider:
         self._response = response
         self._error = error
         self.calls = 0
+        self.last_args = None
 
     async def search(self, args, client, cache, config, provider_config=None):
         self.calls += 1
+        self.last_args = args
         if self._error is not None:
             raise self._error
         return self._response
@@ -108,3 +111,128 @@ async def test_router_rejects_unknown_explicit_provider():
 
     with pytest.raises(ValueError, match="Unknown search provider"):
         await router.search(SearchArgs(query="q", provider="missing"))
+
+
+class StubPlanner:
+    def __init__(self, plan: SearchPlan):
+        self._plan = plan
+        self.calls = 0
+        self.last_args = None
+
+    async def plan(self, args):
+        self.calls += 1
+        self.last_args = args
+        return self._plan
+
+
+@pytest.mark.asyncio
+async def test_router_calls_planner_before_provider_and_uses_effective_query():
+    provider = StubProvider(
+        "winner",
+        SearchResponse(
+            query="planned query",
+            provider="winner",
+            results=[
+                SearchResult(
+                    title="Hit",
+                    url="https://example.com",
+                    snippet="snippet",
+                    rank=1,
+                    provider="winner",
+                    engine="winner",
+                    fetched_at="2026-06-06T00:00:00+00:00",
+                )
+            ],
+        ),
+    )
+    planner = StubPlanner(SearchPlan(effective_query="planned query", used=True))
+    router = SearchRouter(
+        SearchConfig(default_provider="winner", max_results=10),
+        providers={"winner": provider},
+        provider_configs={"winner": SearchProviderConfig(enabled=True, priority=10)},
+        planner=planner,
+    )
+
+    response = await router.search(SearchArgs(query="original query"))
+
+    assert planner.calls == 1
+    assert planner.last_args.query == "original query"
+    assert provider.last_args.query == "planned query"
+    assert response.original_query == "original query"
+    assert response.planner["effective_query"] == "planned query"
+
+
+@pytest.mark.asyncio
+async def test_router_omits_original_query_when_planner_keeps_query():
+    provider = StubProvider(
+        "winner",
+        SearchResponse(
+            query="same query",
+            provider="winner",
+            results=[
+                SearchResult(
+                    title="Hit",
+                    url="https://example.com",
+                    snippet="snippet",
+                    rank=1,
+                    provider="winner",
+                    engine="winner",
+                    fetched_at="2026-06-06T00:00:00+00:00",
+                )
+            ],
+        ),
+    )
+    planner = StubPlanner(SearchPlan(effective_query="same query", used=False))
+    router = SearchRouter(
+        SearchConfig(default_provider="winner", max_results=10),
+        providers={"winner": provider},
+        provider_configs={"winner": SearchProviderConfig(enabled=True, priority=10)},
+        planner=planner,
+    )
+
+    response = await router.search(SearchArgs(query="same query"))
+
+    assert response.original_query is None
+    assert "original_query" not in response.to_dict()
+    assert response.planner["used"] is False
+
+
+@pytest.mark.asyncio
+async def test_planner_warning_does_not_stop_provider_search():
+    provider = StubProvider(
+        "winner",
+        SearchResponse(
+            query="original",
+            provider="winner",
+            results=[
+                SearchResult(
+                    title="Hit",
+                    url="https://example.com",
+                    snippet="snippet",
+                    rank=1,
+                    provider="winner",
+                    engine="winner",
+                    fetched_at="2026-06-06T00:00:00+00:00",
+                )
+            ],
+        ),
+    )
+    planner = StubPlanner(
+        SearchPlan(
+            effective_query="original",
+            degraded=True,
+            warning="planner-failed: TimeoutException",
+        )
+    )
+    router = SearchRouter(
+        SearchConfig(default_provider="winner", max_results=10),
+        providers={"winner": provider},
+        provider_configs={"winner": SearchProviderConfig(enabled=True, priority=10)},
+        planner=planner,
+    )
+
+    response = await router.search(SearchArgs(query="original"))
+
+    assert provider.calls == 1
+    assert response.warnings == ["planner: planner-failed: TimeoutException"]
+    assert response.planner["degraded"] is True

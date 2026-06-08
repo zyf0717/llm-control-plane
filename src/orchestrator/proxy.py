@@ -744,6 +744,7 @@ async def search_web(request: Request):
             query=str(body.get("query", "")).strip(),
             count=body.get("count"),
             provider=str(body.get("provider", "auto") or "auto"),
+            context=body.get("context"),
             language=body.get("language"),
             region=body.get("region"),
             safe_search=body.get("safeSearch") or body.get("safe_search"),

@@ -161,18 +161,29 @@ curl -X POST http://localhost:12340/search/web \
   -H "Content-Type: application/json" \
   -d '{
     "query": "qwen mtp llama.cpp",
+    "context": "optional compact planner context",
     "provider": "auto",
     "count": 5,
     "freshness": "week"
   }'
 ```
 
+Request fields:
+
+- `query`: required search request
+- `context`: optional compact context for the search planner
+- `provider`: provider id or `auto`
+- `count`: optional result count
+- `freshness`: optional freshness hint such as `day`, `week`, or `month`
+
 Behavior:
 
+- may rewrite the explicit query through a bounded SearchPlanner when configured
 - sends one HTTP request to each selected search provider in priority order
 - parses only the returned SERP payload
 - never fetches result pages or executes JavaScript
 - returns normalized result candidates plus degradation warnings
+- may include `original_query` and filtered `planner` metadata when planning ran
 - includes `wrapped_results`, a JSON string marked as untrusted for downstream LLM use
 
 TL;DR: the proxy API is OpenAI-compatible plus control headers for smart routing, conversation history, reasoning, RAG retrieval, and an optional lightweight search-discovery endpoint.

@@ -27,4 +27,12 @@ def wrap_search_results(response: SearchResponse) -> str:
         payload["warnings"] = response.warnings
     if response.degraded:
         payload["degraded"] = True
+    if response.original_query:
+        payload["original_query"] = response.original_query
+    if response.planner:
+        payload["planner"] = {
+            "used": response.planner.get("used"),
+            "effective_query": response.query,
+            "degraded": response.planner.get("degraded"),
+        }
     return json.dumps(payload, ensure_ascii=True)
