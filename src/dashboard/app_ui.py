@@ -34,6 +34,14 @@ app_ui = ui.page_fluid(
             overflow-y: auto;
         }
 
+        .dashboard-trace-json {
+            max-height: 28rem;
+            overflow: auto;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            margin-bottom: 0;
+        }
+
         @media (max-width: 991.98px) {
             :root {
                 --dashboard-panel-height: auto;
@@ -152,6 +160,42 @@ app_ui = ui.page_fluid(
                 col_widths=[3, 2],
             ),
             ui.output_ui("historyBox"),
+        ),
+        ui.nav_panel(
+            "Traces",
+            ui.layout_columns(
+                ui.input_text(
+                    "traceConvoFilter",
+                    "Convo ID",
+                    placeholder="Optional",
+                    width="100%",
+                ),
+                ui.input_text(
+                    "traceIDFilter",
+                    "Trace ID",
+                    placeholder="Optional",
+                    width="100%",
+                ),
+                ui.input_text(
+                    "traceEndpointFilter",
+                    "Endpoint",
+                    placeholder="Optional",
+                    width="100%",
+                ),
+                ui.input_select(
+                    "traceMaxRows",
+                    "Rows",
+                    choices={"50": "50", "100": "100", "200": "200", "500": "500"},
+                    selected="200",
+                    width="100%",
+                ),
+                ui.div(
+                    ui.input_action_button("refreshTraces", "Refresh"),
+                    style="display: flex; align-items: flex-end; height: 100%;",
+                ),
+                col_widths=[3, 3, 3, 1, 2],
+            ),
+            ui.output_ui("traceBox"),
         ),
         title="LLM Control Plane",
     ),

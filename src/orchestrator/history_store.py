@@ -248,6 +248,7 @@ class SQLiteHistoryStore(HistoryStore):
     def __init__(self, db_path: Path | str):
         self.db_path = Path(db_path)
         self._conn: Optional[aiosqlite.Connection] = None
+        self._write_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -308,14 +309,20 @@ class SQLiteHistoryStore(HistoryStore):
             (convo_id, json.dumps(message), created_at)
             for message in deepcopy(messages)
         ]
-        await conn.executemany(
-            """
-            INSERT INTO conversation_messages (convo_id, message_json, created_at)
-            VALUES (?, ?, ?)
-            """,
-            payloads,
-        )
-        await conn.commit()
+        async with self._write_lock:
+            await self._begin_immediate(conn)
+            try:
+                await conn.executemany(
+                    """
+                    INSERT INTO conversation_messages (convo_id, message_json, created_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    payloads,
+                )
+                await conn.commit()
+            except BaseException:
+                await conn.rollback()
+                raise
 
     async def list_conversations(self) -> List[Dict[str, object]]:
         conn = self._require_connection()
@@ -360,64 +367,71 @@ class SQLiteHistoryStore(HistoryStore):
         clear_route: bool = False,
     ) -> Dict[str, object]:
         conn = self._require_connection()
-        await conn.execute("BEGIN IMMEDIATE")
-        try:
-            cursor = await conn.execute(
-                """
-                SELECT convo_id, route_endpoint, reasoning_effort, slots_json, updated_at
-                FROM conversation_state
-                WHERE convo_id = ?
-                """,
-                (convo_id,),
-            )
-            row = await cursor.fetchone()
-            await cursor.close()
-            state = self._row_to_state(row, convo_id)
-            result = MemoryHistoryStore._apply_state_update(
-                state,
-                route_endpoint=route_endpoint,
-                reasoning_effort=reasoning_effort,
-                valid_route_endpoints=valid_route_endpoints,
-                clear_route=clear_route,
-            )
-            if result.get("conflict"):
-                await conn.rollback()
-                return result
+        async with self._write_lock:
+            await self._begin_immediate(conn)
+            try:
+                cursor = await conn.execute(
+                    """
+                    SELECT convo_id, route_endpoint, reasoning_effort, slots_json, updated_at
+                    FROM conversation_state
+                    WHERE convo_id = ?
+                    """,
+                    (convo_id,),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                state = self._row_to_state(row, convo_id)
+                result = MemoryHistoryStore._apply_state_update(
+                    state,
+                    route_endpoint=route_endpoint,
+                    reasoning_effort=reasoning_effort,
+                    valid_route_endpoints=valid_route_endpoints,
+                    clear_route=clear_route,
+                )
+                if result.get("conflict"):
+                    await conn.rollback()
+                    return result
 
-            await self._write_state(conn, result["state"])
-            await conn.commit()
-            return result
-        except Exception:
-            await conn.rollback()
-            raise
+                await self._write_state(conn, result["state"])
+                await conn.commit()
+                return result
+            except BaseException:
+                await conn.rollback()
+                raise
 
     async def set_conversation_slot(
         self, convo_id: str, endpoint: str, slot_id: int
     ) -> Dict[str, object]:
         conn = self._require_connection()
-        await conn.execute("BEGIN IMMEDIATE")
-        try:
-            cursor = await conn.execute(
-                """
-                SELECT convo_id, route_endpoint, reasoning_effort, slots_json, updated_at
-                FROM conversation_state
-                WHERE convo_id = ?
-                """,
-                (convo_id,),
-            )
-            row = await cursor.fetchone()
-            await cursor.close()
-            state = self._row_to_state(row, convo_id)
-            slots = dict(state.get("slots") or {})
-            slots[endpoint] = int(slot_id)
-            state["slots"] = slots
-            state["updated_at"] = _utc_now()
-            await self._write_state(conn, state)
-            await conn.commit()
-            return state
-        except Exception:
+        async with self._write_lock:
+            await self._begin_immediate(conn)
+            try:
+                cursor = await conn.execute(
+                    """
+                    SELECT convo_id, route_endpoint, reasoning_effort, slots_json, updated_at
+                    FROM conversation_state
+                    WHERE convo_id = ?
+                    """,
+                    (convo_id,),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                state = self._row_to_state(row, convo_id)
+                slots = dict(state.get("slots") or {})
+                slots[endpoint] = int(slot_id)
+                state["slots"] = slots
+                state["updated_at"] = _utc_now()
+                await self._write_state(conn, state)
+                await conn.commit()
+                return state
+            except BaseException:
+                await conn.rollback()
+                raise
+
+    async def _begin_immediate(self, conn: aiosqlite.Connection) -> None:
+        if conn.in_transaction:
             await conn.rollback()
-            raise
+        await conn.execute("BEGIN IMMEDIATE")
 
     async def _write_state(
         self, conn: aiosqlite.Connection, state: Dict[str, object]

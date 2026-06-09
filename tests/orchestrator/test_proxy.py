@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from src.logging_config import LOG_DIR_ENV
 from src.orchestrator import proxy as proxy_module
 from src.orchestrator.history_store import MemoryHistoryStore
 from src.orchestrator.proxy import RequestProcessor, app
@@ -118,7 +119,10 @@ class TestEndpointRouting:
             result = RequestProcessor.get_endpoint_url("/test-endpoint/some/subpath")
             assert result == "https://test.example.com/v1/chat/completions"
 
-    def test_custom_endpoint_non_stream_includes_trace_header(self, client):
+    def test_custom_endpoint_non_stream_includes_trace_header(
+        self, client, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv(LOG_DIR_ENV, str(tmp_path))
         mock_endpoints = [{"name": "test-endpoint", "url": "https://test.example.com"}]
         payload = {"choices": [{"message": {"content": "Hello"}}]}
 
@@ -138,8 +142,22 @@ class TestEndpointRouting:
         assert response.status_code == 200
         assert trace_id is not None
         assert len(trace_id) == 32
+        trace_events = [
+            json.loads(line)
+            for line in (tmp_path / "traces.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        assert len(trace_events) == 1
+        assert trace_events[0]["phase"] == "completed"
+        assert trace_events[0]["request_id"] == trace_id
+        assert trace_events[0]["endpoint"] == "test-endpoint"
+        assert trace_events[0]["status_code"] == 200
 
-    def test_custom_endpoint_stream_includes_trace_header(self, client):
+    def test_custom_endpoint_stream_includes_trace_header(
+        self, client, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv(LOG_DIR_ENV, str(tmp_path))
         mock_endpoints = [{"name": "test-endpoint", "url": "https://test.example.com"}]
 
         with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
@@ -163,6 +181,17 @@ class TestEndpointRouting:
         assert response.status_code == 200
         assert trace_id is not None
         assert len(trace_id) == 32
+        trace_events = [
+            json.loads(line)
+            for line in (tmp_path / "traces.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        assert len(trace_events) == 2
+        assert [event["phase"] for event in trace_events] == ["started", "completed"]
+        assert {event["request_id"] for event in trace_events} == {trace_id}
+        assert {event["endpoint"] for event in trace_events} == {"test-endpoint"}
+        assert {event["status_code"] for event in trace_events} == {200}
 
 
 class TestHeaderPreparation:

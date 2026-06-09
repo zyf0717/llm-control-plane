@@ -1,4 +1,6 @@
 from src.dashboard.app_server import (
+    _format_trace_summary,
+    _format_trace_timestamp,
     build_search_failure_state,
     build_search_preface,
     build_search_planner_context,
@@ -26,6 +28,33 @@ def test_build_search_planner_context_includes_prompt_history_and_current_reques
     assert "Conversation history:\nuser: Earlier question" in context
     assert "assistant: Earlier answer" in context
     assert "Current user request:\nCurrent question" in context
+
+
+def test_format_trace_timestamp_displays_gmt_plus_8():
+    assert (
+        _format_trace_timestamp("2026-06-09T02:16:33.957094+00:00")
+        == "2026-06-09 10:16:33 GMT+8"
+    )
+    assert _format_trace_timestamp("bad-time") == "bad-time"
+
+
+def test_format_trace_summary_uses_display_timezone():
+    summary = _format_trace_summary(
+        {
+            "timestamp": "2026-06-09T02:16:33.957094+00:00",
+            "phase": "started",
+            "status_code": 200,
+            "endpoint": "gmktec-evo-x2",
+            "convo_id": "abc123",
+            "request_id": "trace123",
+            "timing": {"elapsed_ms": 42},
+        }
+    )
+
+    assert summary == (
+        "2026-06-09 10:16:33 GMT+8 | started | 200 | "
+        "gmktec-evo-x2 | abc123 | trace123 | 42ms"
+    )
 
 
 def test_build_search_success_state_normalizes_proxy_payload():

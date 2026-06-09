@@ -216,6 +216,9 @@ cron.sh
 # nohup
 nohup.out
 
+# runtime logs
+logs/
+
 # config
 config.yaml
 

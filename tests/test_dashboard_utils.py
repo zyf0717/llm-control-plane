@@ -1,3 +1,4 @@
+import json
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -38,6 +39,65 @@ rag:
         },
     ]
     assert default_endpoint == "http://localhost:8100/api/retrieve/context"
+
+
+def test_read_trace_events_handles_missing_file(tmp_path):
+    assert utils.read_trace_events(trace_path=tmp_path / "missing.jsonl") == []
+
+
+def test_read_trace_events_filters_and_returns_newest_first(tmp_path):
+    trace_path = tmp_path / "traces.jsonl"
+    events = [
+        {
+            "timestamp": "2026-06-09T00:00:00+00:00",
+            "request_id": "trace-old",
+            "convo_id": "convo-a",
+            "endpoint": "primary",
+            "status_code": 200,
+        },
+        {
+            "timestamp": "2026-06-09T00:01:00+00:00",
+            "request_id": "trace-mid",
+            "convo_id": "convo-b",
+            "endpoint": "secondary",
+            "status_code": 200,
+        },
+        {
+            "timestamp": "2026-06-09T00:02:00+00:00",
+            "request_id": "trace-new",
+            "convo_id": "convo-a",
+            "endpoint": "primary",
+            "status_code": 500,
+        },
+    ]
+    trace_path.write_text(
+        "\n".join(
+            [
+                json.dumps(events[0]),
+                "{bad-json",
+                json.dumps(events[1]),
+                json.dumps(events[2]),
+                '{"partial":',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert utils.read_trace_events(trace_path=trace_path, max_events=2) == [
+        events[2],
+        events[1],
+    ]
+    assert utils.read_trace_events(
+        trace_path=trace_path,
+        convo_id="convo-a",
+        endpoint="primary",
+        max_events=10,
+    ) == [events[2], events[0]]
+    assert utils.read_trace_events(
+        trace_path=trace_path,
+        trace_id="mid",
+        max_events=10,
+    ) == [events[1]]
 
 
 def test_load_rag_endpoint_config_falls_back_to_default(tmp_path, monkeypatch):

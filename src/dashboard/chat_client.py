@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import time
 from typing import Any, AsyncGenerator, Callable, Dict, Optional
@@ -14,6 +15,7 @@ PROXY_BASE_URL = os.getenv("PROXY_BASE_URL")
 
 from .cache_telemetry import normalize_cache_telemetry
 
+logger = logging.getLogger(__name__)
 MetadataCallback = Callable[[Optional[Dict[str, Any]]], None]
 StateCallback = Callable[[str], None]
 RuntimeCallback = Callable[[float], None]
@@ -285,12 +287,11 @@ async def stream_chat_response(
     except httpx.RequestError as exc:
         yield f"Request Error: {str(exc)}"
     except Exception as exc:
-        print(
-            f"Unexpected error in stream_chat_response: {type(exc).__name__}: {str(exc)}"
+        logger.exception(
+            "Unexpected error in stream_chat_response: %s: %s",
+            type(exc).__name__,
+            exc,
         )
-        import traceback
-
-        traceback.print_exc()
         yield f"Error: {str(exc)}"
     finally:
         if on_runtime:

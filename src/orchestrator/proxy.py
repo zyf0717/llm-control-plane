@@ -8,6 +8,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
+from src.logging_config import configure_logging
 from src.search import (
     EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER,
     SearchArgs,
@@ -34,6 +35,7 @@ from .utils import (
 
 # Configuration
 load_dotenv()
+configure_logging()
 config = load_config(CONFIG_FILE)
 endpoints = config.get("endpoints", [])
 rag_config = config.get("rag", {})
@@ -43,8 +45,6 @@ search_service = build_search_router(
     planner_headers=HeaderManager.create_auth_headers(),
 )
 
-# Logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 # FastAPI app
@@ -553,18 +553,33 @@ class ProxyHandler:
                                 break
 
             except httpx.HTTPStatusError as e:
+                if trace:
+                    trace.status_code = e.response.status_code
+                    trace.error_class = type(e).__name__
                 yield create_error_sse_message(
                     "error",
                     status=e.response.status_code,
                     detail=f"HTTP {e.response.status_code}",
                 )
             except Exception as e:
+                if trace:
+                    trace.status_code = 500
+                    trace.error_class = type(e).__name__
                 yield create_error_sse_message("error", detail=str(e))
             finally:
                 try:
                     await RequestProcessor.update_history(convo_id, acc.text())
                 except Exception:
                     pass
+                if trace:
+                    try:
+                        phase = "failed" if trace.error_class else "completed"
+                        trace.emit(
+                            status_code=trace.status_code or 200,
+                            phase=phase,
+                        )
+                    except Exception:
+                        logger.exception("Failed to emit request trace")
 
         response_headers = HeaderManager.create_response_headers(
             convo_id=convo_id, for_streaming=True
@@ -573,6 +588,10 @@ class ProxyHandler:
             response_headers.update(extra_headers)
         if trace:
             trace.apply_headers(response_headers)
+            try:
+                trace.emit(status_code=200, phase="started")
+            except Exception:
+                logger.exception("Failed to emit request trace")
 
         return StreamingResponse(
             stream(), media_type="text/event-stream", headers=response_headers
@@ -590,41 +609,56 @@ class ProxyHandler:
         """Handle non-streaming response."""
         headers = HeaderManager.prepare_upstream_headers(request)
 
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(target_url, headers=headers, json=body)
-            resp.raise_for_status()
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.post(target_url, headers=headers, json=body)
+                resp.raise_for_status()
 
-            # Process response and extract reasoning
-            try:
-                resp_json = resp.json()
-                processed_resp = process_non_stream_response(resp_json)
+                # Process response and extract reasoning
+                try:
+                    resp_json = resp.json()
+                    processed_resp = process_non_stream_response(resp_json)
 
-                # Extract assistant text for history (from processed response)
-                assistant_text = extract_assistant_text(processed_resp)
+                    # Extract assistant text for history (from processed response)
+                    assistant_text = extract_assistant_text(processed_resp)
 
-                if "model" in processed_resp:
-                    logger.info(f"Response model: {processed_resp['model']}")
+                    if "model" in processed_resp:
+                        logger.info(f"Response model: {processed_resp['model']}")
 
-                # Update response content with processed version
-                resp_content = json.dumps(processed_resp).encode("utf-8")
+                    # Update response content with processed version
+                    resp_content = json.dumps(processed_resp).encode("utf-8")
 
-            except Exception:
-                logger.info(f"Response: {resp.text[-500:]}")
-                assistant_text = None
-                resp_content = resp.content
+                except Exception:
+                    logger.info(f"Response: {resp.text[-500:]}")
+                    assistant_text = None
+                    resp_content = resp.content
 
-            await RequestProcessor.update_history(convo_id, assistant_text)
+                await RequestProcessor.update_history(convo_id, assistant_text)
 
-            response_headers = HeaderManager.create_response_headers(
-                dict(resp.headers), convo_id
-            )
-            if extra_headers:
-                response_headers.update(extra_headers)
+                response_headers = HeaderManager.create_response_headers(
+                    dict(resp.headers), convo_id
+                )
+                if extra_headers:
+                    response_headers.update(extra_headers)
+                if trace:
+                    trace.apply_headers(response_headers)
+                    trace.emit(status_code=resp.status_code)
+
+                return Response(resp_content, resp.status_code, response_headers)
+        except httpx.HTTPStatusError as exc:
             if trace:
-                trace.mark_elapsed()
-                trace.apply_headers(response_headers)
-
-            return Response(resp_content, resp.status_code, response_headers)
+                try:
+                    trace.emit(status_code=exc.response.status_code, error=exc)
+                except Exception:
+                    logger.exception("Failed to emit request trace")
+            raise
+        except Exception as exc:
+            if trace:
+                try:
+                    trace.emit(status_code=500, error=exc)
+                except Exception:
+                    logger.exception("Failed to emit request trace")
+            raise
 
 
 ##########  Core Proxy Function ##########
@@ -696,6 +730,10 @@ async def proxy_request(
 
     target_url = RequestProcessor.get_endpoint_url(endpoint_key)
     if not target_url:
+        try:
+            trace.emit(status_code=404)
+        except Exception:
+            logger.exception("Failed to emit request trace")
         raise HTTPException(status_code=404, detail=f"Endpoint not found: {path}")
 
     endpoint_config = RequestProcessor.get_endpoint_config(endpoint_key)
@@ -711,6 +749,7 @@ async def proxy_request(
         combined_headers["X-Route-Pin-Stale"] = "true"
     combined_headers.update(slot_headers)
     trace.capture_headers(combined_headers)
+    trace.capture_search_from_body(body)
 
     logger.info(
         f"Proxying {request.method} {request.url.path} to {target_url} (streaming: {is_streaming})"

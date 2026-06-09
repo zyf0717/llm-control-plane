@@ -1,5 +1,7 @@
+import json
 import logging
 import os
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -7,9 +9,11 @@ from typing import Any
 import httpx
 import yaml
 from dotenv import load_dotenv
+from src.logging_config import get_trace_log_path
 
 # Load .env from project root (two levels up from this file)
 load_dotenv()
+logger = logging.getLogger(__name__)
 PROXY_BASE_URL = os.getenv("PROXY_BASE_URL")
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
 DEFAULT_RAG_ENDPOINT = "localhost:8100"
@@ -36,7 +40,7 @@ async def fetch_models_data():
             response.raise_for_status()
             return response.json()
     except Exception as e:
-        print(f"Failed to fetch models data: {e}")
+        logger.warning("Failed to fetch models data: %s", e)
         return {}
 
 
@@ -45,10 +49,10 @@ def load_rag_endpoint_config():
     try:
         config = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
     except FileNotFoundError:
-        logging.warning("config.yaml not found; using default RAG endpoint")
+        logger.warning("config.yaml not found; using default RAG endpoint")
         config = {}
     except yaml.YAMLError as e:
-        logging.warning("Failed to parse config.yaml for RAG endpoints: %s", e)
+        logger.warning("Failed to parse config.yaml for RAG endpoints: %s", e)
         config = {}
 
     rag_config = config.get("rag", {}) if isinstance(config, dict) else {}
@@ -111,7 +115,7 @@ async def fetch_available_rag_endpoints():
                     response = await client.get(health_url)
                     response.raise_for_status()
                 except Exception as e:
-                    logging.warning("RAG health check failed for %s: %s", health_url, e)
+                    logger.warning("RAG health check failed for %s: %s", health_url, e)
 
             retrieve_url = endpoint["retrieve_url"]
             label = endpoint["name"]
@@ -138,10 +142,10 @@ def load_search_provider_config() -> list[dict[str, Any]]:
     try:
         config = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
     except FileNotFoundError:
-        logging.warning("config.yaml not found; search providers disabled")
+        logger.warning("config.yaml not found; search providers disabled")
         return []
     except yaml.YAMLError as e:
-        logging.warning("Failed to parse config.yaml for search providers: %s", e)
+        logger.warning("Failed to parse config.yaml for search providers: %s", e)
         return []
 
     if not isinstance(config, dict):
@@ -270,11 +274,11 @@ async def fetch_available_endpoints():
             ],
         }
 
-        logging.info(f"Fetched endpoints: {endpoints}")
-        logging.info(f"Raw data: {data}")
+        logger.info("Fetched endpoints: %s", endpoints)
+        logger.debug("Raw model data: %s", data)
         return endpoints, data
     except Exception as e:
-        logging.error(f"Failed to fetch endpoints: {e}")
+        logger.error("Failed to fetch endpoints: %s", e)
         return {}, {}
 
 
@@ -325,7 +329,7 @@ async def fetch_convo_history(convo_id):
             response.raise_for_status()
             return response.json()
     except Exception as e:
-        print(f"Failed to fetch conversation history: {e}")
+        logger.warning("Failed to fetch conversation history: %s", e)
         return {}
 
 
@@ -370,7 +374,7 @@ async def fetch_conversation_summaries():
             response.raise_for_status()
             data = response.json()
     except Exception as e:
-        print(f"Failed to fetch conversation summaries: {e}")
+        logger.warning("Failed to fetch conversation summaries: %s", e)
         return []
 
     if not isinstance(data, list):
@@ -390,3 +394,55 @@ async def fetch_conversation_summaries():
         key=lambda conversation: str(conversation.get("last_updated") or ""),
         reverse=True,
     )
+
+
+def _matches_trace_filter(value: Any, expected: str) -> bool:
+    needle = str(expected or "").strip().lower()
+    if not needle:
+        return True
+    return needle in str(value or "").strip().lower()
+
+
+def read_trace_events(
+    *,
+    convo_id: str = "",
+    trace_id: str = "",
+    endpoint: str = "",
+    max_events: int = 200,
+    trace_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Read newest matching trace events from the JSONL trace log."""
+    try:
+        limit = max(1, int(max_events))
+    except (TypeError, ValueError):
+        limit = 200
+
+    path = trace_path or get_trace_log_path()
+    if not path.exists():
+        return []
+
+    events: deque[dict[str, Any]] = deque(maxlen=limit)
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                if not _matches_trace_filter(event.get("convo_id"), convo_id):
+                    continue
+                if not _matches_trace_filter(event.get("request_id"), trace_id):
+                    continue
+                if not _matches_trace_filter(event.get("endpoint"), endpoint):
+                    continue
+                events.append(event)
+    except OSError as exc:
+        logger.warning("Failed to read trace log %s: %s", path, exc)
+        return []
+
+    return list(reversed(events))

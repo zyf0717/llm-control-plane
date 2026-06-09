@@ -155,3 +155,75 @@ class TestConversationState:
             for result in [first, second]
             if result["state"].get("route_endpoint") == final_state["route_endpoint"]
         ) >= 1
+
+    @pytest.mark.asyncio
+    async def test_sqlite_state_concurrent_first_writes_do_not_overlap_transactions(
+        self, tmp_path
+    ):
+        db_path = tmp_path / "history.sqlite3"
+        store = SQLiteHistoryStore(db_path)
+        await store.initialize()
+
+        try:
+            first, second = await asyncio.gather(
+                store.update_conversation_state(
+                    "session-concurrent",
+                    route_endpoint="primary",
+                    reasoning_effort="medium",
+                    valid_route_endpoints=["primary", "secondary"],
+                ),
+                store.update_conversation_state(
+                    "session-concurrent",
+                    route_endpoint="secondary",
+                    reasoning_effort="medium",
+                    valid_route_endpoints=["primary", "secondary"],
+                ),
+            )
+
+            final_state = await store.get_conversation_state("session-concurrent")
+            assert final_state["route_endpoint"] in {"primary", "secondary"}
+            assert final_state["reasoning_effort"] == "medium"
+            assert sum(1 for result in [first, second] if result["conflict"]) == 1
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_sqlite_write_cancellation_rolls_back_open_transaction(
+        self, tmp_path, monkeypatch
+    ):
+        db_path = tmp_path / "history.sqlite3"
+        store = SQLiteHistoryStore(db_path)
+        await store.initialize()
+
+        try:
+            assert store._conn is not None
+            original_commit = store._conn.commit
+            calls = 0
+
+            async def flaky_commit():
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise asyncio.CancelledError()
+                await original_commit()
+
+            monkeypatch.setattr(store._conn, "commit", flaky_commit)
+
+            with pytest.raises(asyncio.CancelledError):
+                await store.append_messages(
+                    "session-cancelled",
+                    [{"role": "user", "content": "first"}],
+                )
+
+            result = await store.update_conversation_state(
+                "session-cancelled",
+                route_endpoint="primary",
+                reasoning_effort="medium",
+                valid_route_endpoints=["primary"],
+            )
+
+            assert result["conflict"] is False
+            assert result["state"]["route_endpoint"] == "primary"
+            assert await store.get_conversation("session-cancelled") is None
+        finally:
+            await store.close()

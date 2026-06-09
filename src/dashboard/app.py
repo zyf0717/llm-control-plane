@@ -1,5 +1,9 @@
 from shiny import App
 
+from src.logging_config import configure_logging
+
+configure_logging()
+
 from .app_server import server
 from .app_ui import app_ui
 

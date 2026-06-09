@@ -1,6 +1,7 @@
+import json
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import shinyswatch
@@ -29,6 +30,7 @@ from .prompt_state import (
     normalize_system_prompt,
 )
 from .utils import (
+    HISTORY_DISPLAY_TIMEZONE,
     create_history_select_choices,
     create_endpoint_display_choices,
     fetch_conversation_summaries,
@@ -39,10 +41,12 @@ from .utils import (
     fetch_search_results,
     format_search_provider_label,
     find_model_by_endpoint,
+    read_trace_events,
 )
 
 
 AUTO_ENDPOINT_KEY = "Auto"
+TRACE_DISPLAY_TIMEZONE_LABEL = "GMT+8"
 
 
 def build_search_success_state(search_response: Dict[str, Any]) -> Dict[str, Any]:
@@ -288,6 +292,42 @@ def pin_auto_route_decision(
     return pins
 
 
+def _format_trace_summary(event: Dict[str, Any]) -> str:
+    timestamp = _format_trace_timestamp(event.get("timestamp"))
+    trace_id = str(event.get("request_id") or "unknown-trace")
+    endpoint = str(event.get("endpoint") or "unknown-endpoint")
+    phase = str(event.get("phase") or "completed")
+    status = event.get("status_code")
+    convo_id = str(event.get("convo_id") or "no-convo")
+    elapsed = ""
+    timing = event.get("timing")
+    if isinstance(timing, dict) and timing.get("elapsed_ms") is not None:
+        elapsed = f" | {timing['elapsed_ms']}ms"
+    status_label = status if status is not None else "?"
+    return (
+        f"{timestamp} | {phase} | {status_label} | "
+        f"{endpoint} | {convo_id} | {trace_id}{elapsed}"
+    )
+
+
+def _format_trace_timestamp(raw_timestamp: Any) -> str:
+    timestamp = str(raw_timestamp or "").strip()
+    if not timestamp:
+        return f"unknown-time {TRACE_DISPLAY_TIMEZONE_LABEL}"
+
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return timestamp
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return (
+        parsed.astimezone(HISTORY_DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+        + f" {TRACE_DISPLAY_TIMEZONE_LABEL}"
+    )
+
+
 def server(input, output, session):
     available_endpoints = reactive.Value({})
     endpoint_info = reactive.Value({})
@@ -303,6 +343,7 @@ def server(input, output, session):
     system_prompt_seed = reactive.Value("")
     history_refresh_trigger = reactive.Value(0)
     history_selected_convo_id = reactive.Value("")
+    trace_snapshot = reactive.Value(None)
     auto_route_pins = reactive.Value({})
 
     def current_active_convo_id() -> str:
@@ -859,6 +900,23 @@ def server(input, output, session):
         history_refresh_trigger.set(history_refresh_trigger.get() + 1)
 
     @reactive.Effect
+    @reactive.event(input.refreshTraces)
+    def _manual_trace_refresh():
+        with reactive.isolate():
+            events = read_trace_events(
+                convo_id=str(input.traceConvoFilter() or ""),
+                trace_id=str(input.traceIDFilter() or ""),
+                endpoint=str(input.traceEndpointFilter() or ""),
+                max_events=int(input.traceMaxRows() or 200),
+            )
+        trace_snapshot.set(
+            {
+                "events": events,
+                "refreshed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
+
+    @reactive.Effect
     @reactive.event(input.historyConvoSelector)
     def _sync_history_selector_state():
         history_selected_convo_id.set(str(input.historyConvoSelector() or "").strip())
@@ -903,4 +961,38 @@ def server(input, output, session):
                     "overflow-wrap: anywhere; margin-bottom: 0;"
                 ),
             ),
+        )
+
+    @render.ui
+    def traceBox():
+        snapshot = trace_snapshot.get()
+        if not isinstance(snapshot, dict):
+            return ui.card(
+                ui.markdown("**Trace snapshot not loaded**\n\nClick Refresh to read traces.")
+            )
+
+        events = snapshot.get("events")
+        if not isinstance(events, list):
+            events = []
+        timestamp = str(snapshot.get("refreshed_at") or "unknown time")
+        if not events:
+            return ui.card(
+                ui.markdown(f"**No trace events found** *(refreshed at {timestamp})*")
+            )
+
+        panels = [
+            ui.accordion_panel(
+                _format_trace_summary(event),
+                ui.tags.pre(
+                    json.dumps(event, indent=2, ensure_ascii=False),
+                    class_="dashboard-trace-json",
+                ),
+            )
+            for event in events
+        ]
+        return ui.card(
+            ui.markdown(
+                f"**Trace Events** *(refreshed at {timestamp}; {len(events)} shown)*"
+            ),
+            ui.accordion(*panels, multiple=True, open=False),
         )
