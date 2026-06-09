@@ -9,6 +9,7 @@ from src.dashboard.app_server import (
     build_search_turn_messages,
     conversation_control_change_reasons,
     merge_run_info,
+    normalize_reasoning_effort,
     resolve_endpoint_display_selection,
 )
 from src.search.safety import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER
@@ -319,6 +320,16 @@ def test_resolve_endpoint_display_selection_falls_back_when_endpoint_disappears(
     )
 
 
+def test_normalize_reasoning_effort_defaults_missing_to_requested_default():
+    assert normalize_reasoning_effort(None) == "none"
+    assert normalize_reasoning_effort(None, default="medium") == "medium"
+    assert normalize_reasoning_effort("", default="medium") == "medium"
+
+
+def test_normalize_reasoning_effort_preserves_explicit_none():
+    assert normalize_reasoning_effort("none", default="medium") == "none"
+
+
 def test_conversation_control_change_reasons_detects_mid_convo_prompt_change():
     state = {
         "started": True,
@@ -359,6 +370,22 @@ def test_conversation_control_change_reasons_ignores_unstarted_convo():
             state,
             current_prompt="Be precise.",
             current_reasoning="high",
+        )
+        == []
+    )
+
+
+def test_conversation_control_change_reasons_defaults_missing_reasoning_to_medium():
+    state = {
+        "started": True,
+        "committed_prompt": "Be concise.",
+    }
+
+    assert (
+        conversation_control_change_reasons(
+            state,
+            current_prompt="Be concise.",
+            current_reasoning="medium",
         )
         == []
     )

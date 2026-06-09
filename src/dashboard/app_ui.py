@@ -34,6 +34,16 @@ app_ui = ui.page_fluid(
             overflow-y: auto;
         }
 
+        .dashboard-endpoint-refresh {
+            width: 2.375rem;
+            height: 2.375rem;
+            min-width: 2.375rem;
+            padding: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
         .dashboard-trace-json {
             max-height: 28rem;
             overflow: auto;
@@ -64,19 +74,29 @@ app_ui = ui.page_fluid(
                 });
                 """),
                     ui.layout_columns(
-                        ui.input_select("endpoint", "Machine Endpoint", choices=[]),
+                        ui.input_select(
+                            "endpoint",
+                            "Machine Endpoint",
+                            choices=[],
+                            width="100%",
+                        ),
                         ui.div(
-                            ui.input_action_button("refreshEndpoints", "🔄"),
+                            ui.input_action_button(
+                                "refreshEndpoints",
+                                "🔄",
+                                class_="dashboard-endpoint-refresh",
+                            ),
                             style="display: flex; align-items: flex-end; height: 100%;",
                         ),
-                        col_widths=[9, 3],
+                        col_widths=[10, 2],
                     ),
                     ui.input_switch("stream", "Streaming", True),
-                    ui.input_switch("autoScroll", "Follow output", True),
+                    ui.input_switch("autoScroll", "Auto-scroll", True),
+                    ui.input_switch("outputJSON", "JSON output", False),
                     ui.input_switch("outputReasoning", "Show reasoning", True),
                     ui.input_select(
                         "reasoningEffort",
-                        "Reasoning",
+                        "Reasoning Level",
                         choices={
                             "none": "None",
                             "low": "Low",
@@ -87,11 +107,9 @@ app_ui = ui.page_fluid(
                     ),
                     ui.output_ui("system_prompt_ui"),
                     ui.hr(),
-                    ui.input_switch("outputJSON", "JSON output", False),
-                    ui.hr(),
                     shinyswatch.theme_picker_ui(),
                     ui.input_action_button("logout", "Logout"),
-                    width="375px",
+                    width="320px",
                 ),
                 ui.layout_columns(
                     ui.chat_ui(

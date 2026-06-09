@@ -45,7 +45,6 @@ from .utils import (
     read_trace_events,
 )
 
-
 TRACE_DISPLAY_TIMEZONE_LABEL = "GMT+8"
 
 
@@ -138,9 +137,7 @@ def _format_search_context(search_state: Dict[str, Any]) -> Optional[str]:
     if not isinstance(wrapped_results, str) or not wrapped_results.strip():
         return None
 
-    return "\n".join(
-        [EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER, wrapped_results.strip()]
-    )
+    return "\n".join([EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER, wrapped_results.strip()])
 
 
 def build_search_turn_messages(
@@ -260,9 +257,16 @@ def resolve_endpoint_display_selection(
     return next(iter(choices), None)
 
 
-def normalize_reasoning_effort(reasoning_effort: Optional[str]) -> str:
+def normalize_reasoning_effort(
+    reasoning_effort: Optional[str],
+    *,
+    default: str = "none",
+) -> str:
     normalized = str(reasoning_effort or "").strip().lower()
-    return normalized if normalized in {"none", "low", "medium", "high"} else "none"
+    valid_efforts = {"none", "low", "medium", "high"}
+    if normalized in valid_efforts:
+        return normalized
+    return default if default in valid_efforts else "none"
 
 
 def conversation_control_change_reasons(
@@ -284,8 +288,14 @@ def conversation_control_change_reasons(
     if normalize_system_prompt(current_prompt) != committed_prompt:
         reasons.append("system prompt")
 
-    committed_reasoning = normalize_reasoning_effort(state.get("reasoning_effort"))
-    if normalize_reasoning_effort(current_reasoning) != committed_reasoning:
+    committed_reasoning = normalize_reasoning_effort(
+        state.get("reasoning_effort"),
+        default="medium",
+    )
+    if (
+        normalize_reasoning_effort(current_reasoning, default="medium")
+        != committed_reasoning
+    ):
         reasons.append("reasoning")
 
     return reasons
@@ -397,7 +407,10 @@ def server(input, output, session):
         if committed_prompt is not None:
             state["committed_prompt"] = normalize_system_prompt(committed_prompt)
         if reasoning_effort is not None:
-            state["reasoning_effort"] = normalize_reasoning_effort(reasoning_effort)
+            state["reasoning_effort"] = normalize_reasoning_effort(
+                reasoning_effort,
+                default="medium",
+            )
         if started is not None:
             state["started"] = bool(started)
         if locked is not None:
@@ -410,7 +423,10 @@ def server(input, output, session):
 
     def apply_system_prompt_view(state: Dict[str, Any]) -> None:
         system_prompt_seed.set(str(state.get("prompt") or ""))
-        reasoning_effort = normalize_reasoning_effort(state.get("reasoning_effort"))
+        reasoning_effort = normalize_reasoning_effort(
+            state.get("reasoning_effort"),
+            default="medium",
+        )
         ui.update_select("reasoningEffort", selected=reasoning_effort, session=session)
 
     async def load_system_prompt_state(convo_id: str) -> Dict[str, Any]:
@@ -428,7 +444,8 @@ def server(input, output, session):
         convo_state = await fetch_convo_state(convo_id)
         persisted_reasoning = str(convo_state.get("reasoning_effort") or "").strip()
         reasoning_effort = normalize_reasoning_effort(
-            persisted_reasoning or input.reasoningEffort()
+            persisted_reasoning or input.reasoningEffort(),
+            default="medium",
         )
         if isinstance(convo_history, list) and convo_history:
             restored_prompt = extract_first_system_prompt(convo_history)
@@ -598,7 +615,7 @@ def server(input, output, session):
             value=prompt,
             placeholder="System prompt",
             width="100%",
-            rows=8,
+            rows=5,
         )
 
     @reactive.Effect
@@ -853,7 +870,10 @@ def server(input, output, session):
             if input.systemPrompt() is not None
             else prompt_state.get("prompt")
         )
-        current_reasoning = normalize_reasoning_effort(input.reasoningEffort())
+        current_reasoning = normalize_reasoning_effort(
+            input.reasoningEffort(),
+            default="medium",
+        )
         forked_history: list[dict[str, Any]] = []
         fork_reasons = conversation_control_change_reasons(
             prompt_state,
@@ -1046,7 +1066,9 @@ def server(input, output, session):
         snapshot = trace_snapshot.get()
         if not isinstance(snapshot, dict):
             return ui.card(
-                ui.markdown("**Trace snapshot not loaded**\n\nClick Refresh to read traces.")
+                ui.markdown(
+                    "**Trace snapshot not loaded**\n\nClick Refresh to read traces."
+                )
             )
 
         events = snapshot.get("events")
