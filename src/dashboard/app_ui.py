@@ -139,7 +139,7 @@ app_ui = ui.page_fluid(
                         input_action_row(
                             ui.input_text(
                                 "convoID",
-                                "",
+                                "Conversation ID",
                                 placeholder="Convo ID",
                                 width="100%",
                             ),
