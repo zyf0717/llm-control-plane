@@ -1,3 +1,4 @@
+import asyncio
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -123,3 +124,34 @@ class TestSQLiteHistoryStore:
             assert await store.get_conversation("missing") is None
         finally:
             await store.close()
+
+
+class TestConversationState:
+    @pytest.mark.asyncio
+    async def test_memory_state_concurrent_first_writes_do_not_create_conflicting_pins(self):
+        store = MemoryHistoryStore()
+
+        first, second = await asyncio.gather(
+            store.update_conversation_state(
+                "session-concurrent",
+                route_endpoint="primary",
+                reasoning_effort="high",
+                valid_route_endpoints=["primary", "secondary"],
+            ),
+            store.update_conversation_state(
+                "session-concurrent",
+                route_endpoint="secondary",
+                reasoning_effort="high",
+                valid_route_endpoints=["primary", "secondary"],
+            ),
+        )
+
+        final_state = await store.get_conversation_state("session-concurrent")
+        assert final_state["route_endpoint"] in {"primary", "secondary"}
+        assert final_state["reasoning_effort"] == "high"
+        assert sum(1 for result in [first, second] if result["conflict"]) == 1
+        assert sum(
+            1
+            for result in [first, second]
+            if result["state"].get("route_endpoint") == final_state["route_endpoint"]
+        ) >= 1

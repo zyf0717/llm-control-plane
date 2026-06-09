@@ -23,7 +23,7 @@ curl -X POST http://localhost:12340/my-server \
 
 ## Smart Routing
 
-Smart routing uses the latest user message to classify workload and select a reachable endpoint. It is intended for isolated, non-agentic tasks where the request itself contains all needed context. Without `X-Convo-ID`, the proxy does not persist conversation history. For multi-turn or agentic flows, call `/smart` once, persist `X-Route-Decision`, and send follow-up turns to that concrete endpoint.
+Smart routing uses the latest user message to classify workload and select a reachable endpoint. Without `X-Convo-ID`, routing remains stateless. With `X-Convo-ID`, the proxy pins the first route decision server-side and reuses it on later `/smart` calls unless the configured endpoint is removed.
 
 ```text
 POST /smart
@@ -49,6 +49,8 @@ curl -X POST http://localhost:12340/smart \
 | `X-Route-Reason` | Human-readable routing reason |
 | `X-Route-Strategy` | Classified workload type |
 | `X-Route-GPU` / `X-Route-VRAM` / `X-Route-SOC` / `X-Route-CPU` / `X-Route-RAM` | Selected endpoint hardware metadata |
+| `X-Route-Pinned` | `true` when an existing `X-Convo-ID` route pin was reused |
+| `X-Route-Pin-Stale` | `true` when a previous route pin referenced an endpoint no longer in config and smart routing replaced it |
 
 ## Request Trace
 
@@ -62,7 +64,7 @@ The trace object is intentionally in-memory only in this phase; it is not persis
 
 ## Conversation History
 
-The proxy stores conversation history in a local SQLite database (`var/history.sqlite3` by default) only when `X-Convo-ID` is supplied.
+The proxy stores conversation history and conversation metadata in local SQLite (`var/history.sqlite3` by default) only when `X-Convo-ID` is supplied. `X-Convo-ID` is the canonical cache/session key for persisted history, route pinning, reasoning effort, and optional slot affinity. Clients should send only the new turn for an existing conversation; full-history replay is rejected with `400`.
 
 Example:
 
@@ -95,7 +97,18 @@ Set:
 X-Reasoning-Effort: low | medium | high
 ```
 
-The proxy injects a system message of the form `Reasoning: {value}` and also sets `reasoning_effort` in the request body.
+The proxy pins the first valid reasoning effort per `X-Convo-ID`, injects a system message of the form `Reasoning: {value}`, and sets `reasoning_effort` in the request body. Later turns may omit the header and reuse the pinned value. Conflicting later values return `409`. Without `X-Convo-ID`, reasoning remains per-request.
+
+## Best-Effort Slot Affinity
+
+For llama.cpp endpoints, set `slot_affinity: true` on the endpoint config to let the proxy try to map `X-Convo-ID` to an upstream slot. The proxy probes `/slots?fail_on_no_slot=1`, persists the selected slot id in conversation metadata, and forwards `id_slot` plus `cache_prompt: true` when available. Slot affinity is best-effort: probe failures, non-llama upstreams, unavailable slots, or ignored `id_slot` fields do not fail the chat request.
+
+Slot response headers:
+
+| Header | Meaning |
+|---|---|
+| `X-Upstream-Slot-ID` | Slot id applied to the upstream request |
+| `X-Upstream-Slot-Status` | `affinity-applied`, `unavailable`, or `skipped` |
 
 ## RAG Control
 

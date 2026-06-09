@@ -694,6 +694,235 @@ class TestConversationHistoryEndpoint:
         ]
 
 
+class TestCanonicalConversationState:
+    @pytest.mark.asyncio
+    async def test_replay_payload_rejected_before_append(self):
+        await proxy_module.history_store.append_messages(
+            "session-replay",
+            [
+                {"role": "user", "content": "First"},
+                {"role": "assistant", "content": "Answer"},
+            ],
+        )
+        request = Mock()
+        request.headers = {"X-Convo-ID": "session-replay"}
+        request.body = AsyncMock(
+            return_value=json.dumps(
+                {
+                    "messages": [
+                        {"role": "user", "content": "First"},
+                        {"role": "assistant", "content": "Answer"},
+                        {"role": "user", "content": "Follow-up"},
+                    ]
+                }
+            ).encode("utf-8")
+        )
+
+        with patch.object(
+            RequestProcessor,
+            "_fetch_rag_message",
+            AsyncMock(return_value=(None, {})),
+        ):
+            with pytest.raises(Exception) as exc_info:
+                await RequestProcessor.prepare_request(request)
+
+        assert getattr(exc_info.value, "status_code", None) == 400
+        assert await proxy_module.history_store.get_conversation("session-replay") == [
+            {"role": "user", "content": "First"},
+            {"role": "assistant", "content": "Answer"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_ephemeral_search_and_rag_messages_do_not_create_replay_prefix(self):
+        await proxy_module.history_store.append_messages(
+            "session-ephemeral", [{"role": "user", "content": "Prior"}]
+        )
+        request = Mock()
+        request.headers = {"X-Convo-ID": "session-ephemeral"}
+        request.body = AsyncMock(
+            return_value=json.dumps(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": f"{EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER}\nturn-local search",
+                        },
+                        {
+                            "role": "user",
+                            "content": "[Retrieved reference excerpts]\nturn-local rag",
+                        },
+                        {"role": "user", "content": "Follow-up"},
+                    ]
+                }
+            ).encode("utf-8")
+        )
+
+        with patch.object(
+            RequestProcessor,
+            "_fetch_rag_message",
+            AsyncMock(return_value=(None, {})),
+        ):
+            body, _headers = await RequestProcessor.prepare_request(request)
+
+        assert body["messages"][-1] == {"role": "user", "content": "Follow-up"}
+        assert await proxy_module.history_store.get_conversation("session-ephemeral") == [
+            {"role": "user", "content": "Prior"},
+            {"role": "user", "content": "Follow-up"},
+        ]
+
+    def test_direct_endpoint_conflict_returns_409(self, client):
+        mock_endpoints = [
+            {"name": "primary", "url": "https://primary.example.com"},
+            {"name": "secondary", "url": "https://secondary.example.com"},
+        ]
+        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+            "httpx.AsyncClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = _MockUpstreamResponse(
+                {"choices": [{"message": {"content": "ok"}}]}
+            )
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            first = client.post(
+                "/primary",
+                headers={"X-Convo-ID": "session-route"},
+                json={"messages": [{"role": "user", "content": "one"}]},
+            )
+            second = client.post(
+                "/secondary",
+                headers={"X-Convo-ID": "session-route"},
+                json={"messages": [{"role": "user", "content": "two"}]},
+            )
+
+        assert first.status_code == 200
+        assert second.status_code == 409
+
+    def test_pinned_reasoning_is_reused_when_later_turn_omits_header(self, client):
+        mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
+        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+            "httpx.AsyncClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = _MockUpstreamResponse(
+                {"choices": [{"message": {"content": "ok"}}]}
+            )
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            first = client.post(
+                "/primary",
+                headers={
+                    "X-Convo-ID": "session-reasoning",
+                    "X-Reasoning-Effort": "high",
+                },
+                json={"messages": [{"role": "user", "content": "one"}]},
+            )
+            second = client.post(
+                "/primary",
+                headers={"X-Convo-ID": "session-reasoning"},
+                json={"messages": [{"role": "user", "content": "two"}]},
+            )
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert second.headers["x-reasoning-effort"] == "high"
+        second_body = mock_client.post.call_args.kwargs["json"]
+        assert second_body["reasoning_effort"] == "high"
+        assert second_body["messages"][0] == {
+            "role": "system",
+            "content": "Reasoning: high",
+        }
+
+    def test_no_convo_id_keeps_stateless_behavior(self, client):
+        mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
+        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+            "httpx.AsyncClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = _MockUpstreamResponse(
+                {"choices": [{"message": {"content": "ok"}}]}
+            )
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            response = client.post(
+                "/primary",
+                headers={"X-Reasoning-Effort": "low"},
+                json={"messages": [{"role": "user", "content": "stateless"}]},
+            )
+
+        assert response.status_code == 200
+        assert proxy_module.history_store.conversations == {}
+        assert proxy_module.history_store.conversation_states == {}
+
+    def test_slot_affinity_success_injects_slot_fields(self, client):
+        mock_endpoints = [
+            {
+                "name": "llama",
+                "url": "https://llama.example.com",
+                "slot_affinity": True,
+            }
+        ]
+        slots_response = Mock()
+        slots_response.raise_for_status = Mock()
+        slots_response.json.return_value = [{"id": 2, "is_processing": False}]
+
+        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+            "httpx.AsyncClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = slots_response
+            mock_client.post.return_value = _MockUpstreamResponse(
+                {"choices": [{"message": {"content": "ok"}}]}
+            )
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            response = client.post(
+                "/llama",
+                headers={"X-Convo-ID": "session-slot"},
+                json={"messages": [{"role": "user", "content": "slot me"}]},
+            )
+
+        assert response.status_code == 200
+        assert response.headers["x-upstream-slot-id"] == "2"
+        assert response.headers["x-upstream-slot-status"] == "affinity-applied"
+        upstream_body = mock_client.post.call_args.kwargs["json"]
+        assert upstream_body["id_slot"] == 2
+        assert upstream_body["cache_prompt"] is True
+
+    def test_slot_affinity_non_llama_upstream_does_not_fail_request(self, client):
+        mock_endpoints = [
+            {
+                "name": "not-llama",
+                "url": "https://not-llama.example.com",
+                "slot_affinity": True,
+            }
+        ]
+        slots_response = Mock()
+        slots_response.raise_for_status.side_effect = Exception("not found")
+
+        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+            "httpx.AsyncClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = slots_response
+            mock_client.post.return_value = _MockUpstreamResponse(
+                {"choices": [{"message": {"content": "ok"}}]}
+            )
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            response = client.post(
+                "/not-llama",
+                headers={"X-Convo-ID": "session-non-llama"},
+                json={"messages": [{"role": "user", "content": "hello"}]},
+            )
+
+        assert response.status_code == 200
+        assert response.headers["x-upstream-slot-status"] == "unavailable"
+        upstream_body = mock_client.post.call_args.kwargs["json"]
+        assert "id_slot" not in upstream_body
+        assert "cache_prompt" not in upstream_body
+
+
 class TestModelsEndpoint:
     """Tests for the /models endpoint functionality."""
 

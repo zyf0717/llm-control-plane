@@ -4,7 +4,7 @@
 
 | Component | Path | Responsibility |
 |---|---|---|
-| Proxy | `src/orchestrator/proxy.py` | OpenAI-compatible request handling, SQLite-backed history, reasoning injection, RAG injection, upstream proxying |
+| Proxy | `src/orchestrator/proxy.py` | OpenAI-compatible request handling, SQLite-backed history/state, route/reasoning pinning, RAG injection, best-effort slot affinity, upstream proxying |
 | LLM Router | `src/orchestrator/llm_router.py` | Workload classification and smart endpoint selection |
 | Dashboard | `src/dashboard/` | Shiny UI for chat, endpoint selection, RAG selection, and runtime inspection |
 | Entry point | `llm_control_plane.py` | Runs proxy and dashboard together |
@@ -41,16 +41,18 @@ flowchart TD
 The proxy processes chat requests in this order:
 
 1. Parse the incoming body and headers.
-2. Load persisted conversation history and append the current client-supplied messages if `X-Convo-ID` is present.
-3. Inject reasoning control if `X-Reasoning-Effort` is present.
-4. Retrieve RAG context if `X-RAG-Endpoint` is present.
-5. For smart routing, classify the latest user turn and select the best reachable endpoint. Dashboard Auto conversations perform this only until the first decision is pinned for the active `convo_id`.
-6. Forward the final request to the selected upstream model endpoint.
-7. Normalize streaming/non-streaming reasoning content and attach response metadata headers, including `X-Trace-ID`.
+2. Atomically resolve or pin conversation route/reasoning metadata when `X-Convo-ID` is present.
+3. Load persisted conversation history, reject full-history replay, then append only the current durable client messages.
+4. Inject the effective reasoning control.
+5. Retrieve RAG context if `X-RAG-Endpoint` is present.
+6. For smart routing, reuse a valid route pin or classify the latest user turn and pin the selected endpoint.
+7. Apply best-effort llama.cpp slot affinity for endpoints with `slot_affinity: true`.
+8. Forward the final request to the selected upstream model endpoint.
+9. Normalize streaming/non-streaming reasoning content and attach response metadata headers, including `X-Trace-ID`.
 
 ## Smart Routing Logic
 
-Smart routing is designed for isolated task routing, not for persistent conversational or agentic execution. It assumes the request contains enough context to classify the work; without `X-Convo-ID`, the proxy has no persisted conversation history. In dashboard Auto mode, the first smart-routing decision for a `convo_id` is pinned and later turns bypass `/smart` by calling the selected endpoint directly. API clients that need the same behavior should persist `X-Route-Decision` themselves and use the concrete endpoint for follow-up turns.
+Smart routing remains stateless without `X-Convo-ID`. With `X-Convo-ID`, the proxy treats the conversation id as canonical state: the first smart decision pins the route server-side, later `/smart` calls reuse the pin, and removed configured endpoints are reported as stale before rerouting. Dashboard Auto pinning remains a UI optimization, but proxy state is canonical.
 
 Smart routing proceeds in three steps:
 
@@ -63,6 +65,10 @@ Classification uses:
 - timeout: `10s`
 - `max_tokens: 20`
 - `temperature: 0.1`
+
+## Slot Affinity
+
+Endpoint config may set `slot_affinity: true` for llama.cpp servers. The proxy probes `/slots?fail_on_no_slot=1`, stores `convo_id -> endpoint -> slot_id`, and forwards `id_slot` plus `cache_prompt: true` when a slot is available. This is opportunistic only: non-llama upstreams, disabled slot endpoints, probe errors, and ignored slot fields do not fail the chat request.
 
 ## Reasoning Channel Extraction
 

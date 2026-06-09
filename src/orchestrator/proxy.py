@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 from dotenv import load_dotenv
@@ -55,6 +55,7 @@ history_store: HistoryStore = MemoryHistoryStore()
 
 # Global cache of reachable endpoints
 reachable_endpoints: Dict[str, dict] = {}
+VALID_REASONING_EFFORTS = {"low", "medium", "high"}
 
 
 def set_history_store(store: HistoryStore) -> None:
@@ -98,23 +99,49 @@ class RequestProcessor:
     """Handles request processing, history management, and routing logic."""
 
     @staticmethod
-    def get_endpoint_url(path: str) -> Optional[str]:
-        """Get target endpoint URL based on path and streaming preference."""
-        endpoint_key = path.lstrip("/").split("/")[0] if path else ""
+    def _endpoint_key(path: str) -> str:
+        """Extract the configured endpoint name from a proxy path."""
+        return path.lstrip("/").split("/")[0] if path else ""
 
+    @staticmethod
+    def configured_endpoint_names() -> List[str]:
+        """Return currently configured concrete endpoint names."""
+        return [
+            str(endpoint.get("name") or "").strip()
+            for endpoint in endpoints
+            if str(endpoint.get("name") or "").strip()
+        ]
+
+    @staticmethod
+    def get_endpoint_config(path_or_endpoint: str) -> Optional[Dict[str, Any]]:
+        """Return endpoint config by path or endpoint name."""
+        endpoint_key = RequestProcessor._endpoint_key(path_or_endpoint)
         for endpoint_config in endpoints:
             if endpoint_config.get("name") == endpoint_key:
-                base_url = endpoint_config.get("url")
-                if base_url:
-                    suffix = (
-                        "/v1/chat/completions"
-                        # if is_streaming
-                        # else "/api/v0/chat/completions"
-                    )
-                    return f"{base_url}{suffix}"
+                return endpoint_config
+        return None
+
+    @staticmethod
+    def get_endpoint_url(path: str) -> Optional[str]:
+        """Get target endpoint URL based on path and streaming preference."""
+        endpoint_config = RequestProcessor.get_endpoint_config(path)
+        if endpoint_config:
+            base_url = endpoint_config.get("url")
+            if base_url:
+                return f"{base_url}/v1/chat/completions"
 
         logger.warning(f"No endpoint found for path: {path}")
         return None
+
+    @staticmethod
+    def _normalize_convo_id(raw_convo_id: Optional[str]) -> Optional[str]:
+        convo_id = str(raw_convo_id or "").strip()
+        return convo_id or None
+
+    @staticmethod
+    def _normalize_reasoning_effort(raw_effort: Optional[str]) -> Optional[str]:
+        effort = str(raw_effort or "").strip().lower()
+        return effort if effort in VALID_REASONING_EFFORTS else None
 
     @staticmethod
     def _normalize_rag_endpoint(rag_endpoint: Optional[str]) -> Optional[str]:
@@ -180,13 +207,41 @@ class RequestProcessor:
         return content.strip().startswith(EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER)
 
     @staticmethod
+    def _is_ephemeral_rag_message(message: Dict) -> bool:
+        """Identify turn-local RAG wrappers that must not be replay anchors."""
+        if not isinstance(message, dict):
+            return False
+
+        content = message.get("content")
+        if not isinstance(content, str):
+            return False
+
+        stripped = content.strip()
+        return stripped.startswith("Retrieved reference excerpts:") or stripped.startswith(
+            "[Retrieved reference excerpts]"
+        )
+
+    @staticmethod
+    def _is_ephemeral_history_message(message: Dict) -> bool:
+        return RequestProcessor._is_ephemeral_search_message(
+            message
+        ) or RequestProcessor._is_ephemeral_rag_message(message)
+
+    @staticmethod
     def _filter_ephemeral_search_messages(messages: List[Dict]) -> List[Dict]:
-        """Drop synthetic search context from durable history/replay boundaries."""
+        """Drop synthetic context from durable history/replay boundaries."""
         return [
             message
             for message in messages
-            if not RequestProcessor._is_ephemeral_search_message(message)
+            if not RequestProcessor._is_ephemeral_history_message(message)
         ]
+
+    @staticmethod
+    def _is_full_history_replay(stored: List[Dict], incoming: List[Dict]) -> bool:
+        """Detect clients replaying the full server-persisted history prefix."""
+        if not stored or len(incoming) < len(stored):
+            return False
+        return incoming[: len(stored)] == stored
 
     @staticmethod
     def _merge_ephemeral_search_context(messages: List[Dict]) -> List[Dict]:
@@ -296,7 +351,9 @@ class RequestProcessor:
         return grounded_user_message.strip(), rag_headers
 
     @staticmethod
-    async def prepare_request(request: Request) -> tuple[Dict, Dict[str, str]]:
+    async def prepare_request(
+        request: Request, effective_reasoning_effort: Optional[str] = None
+    ) -> tuple[Dict, Dict[str, str]]:
         """Parse and enrich request with conversation history and reasoning."""
         try:
             raw_body = await request.body()
@@ -307,11 +364,15 @@ class RequestProcessor:
         if not isinstance(body, dict):
             return body, {}
 
-        convo_id = request.headers.get("X-Convo-ID")
+        convo_id = RequestProcessor._normalize_convo_id(
+            request.headers.get("X-Convo-ID")
+        )
         rag_endpoint = request.headers.get("X-RAG-Endpoint")
-        reasoning_effort = request.headers.get("X-Reasoning-Effort", "").lower()
         reasoning_effort = (
-            reasoning_effort if reasoning_effort in ["low", "medium", "high"] else None
+            effective_reasoning_effort
+            or RequestProcessor._normalize_reasoning_effort(
+                request.headers.get("X-Reasoning-Effort")
+            )
         )
 
         incoming_messages = body.get("messages", [])
@@ -326,10 +387,15 @@ class RequestProcessor:
             durable_incoming_messages = (
                 RequestProcessor._filter_ephemeral_search_messages(incoming_messages)
             )
-            if durable_incoming_messages:
-                await history_store.append_messages(
-                    convo_id, durable_incoming_messages
+            if RequestProcessor._is_full_history_replay(
+                stored_messages, durable_incoming_messages
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Full-history payload replay is not allowed when X-Convo-ID is present",
                 )
+            if durable_incoming_messages:
+                await history_store.append_messages(convo_id, durable_incoming_messages)
 
         messages = [*stored_messages, *incoming_messages]
 
@@ -362,8 +428,75 @@ class RequestProcessor:
         body["messages"] = messages
         if reasoning_effort:
             body["reasoning_effort"] = reasoning_effort
+            rag_headers["X-Reasoning-Effort"] = reasoning_effort
 
         return body, rag_headers
+
+    @staticmethod
+    async def apply_slot_affinity(
+        body: Dict, convo_id: Optional[str], endpoint_config: Optional[Dict[str, Any]]
+    ) -> Dict[str, str]:
+        """Best-effort llama.cpp slot affinity for configured endpoints."""
+        if (
+            not convo_id
+            or not endpoint_config
+            or not endpoint_config.get("slot_affinity")
+        ):
+            return {}
+
+        endpoint = str(endpoint_config.get("name") or "").strip()
+        base_url = str(endpoint_config.get("url") or "").strip().rstrip("/")
+        if not endpoint or not base_url:
+            return {"X-Upstream-Slot-Status": "disabled"}
+
+        try:
+            state = await history_store.get_conversation_state(convo_id)
+            slots = state.get("slots") if isinstance(state, dict) else {}
+            slot_id = (slots or {}).get(endpoint) if isinstance(slots, dict) else None
+            if slot_id is None:
+                slot_id = await RequestProcessor._probe_llama_slot(base_url)
+                if slot_id is None:
+                    return {"X-Upstream-Slot-Status": "unavailable"}
+                await history_store.set_conversation_slot(
+                    convo_id, endpoint, int(slot_id)
+                )
+
+            body["id_slot"] = int(slot_id)
+            body["cache_prompt"] = True
+            return {
+                "X-Upstream-Slot-ID": str(slot_id),
+                "X-Upstream-Slot-Status": "affinity-applied",
+            }
+        except Exception as exc:
+            logger.info("Slot affinity skipped for %s/%s: %s", endpoint, convo_id, exc)
+            return {"X-Upstream-Slot-Status": "skipped"}
+
+    @staticmethod
+    async def _probe_llama_slot(base_url: str) -> Optional[int]:
+        headers = HeaderManager.create_auth_headers()
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                response = await client.get(
+                    f"{base_url}/slots?fail_on_no_slot=1", headers=headers
+                )
+                response.raise_for_status()
+                slots = response.json()
+        except Exception:
+            return None
+
+        if not isinstance(slots, list) or not slots:
+            return None
+
+        ordered_slots = sorted(
+            [slot for slot in slots if isinstance(slot, dict) and "id" in slot],
+            key=lambda slot: (bool(slot.get("is_processing")), int(slot.get("id", 0))),
+        )
+        if not ordered_slots:
+            return None
+        try:
+            return int(ordered_slots[0]["id"])
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     async def update_history(convo_id: Optional[str], assistant_text: str) -> None:
@@ -496,40 +629,100 @@ class ProxyHandler:
 
 ##########  Core Proxy Function ##########
 async def proxy_request(
-    path: str, request: Request, extra_headers: Dict = None
+    path: str,
+    request: Request,
+    extra_headers: Dict = None,
+    *,
+    route_conflict_policy: str = "reject",
 ) -> Response:
-    """Main proxy handler - simplified and clean."""
-    # Prepare request with history and reasoning
-    body, rag_headers = await RequestProcessor.prepare_request(request)
+    """Main proxy handler with canonical conversation-state pinning."""
+    endpoint_key = RequestProcessor._endpoint_key(path)
+    convo_id = RequestProcessor._normalize_convo_id(
+        request.headers.get("X-Convo-ID")
+    )
+    requested_reasoning = RequestProcessor._normalize_reasoning_effort(
+        request.headers.get("X-Reasoning-Effort")
+    )
+    valid_endpoints = RequestProcessor.configured_endpoint_names()
+    state_headers: Dict[str, str] = {}
+    effective_reasoning = requested_reasoning
+
+    if convo_id:
+        state_update = await history_store.update_conversation_state(
+            convo_id,
+            route_endpoint=endpoint_key,
+            reasoning_effort=requested_reasoning,
+            valid_route_endpoints=valid_endpoints,
+        )
+        if state_update.get("conflict"):
+            conflicts = state_update.get("conflicts") or {}
+            if (
+                route_conflict_policy == "use-existing"
+                and set(conflicts) == {"route_endpoint"}
+            ):
+                endpoint_key = str(conflicts["route_endpoint"])
+                path = endpoint_key
+                state = await history_store.get_conversation_state(convo_id)
+                state_headers["X-Route-Pinned"] = "true"
+            else:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "Conversation metadata conflict",
+                        "conflicts": conflicts,
+                    },
+                )
+        else:
+            state = state_update["state"]
+            if state_update.get("route_stale"):
+                state_headers["X-Route-Pin-Stale"] = "true"
+
+        effective_reasoning = RequestProcessor._normalize_reasoning_effort(
+            state.get("reasoning_effort")
+        )
+        state_headers.setdefault("X-Route-Pinned", "false")
+        state_headers.setdefault("X-Route-Pin-Stale", "false")
+        if effective_reasoning:
+            state_headers["X-Reasoning-Effort"] = effective_reasoning
+
+    body, rag_headers = await RequestProcessor.prepare_request(
+        request, effective_reasoning_effort=effective_reasoning
+    )
     is_streaming = body.get("stream", False) or request.query_params.get("stream") in {
         "true",
         "1",
     }
-    convo_id = request.headers.get("X-Convo-ID")
-    trace = RequestTrace(convo_id=convo_id, endpoint=path.lstrip("/").split("/")[0])
-    combined_headers = dict(rag_headers)
-    if extra_headers:
-        combined_headers.update(extra_headers)
-    trace.capture_headers(combined_headers)
+    trace = RequestTrace(convo_id=convo_id, endpoint=endpoint_key)
 
-    # Get target endpoint
-    target_url = RequestProcessor.get_endpoint_url(path)
+    target_url = RequestProcessor.get_endpoint_url(endpoint_key)
     if not target_url:
         raise HTTPException(status_code=404, detail=f"Endpoint not found: {path}")
+
+    endpoint_config = RequestProcessor.get_endpoint_config(endpoint_key)
+    slot_headers = await RequestProcessor.apply_slot_affinity(
+        body, convo_id, endpoint_config
+    )
+
+    combined_headers = dict(rag_headers)
+    combined_headers.update(state_headers)
+    if extra_headers:
+        combined_headers.update(extra_headers)
+    if state_headers.get("X-Route-Pin-Stale") == "true":
+        combined_headers["X-Route-Pin-Stale"] = "true"
+    combined_headers.update(slot_headers)
+    trace.capture_headers(combined_headers)
 
     logger.info(
         f"Proxying {request.method} {request.url.path} to {target_url} (streaming: {is_streaming})"
     )
 
-    # Route to appropriate handler
     if is_streaming:
         return await ProxyHandler.stream_response(
             request, target_url, body, convo_id, combined_headers, trace
         )
-    else:
-        return await ProxyHandler.non_stream_response(
-            request, target_url, body, convo_id, combined_headers, trace
-        )
+    return await ProxyHandler.non_stream_response(
+        request, target_url, body, convo_id, combined_headers, trace
+    )
 
 
 ##########  API Endpoints ##########
@@ -545,34 +738,59 @@ async def root_chat(request: Request):
 async def smart_route(request: Request, subpath: str = ""):
     """Smart routing based on content analysis."""
     try:
-        # Prepare request
         body = await request.json()
         messages = body.get("messages", [])
 
         if not messages:
             raise HTTPException(status_code=400, detail="No messages provided")
 
-        # Get latest user message for routing
         user_messages = [msg for msg in messages if msg.get("role") == "user"]
         if not user_messages:
             raise HTTPException(status_code=400, detail="No user messages found")
 
+        convo_id = RequestProcessor._normalize_convo_id(
+            request.headers.get("X-Convo-ID")
+        )
+        valid_endpoints = RequestProcessor.configured_endpoint_names()
+        stale_headers: Dict[str, str] = {}
+        if convo_id:
+            state = await history_store.get_conversation_state(convo_id)
+            pinned_endpoint = str(state.get("route_endpoint") or "").strip()
+            if pinned_endpoint and pinned_endpoint in valid_endpoints:
+                routing_headers = {
+                    "X-Route-Decision": pinned_endpoint,
+                    "X-Route-Pinned": "true",
+                    "X-Route-Pin-Stale": "false",
+                }
+                return await proxy_request(
+                    pinned_endpoint,
+                    request,
+                    routing_headers,
+                    route_conflict_policy="use-existing",
+                )
+            if pinned_endpoint and pinned_endpoint not in valid_endpoints:
+                await history_store.update_conversation_state(
+                    convo_id,
+                    valid_route_endpoints=valid_endpoints,
+                    clear_route=True,
+                )
+                stale_headers["X-Route-Pin-Stale"] = "true"
+
         latest_message = user_messages[-1].get("content", "")
 
-        # Route using LLM router
         router = get_router()
         decision = await router.route_request(latest_message, reachable_endpoints)
         endpoint_config = router.get_endpoint_by_name(decision.endpoint)
 
-        # Build routing headers
         routing_headers = {
             "X-Route-Decision": decision.endpoint,
             "X-Route-Confidence": str(decision.confidence),
             "X-Route-Reason": decision.reason,
             "X-Route-Strategy": decision.workload_type.value,
+            "X-Route-Pinned": "false",
+            "X-Route-Pin-Stale": stale_headers.get("X-Route-Pin-Stale", "false"),
         }
 
-        # Add hardware info
         if endpoint_config:
             for attr in ["gpu", "vram", "soc", "cpu", "ram"]:
                 value = getattr(endpoint_config, attr, None)
@@ -583,7 +801,12 @@ async def smart_route(request: Request, subpath: str = ""):
             f"Smart routing: {decision.endpoint} (confidence: {decision.confidence:.2f}) - {decision.reason}"
         )
 
-        return await proxy_request(decision.endpoint, request, routing_headers)
+        return await proxy_request(
+            decision.endpoint,
+            request,
+            routing_headers,
+            route_conflict_policy="use-existing",
+        )
 
     except HTTPException:
         raise

@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from src.orchestrator import proxy as proxy_module
+from src.orchestrator.history_store import MemoryHistoryStore
 from src.orchestrator.llm_router import RouteDecision, WorkloadType
 from src.orchestrator.proxy import app
 
@@ -15,6 +17,31 @@ from src.orchestrator.proxy import app
 def client():
     """FastAPI test client fixture."""
     return TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def memory_history_store():
+    store = MemoryHistoryStore()
+    proxy_module.set_history_store(store)
+    yield store
+    proxy_module.set_history_store(MemoryHistoryStore())
+
+
+class _MockUpstreamResponse:
+    def __init__(self, payload):
+        import json
+
+        self._payload = payload
+        self.status_code = 200
+        self.headers = {}
+        self.content = json.dumps(payload).encode("utf-8")
+        self.text = self.content.decode("utf-8")
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
 
 
 @pytest.fixture
@@ -225,6 +252,136 @@ class TestSmartRoutingEndpoint:
             assert "X-Route-Decision" in routing_headers
 
             assert response.status_code == 200
+
+
+    @patch("src.orchestrator.proxy.reachable_endpoints", ["primary", "secondary"])
+    @patch("src.orchestrator.proxy.get_router")
+    def test_smart_route_pins_server_side_and_reuses_without_router(
+        self, mock_get_router, client
+    ):
+        mock_endpoints = [
+            {"name": "primary", "url": "https://primary.example.com"},
+            {"name": "secondary", "url": "https://secondary.example.com"},
+        ]
+        decision = RouteDecision(
+            endpoint="primary",
+            confidence=0.9,
+            reason="first decision",
+            workload_type=WorkloadType.REASONING,
+        )
+        mock_router = Mock()
+        mock_router.route_request = AsyncMock(return_value=decision)
+        mock_router.get_endpoint_by_name = Mock(return_value=None)
+        mock_get_router.return_value = mock_router
+
+        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+            "httpx.AsyncClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = _MockUpstreamResponse(
+                {"choices": [{"message": {"content": "ok"}}]}
+            )
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            first = client.post(
+                "/smart",
+                headers={"X-Convo-ID": "session-smart-pin"},
+                json={"messages": [{"role": "user", "content": "first"}]},
+            )
+            second = client.post(
+                "/smart",
+                headers={"X-Convo-ID": "session-smart-pin"},
+                json={"messages": [{"role": "user", "content": "second"}]},
+            )
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert second.headers["x-route-pinned"] == "true"
+        assert mock_router.route_request.await_count == 1
+
+    @patch("src.orchestrator.proxy.reachable_endpoints", ["new-endpoint"])
+    @patch("src.orchestrator.proxy.get_router")
+    def test_smart_route_stale_pin_is_reported_and_replaced(
+        self, mock_get_router, client
+    ):
+        import asyncio
+
+        asyncio.run(
+            proxy_module.history_store.update_conversation_state(
+                "session-stale",
+                route_endpoint="removed-endpoint",
+                valid_route_endpoints=["removed-endpoint", "new-endpoint"],
+            )
+        )
+        mock_endpoints = [{"name": "new-endpoint", "url": "https://new.example.com"}]
+        decision = RouteDecision(
+            endpoint="new-endpoint",
+            confidence=0.8,
+            reason="rerouted",
+            workload_type=WorkloadType.REASONING,
+        )
+        mock_router = Mock()
+        mock_router.route_request = AsyncMock(return_value=decision)
+        mock_router.get_endpoint_by_name = Mock(return_value=None)
+        mock_get_router.return_value = mock_router
+
+        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+            "httpx.AsyncClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = _MockUpstreamResponse(
+                {"choices": [{"message": {"content": "ok"}}]}
+            )
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            response = client.post(
+                "/smart",
+                headers={"X-Convo-ID": "session-stale"},
+                json={"messages": [{"role": "user", "content": "recover"}]},
+            )
+
+        state = asyncio.run(
+            proxy_module.history_store.get_conversation_state("session-stale")
+        )
+        assert response.status_code == 200
+        assert response.headers["x-route-pin-stale"] == "true"
+        assert state["route_endpoint"] == "new-endpoint"
+
+    @patch("src.orchestrator.proxy.reachable_endpoints", ["primary"])
+    @patch("src.orchestrator.proxy.get_router")
+    def test_smart_route_without_convo_id_remains_stateless(self, mock_get_router, client):
+        mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
+        decision = RouteDecision(
+            endpoint="primary",
+            confidence=0.8,
+            reason="stateless",
+            workload_type=WorkloadType.REASONING,
+        )
+        mock_router = Mock()
+        mock_router.route_request = AsyncMock(return_value=decision)
+        mock_router.get_endpoint_by_name = Mock(return_value=None)
+        mock_get_router.return_value = mock_router
+
+        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+            "httpx.AsyncClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = _MockUpstreamResponse(
+                {"choices": [{"message": {"content": "ok"}}]}
+            )
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            first = client.post(
+                "/smart", json={"messages": [{"role": "user", "content": "one"}]}
+            )
+            second = client.post(
+                "/smart", json={"messages": [{"role": "user", "content": "two"}]}
+            )
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert mock_router.route_request.await_count == 2
+        assert proxy_module.history_store.conversation_states == {}
 
 
 class TestSmartRoutingIntegration:
