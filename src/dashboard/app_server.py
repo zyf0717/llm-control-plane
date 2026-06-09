@@ -292,6 +292,27 @@ def pin_auto_route_decision(
     return pins
 
 
+def resolve_endpoint_display_selection(
+    choices: Dict[str, str],
+    mapping: Dict[str, str],
+    *,
+    preferred_endpoint_key: Optional[str],
+    current_display_value: Optional[str],
+) -> Optional[str]:
+    """Select a stable endpoint display value across dropdown rebuilds."""
+    current_display = str(current_display_value or "").strip()
+    if current_display and current_display in choices:
+        return current_display
+
+    preferred_endpoint = str(preferred_endpoint_key or "").strip()
+    if preferred_endpoint:
+        for display_value, endpoint_key in mapping.items():
+            if endpoint_key == preferred_endpoint:
+                return display_value
+
+    return next(iter(choices), None)
+
+
 def _format_trace_summary(event: Dict[str, Any]) -> str:
     timestamp = _format_trace_timestamp(event.get("timestamp"))
     trace_id = str(event.get("request_id") or "unknown-trace")
@@ -332,6 +353,7 @@ def server(input, output, session):
     available_endpoints = reactive.Value({})
     endpoint_info = reactive.Value({})
     endpoint_display_mapping = reactive.Value({})
+    selected_endpoint_key_state = reactive.Value("")
     last_runtime = reactive.Value(None)
     run_info = reactive.Value(None)
     send_button_state = reactive.Value("ready")
@@ -351,6 +373,18 @@ def server(input, output, session):
 
     def current_history_convo_id() -> str:
         return str(history_selected_convo_id.get() or "").strip()
+
+    def current_endpoint_display_value() -> str:
+        return str(input.endpoint() or "").strip()
+
+    def current_endpoint_key() -> Optional[str]:
+        display_value = current_endpoint_display_value()
+        mapping = endpoint_display_mapping.get()
+        endpoint_key = mapping.get(display_value)
+        if endpoint_key:
+            return endpoint_key
+        stored_endpoint_key = str(selected_endpoint_key_state.get() or "").strip()
+        return stored_endpoint_key or None
 
     def get_system_prompt_state(convo_id: str) -> Dict[str, Any]:
         state = system_prompt_states.get().get(convo_id)
@@ -417,11 +451,19 @@ def server(input, output, session):
 
         choices, mapping = create_endpoint_display_choices(endpoints)
         endpoint_display_mapping.set(mapping)
-        choice_list = list(choices.keys())
+        selected = resolve_endpoint_display_selection(
+            choices,
+            mapping,
+            preferred_endpoint_key=selected_endpoint_key_state.get(),
+            current_display_value=current_endpoint_display_value(),
+        )
+        if selected:
+            selected_endpoint_key_state.set(mapping.get(selected, ""))
         ui.update_select(
             "endpoint",
             choices=choices,
-            selected=choice_list[0] if choice_list else None,
+            selected=selected,
+            session=session,
         )
 
     async def update_rag_endpoints(current_selection: Optional[str] = None) -> None:
@@ -493,6 +535,9 @@ def server(input, output, session):
     @reactive.Effect
     @reactive.event(input.endpoint)
     def _clear_info_on_endpoint_change():
+        endpoint_key = current_endpoint_key()
+        if endpoint_key:
+            selected_endpoint_key_state.set(endpoint_key)
         run_info.set(None)
         last_runtime.set(None)
 
@@ -648,8 +693,7 @@ def server(input, output, session):
         info = run_info.get()
         runtime = last_runtime.get()
         endpoint_data = endpoint_info.get()
-        display_mapping = endpoint_display_mapping.get()
-        current_endpoint = display_mapping.get(input.endpoint())
+        current_endpoint = current_endpoint_key()
 
         def fmt(value: Any) -> str:
             if isinstance(value, (int, float)):
@@ -767,9 +811,8 @@ def server(input, output, session):
     @chat.on_user_submit
     async def _handle_chat_input(user_input: str):
         current_endpoints = available_endpoints.get()
-        display_mapping = endpoint_display_mapping.get()
         current_run_info = run_info.get() or {}
-        selected_endpoint_key = display_mapping.get(input.endpoint())
+        selected_endpoint_key = current_endpoint_key()
         convo_id = current_active_convo_id() or None
         auto_route_pins_snapshot = dict(auto_route_pins.get())
         actual_endpoint_key = resolve_auto_endpoint_key(

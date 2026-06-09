@@ -9,6 +9,7 @@ from src.dashboard.app_server import (
     merge_run_info,
     pin_auto_route_decision,
     resolve_auto_endpoint_key,
+    resolve_endpoint_display_selection,
 )
 from src.search.safety import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER
 
@@ -290,6 +291,42 @@ def test_pin_auto_route_decision_records_only_first_auto_decision():
         "Auto",
         {"routing": {"decision": "mac-mini", "strategy": "ttft_content"}},
     ) == {"convo-a": "gmktec-evo-x2-primary"}
+
+
+def test_resolve_endpoint_display_selection_preserves_current_display():
+    choices = {
+        "node-a (model-a)": "node-a",
+        "node-b (model-b)": "node-b",
+    }
+    mapping = dict(choices)
+
+    assert (
+        resolve_endpoint_display_selection(
+            choices,
+            mapping,
+            preferred_endpoint_key="node-a",
+            current_display_value="node-b (model-b)",
+        )
+        == "node-b (model-b)"
+    )
+
+
+def test_resolve_endpoint_display_selection_uses_stored_endpoint_after_rebuild():
+    choices = {
+        "node-a (new-model-a)": "node-a",
+        "node-b (new-model-b)": "node-b",
+    }
+    mapping = dict(choices)
+
+    assert (
+        resolve_endpoint_display_selection(
+            choices,
+            mapping,
+            preferred_endpoint_key="node-b",
+            current_display_value="",
+        )
+        == "node-b (new-model-b)"
+    )
 
 
 def test_pin_auto_route_decision_ignores_static_endpoint_and_missing_convo():
