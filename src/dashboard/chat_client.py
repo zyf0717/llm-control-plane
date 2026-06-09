@@ -67,7 +67,6 @@ def _extract_metadata(
 
     is_auto_routing = (
         endpoint_key == "smart"
-        or endpoint_key == "Auto"
         or (
             response_headers
             and any(h.lower().startswith("x-route-") for h in response_headers.keys())
@@ -101,7 +100,45 @@ def _extract_metadata(
         if rag_info:
             combined["rag"] = rag_info
 
+        warning = ""
+        for header_name, header_value in response_headers.items():
+            if header_name.lower() == "x-warning":
+                warning = str(header_value or "").strip()
+                break
+        if warning:
+            combined["warning"] = {"message": warning}
+
     return combined
+
+
+def _format_switch_warning(response_headers: Optional[Dict[str, Any]]) -> str:
+    """Return a concise user-visible warning for proxy state switches."""
+    if not response_headers:
+        return ""
+
+    headers = {str(key).lower(): str(value) for key, value in response_headers.items()}
+    warning = headers.get("x-warning", "").strip()
+    if not warning:
+        return ""
+
+    parts = []
+    if headers.get("x-route-switched", "").lower() == "true":
+        previous = headers.get("x-route-previous", "").strip()
+        current = headers.get("x-route-decision", "").strip()
+        if previous and current:
+            parts.append(
+                f"conversation endpoint changed from {previous} to {current}"
+            )
+    if headers.get("x-reasoning-switched", "").lower() == "true":
+        previous = headers.get("x-reasoning-previous", "").strip()
+        current = headers.get("x-reasoning-effort", "").strip()
+        if previous and current:
+            parts.append(
+                f"reasoning effort changed from {previous} to {current}"
+            )
+
+    detail = "; ".join(parts) if parts else warning
+    return f"**Warning:** {detail}; full history was sent to the selected endpoint.\n\n"
 
 
 async def stream_chat_response(
@@ -133,7 +170,7 @@ async def stream_chat_response(
         on_send_button_state("busy")
 
     try:
-        if endpoint_key == "Auto":
+        if endpoint_key == "smart":
             url = f"{PROXY_BASE_URL}/smart"
         else:
             if not endpoints_dict or endpoint_key not in endpoints_dict:
@@ -154,6 +191,8 @@ async def stream_chat_response(
             "Content-Type": "application/json",
             "X-Reasoning-Effort": reasoning_effort,
         }
+        if endpoint_key != "smart":
+            headers["X-Allow-Route-Switch"] = "true"
         if convo_id:
             headers["X-Convo-ID"] = convo_id
         if rag_endpoint:
@@ -200,7 +239,11 @@ async def stream_chat_response(
                     "POST", url, headers=headers, json=payload
                 ) as response:
                     response.raise_for_status()
-                    publish_metadata({}, dict(response.headers))
+                    response_headers = dict(response.headers)
+                    publish_metadata({}, response_headers)
+                    switch_warning = _format_switch_warning(response_headers)
+                    if switch_warning and not output_json:
+                        yield switch_warning
 
                     reasoning_chunk_found = False
                     md_code_wrap = True
@@ -256,11 +299,15 @@ async def stream_chat_response(
                 )
                 response.raise_for_status()
                 data = response.json()
-                publish_metadata(data, dict(response.headers))
+                response_headers = dict(response.headers)
+                publish_metadata(data, response_headers)
 
                 if output_json:
                     yield f"```json\n{json.dumps(data, indent=2)}\n```"
                 else:
+                    switch_warning = _format_switch_warning(response_headers)
+                    if switch_warning:
+                        yield switch_warning
                     if output_reasoning:
                         message = data.get("choices", [{}])[0].get("message", {})
                         reasoning = message.get("reasoning") or message.get(

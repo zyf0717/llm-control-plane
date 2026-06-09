@@ -1,6 +1,7 @@
 from src.dashboard.prompt_state import (
     RAG_CITATION_SUFFIX,
     append_managed_rag_suffix,
+    build_system_prompt_state,
     extract_first_system_prompt,
     first_turn_system_prompt_to_send,
 )
@@ -41,3 +42,17 @@ def test_first_turn_system_prompt_to_send_only_sends_before_start():
     assert first_turn_system_prompt_to_send(" Be concise. ", started=False) == "Be concise."
     assert first_turn_system_prompt_to_send("Be concise.", started=True) is None
     assert first_turn_system_prompt_to_send("", started=False) is None
+
+
+def test_build_system_prompt_state_tracks_committed_prompt_and_reasoning():
+    state = build_system_prompt_state(
+        "Be concise.",
+        started=True,
+        committed_prompt="Original prompt.",
+        reasoning_effort="high",
+    )
+
+    assert state["prompt"] == "Be concise."
+    assert state["committed_prompt"] == "Original prompt."
+    assert state["reasoning_effort"] == "high"
+    assert state["started"] is True

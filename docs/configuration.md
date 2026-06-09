@@ -164,8 +164,8 @@ Supported environment variables:
 
 ## Operational Notes
 
-- Smart routing relies on the current `reachable_endpoints` cache, which is refreshed by `/models`.
-- Auto routing is intended for isolated, stateless tasks; without `X-Convo-ID` there is no proxy-persisted history, and dashboard conversations pin the first Auto decision per `convo_id` before using the selected static endpoint afterward.
+- Smart routing relies on the current `reachable_endpoints` cache, which is refreshed by `/models`, and is exposed through the proxy `/smart` route.
+- The dashboard uses concrete machine endpoint selections and does not keep a separate local route pin.
 - Dashboard RAG choices are filtered by live `health_url` checks on page load and explicit RAG refresh.
 - `default_endpoint` is only used if it is healthy and present in the configured list.
 

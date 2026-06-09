@@ -29,6 +29,16 @@ class _FakeStreamContext:
         return False
 
 
+class _FakeResponse:
+    def __init__(self, *, headers, payload):
+        self.headers = headers
+        self._payload = payload
+        self.raise_for_status = Mock()
+
+    def json(self):
+        return self._payload
+
+
 def test_build_chat_messages_with_user_only():
     messages = build_chat_messages(text="Hello")
 
@@ -88,7 +98,7 @@ async def test_stream_chat_response_does_not_emit_metadata_for_content_only_chun
         mock_client.stream.return_value = _FakeStreamContext(response)
 
         async for chunk in stream_chat_response(
-            endpoint_key="Auto",
+            endpoint_key="smart",
             text="hello",
             endpoints_dict={},
             on_metadata=metadata_events.append,
@@ -109,3 +119,90 @@ async def test_stream_chat_response_does_not_emit_metadata_for_content_only_chun
             "usage": {"prompt_tokens": 12},
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_concrete_endpoint_request_opts_into_switches_and_surfaces_warning(
+    monkeypatch,
+):
+    monkeypatch.setattr(chat_client, "PROXY_BASE_URL", "http://proxy.local")
+    monkeypatch.setattr(chat_client, "API_KEY_ID", "test-id")
+    monkeypatch.setattr(chat_client, "API_KEY_SECRET", "test-secret")
+
+    response = _FakeResponse(
+        headers={
+            "x-route-switched": "true",
+            "x-route-previous": "node-a",
+            "x-route-decision": "node-b",
+            "x-warning": "Conversation endpoint/reasoning changed",
+        },
+        payload={"choices": [{"message": {"content": "Answer"}}]},
+    )
+    metadata_events = []
+    chunks = []
+
+    with patch("httpx.AsyncClient") as mock_client_class:
+        mock_client = Mock()
+        mock_client.post = AsyncMock(return_value=response)
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        async for chunk in stream_chat_response(
+            endpoint_key="node-b",
+            text="hello",
+            endpoints_dict={"node-b": {"url": "http://node-b.local"}},
+            stream=False,
+            reasoning_effort="high",
+            convo_id="convo-1",
+            on_metadata=metadata_events.append,
+        ):
+            chunks.append(chunk)
+
+    call = mock_client.post.call_args
+    assert call.args[0] == "http://proxy.local/node-b"
+    assert call.kwargs["headers"]["X-Allow-Route-Switch"] == "true"
+    assert "X-Allow-Reasoning-Switch" not in call.kwargs["headers"]
+    assert call.kwargs["headers"]["X-Convo-ID"] == "convo-1"
+    rendered = "".join(chunks)
+    assert rendered.startswith(
+        "**Warning:** conversation endpoint changed from node-a to node-b; "
+        "full history was sent to the selected endpoint."
+    )
+    assert rendered.endswith("Answer")
+    assert metadata_events[0]["warning"] == {
+        "message": "Conversation endpoint/reasoning changed"
+    }
+    assert metadata_events[0]["routing"]["switched"] == "true"
+
+
+@pytest.mark.asyncio
+async def test_smart_endpoint_uses_smart_without_route_switch_opt_in(monkeypatch):
+    monkeypatch.setattr(chat_client, "PROXY_BASE_URL", "http://proxy.local")
+    monkeypatch.setattr(chat_client, "API_KEY_ID", "test-id")
+    monkeypatch.setattr(chat_client, "API_KEY_SECRET", "test-secret")
+
+    response = _FakeResponse(
+        headers={},
+        payload={"choices": [{"message": {"content": "Smart answer"}}]},
+    )
+
+    with patch("httpx.AsyncClient") as mock_client_class:
+        mock_client = Mock()
+        mock_client.post = AsyncMock(return_value=response)
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        chunks = [
+            chunk
+            async for chunk in stream_chat_response(
+                endpoint_key="smart",
+                text="hello",
+                endpoints_dict={},
+                stream=False,
+                reasoning_effort="none",
+            )
+        ]
+
+    call = mock_client.post.call_args
+    assert call.args[0] == "http://proxy.local/smart"
+    assert "X-Allow-Route-Switch" not in call.kwargs["headers"]
+    assert "X-Allow-Reasoning-Switch" not in call.kwargs["headers"]
+    assert "".join(chunks) == "Smart answer"

@@ -18,7 +18,7 @@ flowchart TD
 
     D -->|GET /models| P
     D -->|GET health_url| RH[RAG health endpoints]
-    D -->|POST /smart or /{endpoint}<br/>X-Convo-ID<br/>X-Reasoning-Effort<br/>X-RAG-Endpoint| P
+    D -->|POST /smart or /{endpoint}<br/>X-Convo-ID<br/>X-Reasoning-Effort<br/>X-Allow-*-Switch<br/>X-RAG-Endpoint| P
 
     P -->|GET /v1/models| M[Configured LLM endpoints]
     M -->|Model metadata| P
@@ -41,7 +41,7 @@ flowchart TD
 The proxy processes chat requests in this order:
 
 1. Parse the incoming body and headers.
-2. Atomically resolve or pin conversation route/reasoning metadata when `X-Convo-ID` is present.
+2. Atomically resolve, pin, or explicitly switch conversation route/reasoning metadata when `X-Convo-ID` is present.
 3. Load persisted conversation history, reject full-history replay, then append only the current durable client messages.
 4. Inject the effective reasoning control.
 5. Retrieve RAG context if `X-RAG-Endpoint` is present.
@@ -52,7 +52,7 @@ The proxy processes chat requests in this order:
 
 ## Smart Routing Logic
 
-Smart routing remains stateless without `X-Convo-ID`. With `X-Convo-ID`, the proxy treats the conversation id as canonical state: the first smart decision pins the route server-side, later `/smart` calls reuse the pin, and removed configured endpoints are reported as stale before rerouting. Dashboard Auto pinning remains a UI optimization, but proxy state is canonical.
+Smart routing remains stateless without `X-Convo-ID`. With `X-Convo-ID`, the proxy treats the conversation id as canonical state: the first smart decision pins the route server-side, later `/smart` calls reuse the pin, and removed configured endpoints are reported as stale before rerouting. The dashboard does not keep a parallel smart-routing pin; direct dashboard endpoint selections opt in to proxy-managed route switching.
 
 Smart routing proceeds in three steps:
 

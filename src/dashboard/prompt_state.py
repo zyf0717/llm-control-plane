@@ -45,10 +45,18 @@ def build_system_prompt_state(
     *,
     started: bool = False,
     locked: bool = False,
+    committed_prompt: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build consistent dashboard prompt state for one conversation."""
+    normalized_prompt = normalize_system_prompt(prompt)
+    default_committed_prompt = (
+        normalized_prompt if committed_prompt is None and started else committed_prompt
+    )
     return {
-        "prompt": normalize_system_prompt(prompt),
+        "prompt": normalized_prompt,
+        "committed_prompt": normalize_system_prompt(default_committed_prompt),
+        "reasoning_effort": str(reasoning_effort or "").strip(),
         "started": bool(started),
         "locked": bool(locked),
     }

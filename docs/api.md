@@ -97,7 +97,31 @@ Set:
 X-Reasoning-Effort: low | medium | high
 ```
 
-The proxy pins the first valid reasoning effort per `X-Convo-ID`, injects a system message of the form `Reasoning: {value}`, and sets `reasoning_effort` in the request body. Later turns may omit the header and reuse the pinned value. Conflicting later values return `409`. Without `X-Convo-ID`, reasoning remains per-request.
+The proxy pins the first valid reasoning effort per `X-Convo-ID`, injects a system message of the form `Reasoning: {value}`, and sets `reasoning_effort` in the request body. Later turns may omit the header and reuse the pinned value. Conflicting later values return `409` unless the client explicitly sends `X-Allow-Reasoning-Switch: true`. Without `X-Convo-ID`, reasoning remains per-request.
+
+## Conversation Route Switches
+
+With `X-Convo-ID`, the proxy treats the persisted route and reasoning state as canonical. Direct endpoint changes are rejected by default to protect API clients from accidentally splitting a conversation across backends.
+
+Explicit switch opt-in headers:
+
+| Header | Meaning |
+|---|---|
+| `X-Allow-Route-Switch: true` | A direct `/{endpoint}` request may update the conversation's pinned endpoint and replay full durable history plus the current turn to that endpoint |
+| `X-Allow-Reasoning-Switch: true` | A conflicting `X-Reasoning-Effort` may update pinned reasoning effort |
+
+Switch response headers:
+
+| Header | Meaning |
+|---|---|
+| `X-Route-Switched: true` | The pinned endpoint changed |
+| `X-Route-Previous` | Previous pinned endpoint |
+| `X-Route-Decision` | New endpoint |
+| `X-Reasoning-Switched: true` | The pinned reasoning effort changed |
+| `X-Reasoning-Previous` | Previous pinned reasoning effort |
+| `X-Warning` | Human-readable switch warning |
+
+The dashboard sends these opt-in headers for user-selected concrete endpoints/reasoning controls and displays the warning before the model answer. The warning is UI-only and is not persisted as an assistant message.
 
 ## Best-Effort Slot Affinity
 

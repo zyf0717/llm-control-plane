@@ -502,6 +502,42 @@ Current question"""
         ]
 
     @pytest.mark.asyncio
+    async def test_prepare_request_keeps_system_prompt_before_reasoning(self):
+        request = Mock()
+        request.headers = {
+            "X-Convo-ID": "session-system-reasoning",
+            "X-Reasoning-Effort": "high",
+        }
+        request.body = AsyncMock(
+            return_value=json.dumps(
+                {
+                    "messages": [
+                        {"role": "system", "content": "Be terse."},
+                        {"role": "user", "content": "Reason carefully"},
+                    ]
+                }
+            ).encode("utf-8")
+        )
+
+        with patch.object(
+            RequestProcessor,
+            "_fetch_rag_message",
+            AsyncMock(return_value=(None, {})),
+        ):
+            body, _response_headers = await RequestProcessor.prepare_request(request)
+
+        assert body["messages"][:2] == [
+            {"role": "system", "content": "Be terse."},
+            {"role": "system", "content": "Reasoning: high"},
+        ]
+        assert await proxy_module.history_store.get_conversation(
+            "session-system-reasoning"
+        ) == [
+            {"role": "system", "content": "Be terse."},
+            {"role": "user", "content": "Reason carefully"},
+        ]
+
+    @pytest.mark.asyncio
     async def test_prepare_request_does_not_persist_search_context(self):
         search_context = (
             f"{EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER}\n"
@@ -850,6 +886,27 @@ class TestConversationHistoryEndpoint:
         assert response.status_code == 200
         assert response.json() == [{"role": "user", "content": "Prior question"}]
 
+    def test_retrieve_conversation_state_returns_reasoning_and_route(
+        self, client, memory_history_store
+    ):
+        memory_history_store.conversation_states = {
+            "session-state": {
+                "convo_id": "session-state",
+                "route_endpoint": "primary",
+                "reasoning_effort": "high",
+                "slots": {},
+                "updated_at": "2026-06-09T00:00:00+00:00",
+            }
+        }
+
+        response = client.post(
+            "/conversations/state", json={"convo_id": "session-state"}
+        )
+
+        assert response.status_code == 200
+        assert response.json()["route_endpoint"] == "primary"
+        assert response.json()["reasoning_effort"] == "high"
+
     @pytest.mark.asyncio
     async def test_update_history_persists_assistant_reply(self):
         await RequestProcessor.update_history("session-3", "Assistant reply")
@@ -962,6 +1019,141 @@ class TestCanonicalConversationState:
 
         assert first.status_code == 200
         assert second.status_code == 409
+
+    def test_direct_endpoint_switch_with_opt_in_replays_history(
+        self, client, memory_history_store
+    ):
+        mock_endpoints = [
+            {"name": "primary", "url": "https://primary.example.com"},
+            {"name": "secondary", "url": "https://secondary.example.com"},
+        ]
+        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+            "httpx.AsyncClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = _MockUpstreamResponse(
+                {"choices": [{"message": {"content": "ok"}}]}
+            )
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            first = client.post(
+                "/primary",
+                headers={"X-Convo-ID": "session-route-switch"},
+                json={"messages": [{"role": "user", "content": "one"}]},
+            )
+            second = client.post(
+                "/secondary",
+                headers={
+                    "X-Convo-ID": "session-route-switch",
+                    "X-Allow-Route-Switch": "true",
+                },
+                json={"messages": [{"role": "user", "content": "two"}]},
+            )
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert second.headers["x-route-switched"] == "true"
+        assert second.headers["x-route-previous"] == "primary"
+        assert second.headers["x-route-decision"] == "secondary"
+        assert second.headers["x-warning"] == proxy_module.SWITCH_WARNING_MESSAGE
+        assert memory_history_store.conversation_states["session-route-switch"][
+            "route_endpoint"
+        ] == "secondary"
+        persisted = memory_history_store.conversations["session-route-switch"]
+        assert persisted == [
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "two"},
+            {"role": "assistant", "content": "ok"},
+        ]
+        assert all("Warning:" not in message["content"] for message in persisted)
+        assert mock_client.post.call_args.args[0] == (
+            "https://secondary.example.com/v1/chat/completions"
+        )
+        second_body = mock_client.post.call_args.kwargs["json"]
+        assert second_body["messages"] == [
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "two"},
+        ]
+
+    def test_reasoning_conflict_without_opt_in_returns_409(self, client):
+        mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
+        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+            "httpx.AsyncClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = _MockUpstreamResponse(
+                {"choices": [{"message": {"content": "ok"}}]}
+            )
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            first = client.post(
+                "/primary",
+                headers={
+                    "X-Convo-ID": "session-reasoning-conflict",
+                    "X-Reasoning-Effort": "low",
+                },
+                json={"messages": [{"role": "user", "content": "one"}]},
+            )
+            second = client.post(
+                "/primary",
+                headers={
+                    "X-Convo-ID": "session-reasoning-conflict",
+                    "X-Reasoning-Effort": "high",
+                },
+                json={"messages": [{"role": "user", "content": "two"}]},
+            )
+
+        assert first.status_code == 200
+        assert second.status_code == 409
+
+    def test_reasoning_switch_with_opt_in_updates_state(
+        self, client, memory_history_store
+    ):
+        mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
+        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+            "httpx.AsyncClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = _MockUpstreamResponse(
+                {"choices": [{"message": {"content": "ok"}}]}
+            )
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            first = client.post(
+                "/primary",
+                headers={
+                    "X-Convo-ID": "session-reasoning-switch",
+                    "X-Reasoning-Effort": "low",
+                },
+                json={"messages": [{"role": "user", "content": "one"}]},
+            )
+            second = client.post(
+                "/primary",
+                headers={
+                    "X-Convo-ID": "session-reasoning-switch",
+                    "X-Reasoning-Effort": "high",
+                    "X-Allow-Reasoning-Switch": "true",
+                },
+                json={"messages": [{"role": "user", "content": "two"}]},
+            )
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert second.headers["x-reasoning-switched"] == "true"
+        assert second.headers["x-reasoning-previous"] == "low"
+        assert second.headers["x-reasoning-effort"] == "high"
+        assert second.headers["x-warning"] == proxy_module.SWITCH_WARNING_MESSAGE
+        assert memory_history_store.conversation_states["session-reasoning-switch"][
+            "reasoning_effort"
+        ] == "high"
+        second_body = mock_client.post.call_args.kwargs["json"]
+        assert second_body["reasoning_effort"] == "high"
+        assert second_body["messages"][0] == {
+            "role": "system",
+            "content": "Reasoning: high",
+        }
 
     def test_pinned_reasoning_is_reused_when_later_turn_omits_header(self, client):
         mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]

@@ -72,7 +72,7 @@ app_ui = ui.page_fluid(
                         col_widths=[9, 3],
                     ),
                     ui.input_switch("stream", "Streaming", True),
-                    ui.input_switch("autoScroll", "Auto-scroll", True),
+                    ui.input_switch("autoScroll", "Follow output", True),
                     ui.input_switch("outputReasoning", "Show reasoning", True),
                     ui.input_select(
                         "reasoningEffort",
@@ -85,11 +85,13 @@ app_ui = ui.page_fluid(
                         },
                         selected="medium",
                     ),
+                    ui.output_ui("system_prompt_ui"),
                     ui.hr(),
                     ui.input_switch("outputJSON", "JSON output", False),
                     ui.hr(),
                     shinyswatch.theme_picker_ui(),
                     ui.input_action_button("logout", "Logout"),
+                    width="375px",
                 ),
                 ui.layout_columns(
                     ui.chat_ui(
@@ -108,7 +110,6 @@ app_ui = ui.page_fluid(
                             ui.input_action_button("generateConvoID", "🔄"),
                             col_widths=[10, 2],
                         ),
-                        ui.output_ui("system_prompt_ui"),
                         ui.layout_columns(
                             ui.input_select(
                                 "ragEndpoint",

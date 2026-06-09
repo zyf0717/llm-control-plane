@@ -212,6 +212,36 @@ async def test_fetch_search_results_posts_to_proxy(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fetch_convo_state_posts_to_proxy(monkeypatch):
+    monkeypatch.setattr(utils, "PROXY_BASE_URL", "http://proxy.local")
+
+    response = Mock()
+    response.raise_for_status = Mock()
+    response.json.return_value = {
+        "convo_id": "convo-1",
+        "route_endpoint": "primary",
+        "reasoning_effort": "high",
+    }
+
+    with patch("httpx.AsyncClient") as mock_client_class:
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        mock_client.post.return_value = response
+
+        payload = await utils.fetch_convo_state("convo-1")
+
+    assert payload == {
+        "convo_id": "convo-1",
+        "route_endpoint": "primary",
+        "reasoning_effort": "high",
+    }
+    mock_client.post.assert_awaited_once_with(
+        "http://proxy.local/conversations/state",
+        json={"convo_id": "convo-1"},
+    )
+
+
+@pytest.mark.asyncio
 async def test_fetch_search_results_posts_trimmed_context(monkeypatch):
     monkeypatch.setattr(utils, "PROXY_BASE_URL", "http://proxy.local")
     monkeypatch.setattr(utils, "load_search_planner_max_context_chars", lambda: 12)

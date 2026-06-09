@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -47,9 +48,6 @@ search_service = build_search_router(
 
 logger = logging.getLogger(__name__)
 
-# FastAPI app
-app = FastAPI()
-
 # Global conversation store
 history_store: HistoryStore = MemoryHistoryStore()
 
@@ -58,6 +56,10 @@ reachable_endpoints: Dict[str, dict] = {}
 VALID_REASONING_EFFORTS = {"low", "medium", "high"}
 history_finalization_tasks: set[asyncio.Task] = set()
 stream_producer_tasks: set[asyncio.Task] = set()
+SWITCH_WARNING_MESSAGE = (
+    "Conversation endpoint/reasoning changed; full history was replayed to the "
+    "selected endpoint."
+)
 
 
 def _track_history_finalization(task: asyncio.Task) -> asyncio.Task:
@@ -153,16 +155,27 @@ async def initialize_history_store() -> None:
     logger.info("Conversation history backend: %s", history_store.backend_name)
 
 
-@app.on_event("startup")
 async def startup_history_store() -> None:
     await initialize_history_store()
 
 
-@app.on_event("shutdown")
 async def shutdown_history_store() -> None:
     await _drain_stream_producers()
     await _drain_history_finalizations()
     await history_store.close()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    await startup_history_store()
+    try:
+        yield
+    finally:
+        await shutdown_history_store()
+
+
+# FastAPI app
+app = FastAPI(lifespan=lifespan)
 
 
 class RequestProcessor:
@@ -212,6 +225,10 @@ class RequestProcessor:
     def _normalize_reasoning_effort(raw_effort: Optional[str]) -> Optional[str]:
         effort = str(raw_effort or "").strip().lower()
         return effort if effort in VALID_REASONING_EFFORTS else None
+
+    @staticmethod
+    def _truthy_header(raw_value: Optional[str]) -> bool:
+        return str(raw_value or "").strip().lower() in {"1", "true", "yes", "on"}
 
     @staticmethod
     def _normalize_rag_endpoint(rag_endpoint: Optional[str]) -> Optional[str]:
@@ -482,7 +499,14 @@ class RequestProcessor:
                     "role": "system",
                     "content": f"Reasoning: {reasoning_effort}",
                 }
-                messages.insert(0, reasoning_msg)
+                insert_at = (
+                    1
+                    if messages
+                    and messages[0].get("role") == "system"
+                    and "Reasoning:" not in messages[0].get("content", "")
+                    else 0
+                )
+                messages.insert(insert_at, reasoning_msg)
                 logger.info(f"Applied reasoning: {reasoning_effort}")
 
         rag_user_content, rag_headers = await RequestProcessor._fetch_rag_message(
@@ -833,6 +857,12 @@ async def proxy_request(
     requested_reasoning = RequestProcessor._normalize_reasoning_effort(
         request.headers.get("X-Reasoning-Effort")
     )
+    allow_route_switch = RequestProcessor._truthy_header(
+        request.headers.get("X-Allow-Route-Switch")
+    )
+    allow_reasoning_switch = RequestProcessor._truthy_header(
+        request.headers.get("X-Allow-Reasoning-Switch")
+    )
     valid_endpoints = RequestProcessor.configured_endpoint_names()
     state_headers: Dict[str, str] = {}
     effective_reasoning = requested_reasoning
@@ -843,6 +873,8 @@ async def proxy_request(
             route_endpoint=endpoint_key,
             reasoning_effort=requested_reasoning,
             valid_route_endpoints=valid_endpoints,
+            allow_route_switch=allow_route_switch,
+            allow_reasoning_switch=allow_reasoning_switch,
         )
         if state_update.get("conflict"):
             conflicts = state_update.get("conflicts") or {}
@@ -866,6 +898,21 @@ async def proxy_request(
             state = state_update["state"]
             if state_update.get("route_stale"):
                 state_headers["X-Route-Pin-Stale"] = "true"
+            switched = state_update.get("switched") or {}
+            if isinstance(switched, dict):
+                if switched.get("route_endpoint"):
+                    state_headers["X-Route-Switched"] = "true"
+                    state_headers["X-Route-Previous"] = str(
+                        switched["route_endpoint"]
+                    )
+                    state_headers["X-Route-Decision"] = endpoint_key
+                if switched.get("reasoning_effort"):
+                    state_headers["X-Reasoning-Switched"] = "true"
+                    state_headers["X-Reasoning-Previous"] = str(
+                        switched["reasoning_effort"]
+                    )
+                if switched:
+                    state_headers["X-Warning"] = SWITCH_WARNING_MESSAGE
 
         effective_reasoning = RequestProcessor._normalize_reasoning_effort(
             state.get("reasoning_effort")
@@ -1042,6 +1089,27 @@ async def retrieve_conversation(request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.post("/conversations/state")
+async def retrieve_conversation_state(request: Request):
+    """Retrieve route/reasoning/slot state for a conversation."""
+    try:
+        body = await request.json()
+        convo_id = body.get("convo_id")
+
+        if not convo_id:
+            raise HTTPException(status_code=400, detail="Missing convo_id")
+
+        return await history_store.get_conversation_state(str(convo_id))
+
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving conversation state: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.get("/conversations")
 async def list_conversations():
     """List conversation metadata sorted by most recent activity."""
@@ -1065,20 +1133,6 @@ async def list_models():
         if not url:
             logger.warning(f"No URL for endpoint: {name}")
             return []
-
-        # Special handling for Auto endpoint
-        if name == "Auto":
-            return [
-                {
-                    "id": "auto-router",
-                    "object": "model",
-                    "created": int(datetime.now().timestamp()),
-                    "owned_by": "llm-control-plane",
-                    "endpoint": name,
-                    "endpoint_url": url,
-                    "description": "Intelligent routing to best available endpoint",
-                }
-            ]
 
         # Fetch models from endpoint
         try:

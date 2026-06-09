@@ -261,19 +261,6 @@ async def fetch_available_endpoints():
                     }
                 endpoints[endpoint_name]["models"].append(model)
 
-        endpoints["Auto"] = {
-            "endpoint_url": f"{PROXY_BASE_URL}/smart",
-            "models": [
-                {
-                    "id": "auto-router",
-                    "object": "model",
-                    "endpoint": "Auto",
-                    "endpoint_url": f"{PROXY_BASE_URL}/smart",
-                    "description": "Intelligent routing to best available endpoint",
-                }
-            ],
-        }
-
         logger.info("Fetched endpoints: %s", endpoints)
         logger.debug("Raw model data: %s", data)
         return endpoints, data
@@ -288,9 +275,6 @@ def create_endpoint_display_choices(endpoints_data):
     mapping = {}
 
     for endpoint_name, endpoint_data in endpoints_data.items():
-        if endpoint_name == "Auto":
-            continue
-
         models = endpoint_data.get("models", [])
         if models:
             model_name = models[0].get("id", "")
@@ -330,6 +314,21 @@ async def fetch_convo_history(convo_id):
             return response.json()
     except Exception as e:
         logger.warning("Failed to fetch conversation history: %s", e)
+        return {}
+
+
+async def fetch_convo_state(convo_id):
+    """Fetch persisted proxy route/reasoning state for a conversation."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{PROXY_BASE_URL}/conversations/state", json={"convo_id": convo_id}
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data if isinstance(data, dict) else {}
+    except Exception as e:
+        logger.warning("Failed to fetch conversation state: %s", e)
         return {}
 
 

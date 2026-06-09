@@ -76,6 +76,8 @@ class HistoryStore(ABC):
         reasoning_effort: Optional[str] = None,
         valid_route_endpoints: Optional[List[str]] = None,
         clear_route: bool = False,
+        allow_route_switch: bool = False,
+        allow_reasoning_switch: bool = False,
     ) -> Dict[str, object]:
         """Atomically pin compatible route/reasoning metadata."""
 
@@ -145,6 +147,8 @@ class MemoryHistoryStore(HistoryStore):
         reasoning_effort: Optional[str] = None,
         valid_route_endpoints: Optional[List[str]] = None,
         clear_route: bool = False,
+        allow_route_switch: bool = False,
+        allow_reasoning_switch: bool = False,
     ) -> Dict[str, object]:
         async with self._state_lock:
             state = _normalize_state(self.conversation_states.get(convo_id), convo_id)
@@ -154,6 +158,8 @@ class MemoryHistoryStore(HistoryStore):
                 reasoning_effort=reasoning_effort,
                 valid_route_endpoints=valid_route_endpoints,
                 clear_route=clear_route,
+                allow_route_switch=allow_route_switch,
+                allow_reasoning_switch=allow_reasoning_switch,
             )
             if not result.get("conflict"):
                 self.conversation_states[convo_id] = deepcopy(result["state"])
@@ -179,6 +185,8 @@ class MemoryHistoryStore(HistoryStore):
         reasoning_effort: Optional[str],
         valid_route_endpoints: Optional[List[str]],
         clear_route: bool,
+        allow_route_switch: bool,
+        allow_reasoning_switch: bool,
     ) -> Dict[str, object]:
         updated = _normalize_state(state, str(state.get("convo_id") or ""))
         current_route = str(updated.get("route_endpoint") or "").strip() or None
@@ -195,15 +203,22 @@ class MemoryHistoryStore(HistoryStore):
         )
         comparable_route = None if route_stale else current_route
         conflicts: Dict[str, str] = {}
+        switched: Dict[str, str] = {}
 
         if route_endpoint and comparable_route and comparable_route != route_endpoint:
-            conflicts["route_endpoint"] = comparable_route
+            if allow_route_switch:
+                switched["route_endpoint"] = comparable_route
+            else:
+                conflicts["route_endpoint"] = comparable_route
         if (
             reasoning_effort
             and current_reasoning
             and current_reasoning != reasoning_effort
         ):
-            conflicts["reasoning_effort"] = current_reasoning
+            if allow_reasoning_switch:
+                switched["reasoning_effort"] = current_reasoning
+            else:
+                conflicts["reasoning_effort"] = current_reasoning
 
         if conflicts:
             return {
@@ -234,6 +249,7 @@ class MemoryHistoryStore(HistoryStore):
             "conflict": False,
             "conflicts": {},
             "route_stale": route_stale,
+            "switched": switched,
         }
 
     def clear(self) -> None:
@@ -365,6 +381,8 @@ class SQLiteHistoryStore(HistoryStore):
         reasoning_effort: Optional[str] = None,
         valid_route_endpoints: Optional[List[str]] = None,
         clear_route: bool = False,
+        allow_route_switch: bool = False,
+        allow_reasoning_switch: bool = False,
     ) -> Dict[str, object]:
         conn = self._require_connection()
         async with self._write_lock:
@@ -387,6 +405,8 @@ class SQLiteHistoryStore(HistoryStore):
                     reasoning_effort=reasoning_effort,
                     valid_route_endpoints=valid_route_endpoints,
                     clear_route=clear_route,
+                    allow_route_switch=allow_route_switch,
+                    allow_reasoning_switch=allow_reasoning_switch,
                 )
                 if result.get("conflict"):
                     await conn.rollback()

@@ -1,14 +1,14 @@
 from src.dashboard.app_server import (
     _format_trace_summary,
     _format_trace_timestamp,
+    build_fork_notice,
     build_search_failure_state,
     build_search_preface,
     build_search_planner_context,
     build_search_success_state,
     build_search_turn_messages,
+    conversation_control_change_reasons,
     merge_run_info,
-    pin_auto_route_decision,
-    resolve_auto_endpoint_key,
     resolve_endpoint_display_selection,
 )
 from src.search.safety import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER
@@ -244,7 +244,7 @@ def test_build_search_preface_handles_empty_successful_search():
 
 def test_merge_run_info_adds_search_block_without_dropping_existing_metadata():
     merged = merge_run_info(
-        {"routing": {"decision": "Auto"}},
+        {"routing": {"decision": "smart"}},
         build_search_success_state(
             {
                 "provider": "duckduckgo_html",
@@ -257,7 +257,7 @@ def test_merge_run_info_adds_search_block_without_dropping_existing_metadata():
     )
 
     assert merged == {
-        "routing": {"decision": "Auto"},
+        "routing": {"decision": "smart"},
         "search": {
             "provider": "DuckDuckGo",
             "provider_id": "duckduckgo_html",
@@ -268,32 +268,7 @@ def test_merge_run_info_adds_search_block_without_dropping_existing_metadata():
     }
 
 
-def test_resolve_auto_endpoint_key_uses_first_pinned_decision_for_convo():
-    pins = {"convo-a": "gmktec-evo-x2-primary"}
-
-    assert resolve_auto_endpoint_key("Auto", "convo-a", pins) == "gmktec-evo-x2-primary"
-    assert resolve_auto_endpoint_key("Auto", "convo-b", pins) == "Auto"
-    assert resolve_auto_endpoint_key("mac-mini", "convo-a", pins) == "mac-mini"
-
-
-def test_pin_auto_route_decision_records_only_first_auto_decision():
-    pins = pin_auto_route_decision(
-        {},
-        "convo-a",
-        "Auto",
-        {"routing": {"decision": "gmktec-evo-x2-primary", "strategy": "programming"}},
-    )
-
-    assert pins == {"convo-a": "gmktec-evo-x2-primary"}
-    assert pin_auto_route_decision(
-        pins,
-        "convo-a",
-        "Auto",
-        {"routing": {"decision": "mac-mini", "strategy": "ttft_content"}},
-    ) == {"convo-a": "gmktec-evo-x2-primary"}
-
-
-def test_resolve_endpoint_display_selection_preserves_current_display():
+def test_resolve_endpoint_display_selection_uses_persisted_endpoint_key():
     choices = {
         "node-a (model-a)": "node-a",
         "node-b (model-b)": "node-b",
@@ -305,9 +280,8 @@ def test_resolve_endpoint_display_selection_preserves_current_display():
             choices,
             mapping,
             preferred_endpoint_key="node-a",
-            current_display_value="node-b (model-b)",
         )
-        == "node-b (model-b)"
+        == "node-a (model-a)"
     )
 
 
@@ -323,14 +297,80 @@ def test_resolve_endpoint_display_selection_uses_stored_endpoint_after_rebuild()
             choices,
             mapping,
             preferred_endpoint_key="node-b",
-            current_display_value="",
         )
         == "node-b (new-model-b)"
     )
 
 
-def test_pin_auto_route_decision_ignores_static_endpoint_and_missing_convo():
-    metadata = {"routing": {"decision": "gmktec-evo-x2-primary"}}
+def test_resolve_endpoint_display_selection_falls_back_when_endpoint_disappears():
+    choices = {
+        "node-a (model-a)": "node-a",
+        "node-c (model-c)": "node-c",
+    }
+    mapping = dict(choices)
 
-    assert pin_auto_route_decision({}, "convo-a", "mac-mini", metadata) == {}
-    assert pin_auto_route_decision({}, "", "Auto", metadata) == {}
+    assert (
+        resolve_endpoint_display_selection(
+            choices,
+            mapping,
+            preferred_endpoint_key="node-b",
+        )
+        == "node-a (model-a)"
+    )
+
+
+def test_conversation_control_change_reasons_detects_mid_convo_prompt_change():
+    state = {
+        "started": True,
+        "committed_prompt": "Be concise.",
+        "reasoning_effort": "medium",
+    }
+
+    assert conversation_control_change_reasons(
+        state,
+        current_prompt="Be precise.",
+        current_reasoning="medium",
+    ) == ["system prompt"]
+
+
+def test_conversation_control_change_reasons_detects_mid_convo_reasoning_change():
+    state = {
+        "started": True,
+        "committed_prompt": "Be concise.",
+        "reasoning_effort": "medium",
+    }
+
+    assert conversation_control_change_reasons(
+        state,
+        current_prompt="Be concise.",
+        current_reasoning="high",
+    ) == ["reasoning"]
+
+
+def test_conversation_control_change_reasons_ignores_unstarted_convo():
+    state = {
+        "started": False,
+        "committed_prompt": "Be concise.",
+        "reasoning_effort": "medium",
+    }
+
+    assert (
+        conversation_control_change_reasons(
+            state,
+            current_prompt="Be precise.",
+            current_reasoning="high",
+        )
+        == []
+    )
+
+
+def test_build_fork_notice_names_old_new_ids_and_reasons():
+    notice = build_fork_notice(
+        old_convo_id="old123",
+        new_convo_id="new456",
+        reasons=["system prompt", "reasoning"],
+    )
+
+    assert "`old123`" in notice
+    assert "`new456`" in notice
+    assert "system prompt and reasoning changed" in notice

@@ -52,7 +52,7 @@ def format_model_details(model: Dict[str, Any]) -> List[str]:
 
 
 def format_all_available_models(endpoint_data: Optional[Dict[str, Any]]) -> List[str]:
-    """Format all available models for display when Auto is selected."""
+    """Format all available models for display when smart routing is selected."""
     if not endpoint_data or "data" not in endpoint_data:
         return []
 

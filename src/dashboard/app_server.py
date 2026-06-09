@@ -38,6 +38,7 @@ from .utils import (
     fetch_available_rag_endpoints,
     fetch_available_search_providers,
     fetch_convo_history,
+    fetch_convo_state,
     fetch_search_results,
     format_search_provider_label,
     find_model_by_endpoint,
@@ -45,7 +46,6 @@ from .utils import (
 )
 
 
-AUTO_ENDPOINT_KEY = "Auto"
 TRACE_DISPLAY_TIMEZONE_LABEL = "GMT+8"
 
 
@@ -244,66 +244,13 @@ def merge_run_info(
     return merged or None
 
 
-def resolve_auto_endpoint_key(
-    endpoint_key: Optional[str],
-    convo_id: Optional[str],
-    auto_route_pins: Optional[Dict[str, str]],
-) -> Optional[str]:
-    """Resolve Auto to a previously pinned endpoint for this conversation."""
-    if endpoint_key != AUTO_ENDPOINT_KEY:
-        return endpoint_key
-
-    normalized_convo_id = str(convo_id or "").strip()
-    if not normalized_convo_id:
-        return endpoint_key
-
-    pinned_endpoint = str((auto_route_pins or {}).get(normalized_convo_id) or "").strip()
-    if pinned_endpoint and pinned_endpoint != AUTO_ENDPOINT_KEY:
-        return pinned_endpoint
-
-    return endpoint_key
-
-
-def pin_auto_route_decision(
-    auto_route_pins: Optional[Dict[str, str]],
-    convo_id: Optional[str],
-    selected_endpoint_key: Optional[str],
-    metadata: Optional[Dict[str, Any]],
-) -> Dict[str, str]:
-    """Pin the first Auto routing decision for a conversation."""
-    pins = dict(auto_route_pins or {})
-    normalized_convo_id = str(convo_id or "").strip()
-    if (
-        selected_endpoint_key != AUTO_ENDPOINT_KEY
-        or not normalized_convo_id
-        or normalized_convo_id in pins
-        or not isinstance(metadata, dict)
-    ):
-        return pins
-
-    routing_info = metadata.get("routing")
-    if not isinstance(routing_info, dict):
-        return pins
-
-    decision = str(routing_info.get("decision") or "").strip()
-    if decision and decision != AUTO_ENDPOINT_KEY:
-        pins[normalized_convo_id] = decision
-
-    return pins
-
-
 def resolve_endpoint_display_selection(
     choices: Dict[str, str],
     mapping: Dict[str, str],
     *,
     preferred_endpoint_key: Optional[str],
-    current_display_value: Optional[str],
 ) -> Optional[str]:
-    """Select a stable endpoint display value across dropdown rebuilds."""
-    current_display = str(current_display_value or "").strip()
-    if current_display and current_display in choices:
-        return current_display
-
+    """Resolve a persisted endpoint key against the current machine snapshot."""
     preferred_endpoint = str(preferred_endpoint_key or "").strip()
     if preferred_endpoint:
         for display_value, endpoint_key in mapping.items():
@@ -311,6 +258,51 @@ def resolve_endpoint_display_selection(
                 return display_value
 
     return next(iter(choices), None)
+
+
+def normalize_reasoning_effort(reasoning_effort: Optional[str]) -> str:
+    normalized = str(reasoning_effort or "").strip().lower()
+    return normalized if normalized in {"none", "low", "medium", "high"} else "none"
+
+
+def conversation_control_change_reasons(
+    state: Dict[str, Any],
+    *,
+    current_prompt: Optional[str],
+    current_reasoning: Optional[str],
+) -> list[str]:
+    """Return control changes that require a fork before the next turn."""
+    if not bool(state.get("started")):
+        return []
+
+    reasons: list[str] = []
+    committed_prompt = normalize_system_prompt(
+        state.get("committed_prompt")
+        if state.get("committed_prompt") is not None
+        else state.get("prompt")
+    )
+    if normalize_system_prompt(current_prompt) != committed_prompt:
+        reasons.append("system prompt")
+
+    committed_reasoning = normalize_reasoning_effort(state.get("reasoning_effort"))
+    if normalize_reasoning_effort(current_reasoning) != committed_reasoning:
+        reasons.append("reasoning")
+
+    return reasons
+
+
+def build_fork_notice(
+    *,
+    old_convo_id: str,
+    new_convo_id: str,
+    reasons: list[str],
+) -> str:
+    reason_text = " and ".join(reasons) if reasons else "conversation controls"
+    return (
+        f"Conversation forked from `{old_convo_id}` to `{new_convo_id}` because "
+        f"{reason_text} changed. Prior history was copied and the new settings "
+        "were applied at the start of the fork."
+    )
 
 
 def _format_trace_summary(event: Dict[str, Any]) -> str:
@@ -361,12 +353,10 @@ def server(input, output, session):
     file_upload_key = reactive.Value(0)
     current_files = reactive.Value({"key": 0, "files": None})
     system_prompt_states = reactive.Value({})
-    system_prompt_locked = reactive.Value(False)
     system_prompt_seed = reactive.Value("")
     history_refresh_trigger = reactive.Value(0)
     history_selected_convo_id = reactive.Value("")
     trace_snapshot = reactive.Value(None)
-    auto_route_pins = reactive.Value({})
 
     def current_active_convo_id() -> str:
         return str(input.convoID() or "").strip()
@@ -398,10 +388,16 @@ def server(input, output, session):
         prompt: Optional[str] = None,
         started: Optional[bool] = None,
         locked: Optional[bool] = None,
+        committed_prompt: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> Dict[str, Any]:
         state = dict(get_system_prompt_state(convo_id))
         if prompt is not None:
             state["prompt"] = normalize_system_prompt(prompt)
+        if committed_prompt is not None:
+            state["committed_prompt"] = normalize_system_prompt(committed_prompt)
+        if reasoning_effort is not None:
+            state["reasoning_effort"] = normalize_reasoning_effort(reasoning_effort)
         if started is not None:
             state["started"] = bool(started)
         if locked is not None:
@@ -413,8 +409,9 @@ def server(input, output, session):
         return state
 
     def apply_system_prompt_view(state: Dict[str, Any]) -> None:
-        system_prompt_locked.set(bool(state.get("locked")))
         system_prompt_seed.set(str(state.get("prompt") or ""))
+        reasoning_effort = normalize_reasoning_effort(state.get("reasoning_effort"))
+        ui.update_select("reasoningEffort", selected=reasoning_effort, session=session)
 
     async def load_system_prompt_state(convo_id: str) -> Dict[str, Any]:
         if not convo_id:
@@ -428,15 +425,22 @@ def server(input, output, session):
             return cached_state
 
         convo_history = await fetch_convo_history(convo_id)
+        convo_state = await fetch_convo_state(convo_id)
+        persisted_reasoning = str(convo_state.get("reasoning_effort") or "").strip()
+        reasoning_effort = normalize_reasoning_effort(
+            persisted_reasoning or input.reasoningEffort()
+        )
         if isinstance(convo_history, list) and convo_history:
             restored_prompt = extract_first_system_prompt(convo_history)
             state = build_system_prompt_state(
                 restored_prompt,
                 started=True,
-                locked=True,
+                locked=False,
+                committed_prompt=restored_prompt,
+                reasoning_effort=reasoning_effort,
             )
         else:
-            state = build_system_prompt_state()
+            state = build_system_prompt_state(reasoning_effort=reasoning_effort)
 
         states = dict(system_prompt_states.get())
         states[convo_id] = state
@@ -451,11 +455,12 @@ def server(input, output, session):
 
         choices, mapping = create_endpoint_display_choices(endpoints)
         endpoint_display_mapping.set(mapping)
+        with reactive.isolate():
+            preferred_endpoint_key = selected_endpoint_key_state.get()
         selected = resolve_endpoint_display_selection(
             choices,
             mapping,
-            preferred_endpoint_key=selected_endpoint_key_state.get(),
-            current_display_value=current_endpoint_display_value(),
+            preferred_endpoint_key=preferred_endpoint_key,
         )
         if selected:
             selected_endpoint_key_state.set(mapping.get(selected, ""))
@@ -495,7 +500,8 @@ def server(input, output, session):
         )
 
     async def update_history_selector() -> None:
-        current_selection = current_history_convo_id()
+        with reactive.isolate():
+            current_selection = current_history_convo_id()
         conversations = await fetch_conversation_summaries()
         history_choices = create_history_select_choices(conversations)
         selected = current_selection if current_selection in history_choices else None
@@ -573,39 +579,33 @@ def server(input, output, session):
     def _generate_convo_id():
         new_uuid = str(uuid.uuid4().hex[:12])
         apply_system_prompt_view(
-            set_system_prompt_state(new_uuid, prompt="", started=False, locked=False)
+            set_system_prompt_state(
+                new_uuid,
+                prompt="",
+                reasoning_effort=input.reasoningEffort(),
+                started=False,
+                locked=False,
+            )
         )
         ui.update_text("convoID", value=new_uuid, session=session)
 
     @render.ui
     def system_prompt_ui():
         prompt = system_prompt_seed.get()
-        locked = system_prompt_locked.get()
-        prompt_input = ui.input_text_area(
+        return ui.input_text_area(
             "systemPrompt",
-            "System Prompt" + " (locked after turn 1)" if locked else "System Prompt",
+            "System Prompt",
             value=prompt,
-            placeholder="System prompt (optional, locked after turn 1)",
+            placeholder="System prompt",
             width="100%",
-            rows=4,
-        )
-
-        if not locked:
-            return prompt_input
-
-        return ui.div(
-            ui.tags.fieldset(
-                prompt_input,
-                disabled="disabled",
-                style="border: 0; margin: 0; padding: 0; min-inline-size: 0;",
-            ),
+            rows=8,
         )
 
     @reactive.Effect
     @reactive.event(input.systemPrompt)
     def _store_system_prompt_input():
         convo_id = current_active_convo_id()
-        if not convo_id or system_prompt_locked.get():
+        if not convo_id:
             return
         set_system_prompt_state(convo_id, prompt=input.systemPrompt() or "")
 
@@ -613,7 +613,7 @@ def server(input, output, session):
     @reactive.event(input.ragEndpoint)
     async def _append_rag_suffix_for_selected_endpoint():
         convo_id = current_active_convo_id()
-        if not convo_id or system_prompt_locked.get():
+        if not convo_id:
             return
 
         rag_endpoint = str(input.ragEndpoint() or "").strip()
@@ -722,7 +722,7 @@ def server(input, output, session):
                     routing_lines.append(formatter(routing_info[field]))
             if routing_lines:
                 sections.append(
-                    "**Auto-Routing Decision**<br>" + "<br>".join(routing_lines)
+                    "**Smart Routing Decision**<br>" + "<br>".join(routing_lines)
                 )
 
         if info and "rag" in info:
@@ -782,11 +782,12 @@ def server(input, output, session):
         if not model and routing_info and "decision" in routing_info:
             model = find_model_by_endpoint(endpoint_data, routing_info["decision"])
 
-        if current_endpoint in ["Auto", "smart"] and not routing_info:
+        if current_endpoint == "smart" and not routing_info:
             all_models = format_all_available_models(endpoint_data)
             if all_models:
                 sections.append(
-                    "**Available Models (Auto-mode)**<br><br>" + "<br>".join(all_models)
+                    "**Available Models (smart routing)**<br><br>"
+                    + "<br>".join(all_models)
                 )
         elif model:
             hardware_info = format_hardware_info(model, routing_info)
@@ -814,10 +815,7 @@ def server(input, output, session):
         current_run_info = run_info.get() or {}
         selected_endpoint_key = current_endpoint_key()
         convo_id = current_active_convo_id() or None
-        auto_route_pins_snapshot = dict(auto_route_pins.get())
-        actual_endpoint_key = resolve_auto_endpoint_key(
-            selected_endpoint_key, convo_id, auto_route_pins_snapshot
-        )
+        actual_endpoint_key = selected_endpoint_key
         search_query = str(user_input or "").strip()
         prompt_state = (
             get_system_prompt_state(convo_id)
@@ -855,6 +853,44 @@ def server(input, output, session):
             if input.systemPrompt() is not None
             else prompt_state.get("prompt")
         )
+        current_reasoning = normalize_reasoning_effort(input.reasoningEffort())
+        forked_history: list[dict[str, Any]] = []
+        fork_reasons = conversation_control_change_reasons(
+            prompt_state,
+            current_prompt=current_prompt,
+            current_reasoning=current_reasoning,
+        )
+        if convo_id and fork_reasons:
+            old_convo_id = convo_id
+            loaded_history = await fetch_convo_history(old_convo_id)
+            if isinstance(loaded_history, list):
+                forked_history = [
+                    dict(message)
+                    for message in loaded_history
+                    if isinstance(message, dict) and message.get("role") != "system"
+                ]
+            convo_id = str(uuid.uuid4().hex[:12])
+            prompt_state = set_system_prompt_state(
+                convo_id,
+                prompt=current_prompt,
+                committed_prompt=current_prompt,
+                reasoning_effort=current_reasoning,
+                started=False,
+                locked=False,
+            )
+            apply_system_prompt_view(prompt_state)
+            ui.update_text("convoID", value=convo_id, session=session)
+            await chat.append_message(
+                {
+                    "role": "assistant",
+                    "content": build_fork_notice(
+                        old_convo_id=old_convo_id,
+                        new_convo_id=convo_id,
+                        reasons=fork_reasons,
+                    ),
+                }
+            )
+
         system_prompt_to_send = first_turn_system_prompt_to_send(
             current_prompt,
             bool(prompt_state.get("started")),
@@ -864,7 +900,12 @@ def server(input, output, session):
         selected_search_provider = str(input.searchProvider() or "").strip()
         if selected_search_provider and search_query:
             try:
-                planner_history = await fetch_convo_history(convo_id) if convo_id else []
+                if fork_reasons:
+                    planner_history = forked_history
+                elif convo_id:
+                    planner_history = await fetch_convo_history(convo_id)
+                else:
+                    planner_history = []
                 planner_context = build_search_planner_context(
                     system_prompt=current_prompt,
                     history=planner_history,
@@ -884,24 +925,16 @@ def server(input, output, session):
         if search_preface:
             await chat.append_message({"role": "assistant", "content": search_preface})
 
-        extra_turn_messages = build_search_turn_messages(search_state)
+        extra_turn_messages = [
+            *forked_history,
+            *build_search_turn_messages(search_state),
+        ]
         if search_state:
             run_info.set(merge_run_info({}, search_state))
 
-        local_auto_route_pins = auto_route_pins_snapshot
-
         def publish_run_info(metadata: Optional[Dict[str, Any]]) -> None:
-            nonlocal local_auto_route_pins
-
             merged_info = merge_run_info(metadata, search_state)
             run_info.set(merged_info)
-
-            updated_pins = pin_auto_route_decision(
-                local_auto_route_pins, convo_id, selected_endpoint_key, merged_info
-            )
-            if updated_pins != local_auto_route_pins:
-                local_auto_route_pins = updated_pins
-                auto_route_pins.set(updated_pins)
 
         response_stream = stream_chat_response(
             endpoint_key=actual_endpoint_key,
@@ -909,7 +942,7 @@ def server(input, output, session):
             endpoints_dict=current_endpoints,
             stream=input.stream(),
             output_json=input.outputJSON(),
-            reasoning_effort=input.reasoningEffort(),
+            reasoning_effort=current_reasoning,
             output_reasoning=input.outputReasoning(),
             convo_id=convo_id,
             current_routing_info=current_run_info.get("routing", {}),
@@ -927,8 +960,10 @@ def server(input, output, session):
                 set_system_prompt_state(
                     convo_id,
                     prompt=current_prompt,
+                    committed_prompt=current_prompt,
+                    reasoning_effort=current_reasoning,
                     started=True,
-                    locked=True,
+                    locked=False,
                 )
             )
 
