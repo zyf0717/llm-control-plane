@@ -1,6 +1,30 @@
 import shinyswatch
 from shiny import ui
 
+
+def input_action_row(
+    input_control,
+    button_id,
+    button_label,
+    *,
+    col_widths=None,
+    button_class=None,
+):
+    """Render one input control with a trailing aligned action button."""
+    return ui.layout_columns(
+        input_control,
+        ui.div(
+            ui.input_action_button(
+                button_id,
+                button_label,
+                class_=button_class,
+            ),
+            style="display: flex; align-items: flex-end; height: 100%;",
+        ),
+        col_widths=col_widths or [10, 2],
+    )
+
+
 app_ui = ui.page_fluid(
     ui.tags.style("""
         :root {
@@ -34,7 +58,7 @@ app_ui = ui.page_fluid(
             overflow-y: auto;
         }
 
-        .dashboard-endpoint-refresh {
+        .dashboard-square-button {
             width: 2.375rem;
             height: 2.375rem;
             min-width: 2.375rem;
@@ -73,22 +97,16 @@ app_ui = ui.page_fluid(
                     window.location.href = "https://llm-dashboard.paperclips.dev/cdn-cgi/access/logout";
                 });
                 """),
-                    ui.layout_columns(
+                    input_action_row(
                         ui.input_select(
                             "endpoint",
                             "Machine Endpoint",
                             choices=[],
                             width="100%",
                         ),
-                        ui.div(
-                            ui.input_action_button(
-                                "refreshEndpoints",
-                                "🔄",
-                                class_="dashboard-endpoint-refresh",
-                            ),
-                            style="display: flex; align-items: flex-end; height: 100%;",
-                        ),
-                        col_widths=[10, 2],
+                        "refreshEndpoints",
+                        "🔄",
+                        button_class="dashboard-square-button",
                     ),
                     ui.input_switch("stream", "Streaming", True),
                     ui.input_switch("autoScroll", "Auto-scroll", True),
@@ -118,28 +136,27 @@ app_ui = ui.page_fluid(
                         height="var(--dashboard-chat-height)",
                     ),
                     ui.div(
-                        ui.layout_columns(
+                        input_action_row(
                             ui.input_text(
                                 "convoID",
                                 "",
                                 placeholder="Convo ID",
                                 width="100%",
                             ),
-                            ui.input_action_button("generateConvoID", "🔄"),
-                            col_widths=[10, 2],
+                            "generateConvoID",
+                            "🔄",
+                            button_class="dashboard-square-button",
                         ),
-                        ui.layout_columns(
+                        input_action_row(
                             ui.input_select(
                                 "ragEndpoint",
                                 "RAG Endpoint",
                                 choices=[],
                                 width="100%",
                             ),
-                            ui.div(
-                                ui.input_action_button("refreshRagEndpoints", "🔄"),
-                                style="display: flex; align-items: flex-end; height: 100%;",
-                            ),
-                            col_widths=[10, 2],
+                            "refreshRagEndpoints",
+                            "🔄",
+                            button_class="dashboard-square-button",
                         ),
                         ui.input_select(
                             "searchProvider",
@@ -165,17 +182,15 @@ app_ui = ui.page_fluid(
         ),
         ui.nav_panel(
             "History",
-            ui.layout_columns(
+            input_action_row(
                 ui.input_select(
                     "historyConvoSelector",
                     "Conversation",
                     choices={},
                     width="100%",
                 ),
-                ui.div(
-                    ui.input_action_button("refreshHistory", "Refresh"),
-                    style="display: flex; align-items: flex-end; height: 100%;",
-                ),
+                "refreshHistory",
+                "Refresh",
                 col_widths=[3, 2],
             ),
             ui.output_ui("historyBox"),
