@@ -48,7 +48,7 @@ The proxy processes chat requests in this order:
 6. For smart routing, reuse a valid route pin or classify the latest user turn and pin the selected endpoint.
 7. Apply best-effort llama.cpp slot affinity for endpoints with `slot_affinity: true`.
 8. Forward the final request to the selected upstream model endpoint.
-9. Normalize streaming/non-streaming reasoning content and attach response metadata headers, including `X-Trace-ID`.
+9. Normalize streaming/non-streaming reasoning content, persist assistant text when present, and attach response metadata headers, including `X-Trace-ID`. Streaming uses a proxy-owned upstream producer and a downstream client consumer, so assistant accumulation and history finalization can continue after client disconnect. Pending producer/finalization tasks are drained on shutdown.
 
 ## Smart Routing Logic
 

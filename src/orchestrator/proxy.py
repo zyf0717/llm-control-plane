@@ -56,6 +56,74 @@ history_store: HistoryStore = MemoryHistoryStore()
 # Global cache of reachable endpoints
 reachable_endpoints: Dict[str, dict] = {}
 VALID_REASONING_EFFORTS = {"low", "medium", "high"}
+history_finalization_tasks: set[asyncio.Task] = set()
+stream_producer_tasks: set[asyncio.Task] = set()
+
+
+def _track_history_finalization(task: asyncio.Task) -> asyncio.Task:
+    history_finalization_tasks.add(task)
+
+    def discard_done(done_task: asyncio.Task) -> None:
+        history_finalization_tasks.discard(done_task)
+        if done_task.cancelled():
+            return
+        exc = done_task.exception()
+        if exc:
+            logger.error(
+                "Background history finalization failed",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+
+    task.add_done_callback(discard_done)
+    return task
+
+
+def _track_stream_producer(task: asyncio.Task) -> asyncio.Task:
+    stream_producer_tasks.add(task)
+
+    def discard_done(done_task: asyncio.Task) -> None:
+        stream_producer_tasks.discard(done_task)
+        if done_task.cancelled():
+            return
+        exc = done_task.exception()
+        if exc:
+            logger.error(
+                "Background stream producer failed",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+
+    task.add_done_callback(discard_done)
+    return task
+
+
+async def _drain_history_finalizations(timeout: float = 5.0) -> None:
+    if not history_finalization_tasks:
+        return
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*history_finalization_tasks, return_exceptions=True),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Timed out waiting for %d history finalization task(s)",
+            len(history_finalization_tasks),
+        )
+
+
+async def _drain_stream_producers(timeout: float = 5.0) -> None:
+    if not stream_producer_tasks:
+        return
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*stream_producer_tasks, return_exceptions=True),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Timed out waiting for %d stream producer task(s)",
+            len(stream_producer_tasks),
+        )
 
 
 def set_history_store(store: HistoryStore) -> None:
@@ -92,6 +160,8 @@ async def startup_history_store() -> None:
 
 @app.on_event("shutdown")
 async def shutdown_history_store() -> None:
+    await _drain_stream_producers()
+    await _drain_history_finalizations()
     await history_store.close()
 
 
@@ -499,12 +569,81 @@ class RequestProcessor:
             return None
 
     @staticmethod
-    async def update_history(convo_id: Optional[str], assistant_text: str) -> None:
-        """Update conversation history with assistant response."""
-        if assistant_text and convo_id:
-            await history_store.append_messages(
-                convo_id, [{"role": "assistant", "content": assistant_text}]
+    async def update_history(
+        convo_id: Optional[str], assistant_text: Optional[str]
+    ) -> Dict[str, Any]:
+        """Persist assistant response text and report the durable outcome."""
+        text = assistant_text or ""
+        outcome: Dict[str, Any] = {
+            "assistant_chars": len(text),
+            "assistant_persisted": False,
+        }
+        if not convo_id:
+            outcome["assistant_skip_reason"] = "no-convo-id"
+            return outcome
+        if not text:
+            outcome["assistant_skip_reason"] = "empty-assistant"
+            return outcome
+
+        await history_store.append_messages(
+            convo_id, [{"role": "assistant", "content": text}]
+        )
+        outcome["assistant_persisted"] = True
+        return outcome
+
+    @staticmethod
+    async def finalize_stream_history(
+        convo_id: Optional[str],
+        assistant_text: Optional[str],
+        trace: Optional[RequestTrace],
+    ) -> None:
+        """Persist streamed assistant text and emit completion trace metadata."""
+        try:
+            history_outcome = await RequestProcessor.update_history(
+                convo_id, assistant_text
             )
+            if trace:
+                trace.history.update(history_outcome)
+        except Exception as exc:
+            logger.exception(
+                "Failed to persist assistant response for convo_id=%s",
+                convo_id,
+            )
+            if trace:
+                trace.error_class = trace.error_class or type(exc).__name__
+                trace.history.update(
+                    {
+                        "assistant_chars": len(assistant_text or ""),
+                        "assistant_persisted": False,
+                        "assistant_error": type(exc).__name__,
+                    }
+                )
+
+        if trace:
+            try:
+                phase = "failed" if trace.error_class else "completed"
+                trace.emit(
+                    status_code=trace.status_code or 200,
+                    phase=phase,
+                )
+            except Exception:
+                logger.exception("Failed to emit request trace")
+
+    @staticmethod
+    async def finalize_stream_response(
+        convo_id: Optional[str],
+        assistant_text: Optional[str],
+        trace: Optional[RequestTrace],
+    ) -> None:
+        """Run stream finalization in a task that survives caller cancellation."""
+        task = _track_history_finalization(
+            asyncio.create_task(
+                RequestProcessor.finalize_stream_history(
+                    convo_id, assistant_text, trace
+                )
+            )
+        )
+        await asyncio.shield(task)
 
 
 class ProxyHandler:
@@ -525,8 +664,14 @@ class ProxyHandler:
         body["stream_options"] = {"include_usage": True}
 
         acc = SSEAccumulator()
+        chunks: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
+        downstream_open = True
 
-        async def stream():
+        async def emit(chunk: bytes) -> None:
+            if downstream_open:
+                await chunks.put(chunk)
+
+        async def produce():
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     async with client.stream(
@@ -547,7 +692,7 @@ class ProxyHandler:
                             )
 
                             if chunk:
-                                yield chunk
+                                await emit(chunk)
 
                             if not should_continue:
                                 break
@@ -556,30 +701,37 @@ class ProxyHandler:
                 if trace:
                     trace.status_code = e.response.status_code
                     trace.error_class = type(e).__name__
-                yield create_error_sse_message(
-                    "error",
-                    status=e.response.status_code,
-                    detail=f"HTTP {e.response.status_code}",
+                await emit(
+                    create_error_sse_message(
+                        "error",
+                        status=e.response.status_code,
+                        detail=f"HTTP {e.response.status_code}",
+                    )
                 )
             except Exception as e:
                 if trace:
                     trace.status_code = 500
                     trace.error_class = type(e).__name__
-                yield create_error_sse_message("error", detail=str(e))
+                await emit(create_error_sse_message("error", detail=str(e)))
             finally:
-                try:
-                    await RequestProcessor.update_history(convo_id, acc.text())
-                except Exception:
-                    pass
-                if trace:
-                    try:
-                        phase = "failed" if trace.error_class else "completed"
-                        trace.emit(
-                            status_code=trace.status_code or 200,
-                            phase=phase,
-                        )
-                    except Exception:
-                        logger.exception("Failed to emit request trace")
+                await RequestProcessor.finalize_stream_response(
+                    convo_id, acc.text(), trace
+                )
+                if downstream_open:
+                    await chunks.put(None)
+
+        _track_stream_producer(asyncio.create_task(produce()))
+
+        async def stream():
+            nonlocal downstream_open
+            try:
+                while True:
+                    chunk = await chunks.get()
+                    if chunk is None:
+                        break
+                    yield chunk
+            finally:
+                downstream_open = False
 
         response_headers = HeaderManager.create_response_headers(
             convo_id=convo_id, for_streaming=True
@@ -633,7 +785,11 @@ class ProxyHandler:
                     assistant_text = None
                     resp_content = resp.content
 
-                await RequestProcessor.update_history(convo_id, assistant_text)
+                history_outcome = await RequestProcessor.update_history(
+                    convo_id, assistant_text
+                )
+                if trace:
+                    trace.history.update(history_outcome)
 
                 response_headers = HeaderManager.create_response_headers(
                     dict(resp.headers), convo_id
@@ -757,7 +913,12 @@ async def proxy_request(
 
     if is_streaming:
         return await ProxyHandler.stream_response(
-            request, target_url, body, convo_id, combined_headers, trace
+            request,
+            target_url,
+            body,
+            convo_id,
+            combined_headers,
+            trace,
         )
     return await ProxyHandler.non_stream_response(
         request, target_url, body, convo_id, combined_headers, trace

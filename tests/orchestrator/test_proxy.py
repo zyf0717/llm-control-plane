@@ -2,6 +2,7 @@
 Test suite for the LLM Control Plane proxy functionality.
 """
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -11,7 +12,7 @@ from fastapi.testclient import TestClient
 from src.logging_config import LOG_DIR_ENV
 from src.orchestrator import proxy as proxy_module
 from src.orchestrator.history_store import MemoryHistoryStore
-from src.orchestrator.proxy import RequestProcessor, app
+from src.orchestrator.proxy import ProxyHandler, RequestProcessor, app
 from src.orchestrator.utils import HeaderManager
 from src.search.safety import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER
 
@@ -65,6 +66,22 @@ class _FakeStreamingResponse:
 
     async def aiter_lines(self):
         yield 'data: {"choices":[{"delta":{"content":"Hello"}}]}'
+        yield "data: [DONE]"
+
+
+class _DelayedStreamingResponse:
+    headers = {}
+
+    def __init__(self, release: asyncio.Event):
+        self.release = release
+
+    def raise_for_status(self):
+        return None
+
+    async def aiter_lines(self):
+        yield 'data: {"choices":[{"delta":{"content":"First"}}]}'
+        await self.release.wait()
+        yield 'data: {"choices":[{"delta":{"content":"Second"}}]}'
         yield "data: [DONE]"
 
 
@@ -192,6 +209,125 @@ class TestEndpointRouting:
         assert {event["request_id"] for event in trace_events} == {trace_id}
         assert {event["endpoint"] for event in trace_events} == {"test-endpoint"}
         assert {event["status_code"] for event in trace_events} == {200}
+
+    def test_custom_endpoint_stream_persists_assistant_and_trace_history(
+        self, client, memory_history_store, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv(LOG_DIR_ENV, str(tmp_path))
+        mock_endpoints = [{"name": "test-endpoint", "url": "https://test.example.com"}]
+
+        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+            "httpx.AsyncClient"
+        ) as mock_client_class:
+            mock_client = Mock()
+            mock_client.stream.return_value = _FakeStreamContext(
+                _FakeStreamingResponse()
+            )
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            response = client.post(
+                "/test-endpoint",
+                headers={"X-Convo-ID": "session-stream"},
+                json={
+                    "stream": True,
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+            )
+
+        assert response.status_code == 200
+        assert memory_history_store.conversations["session-stream"] == [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "Hello"},
+        ]
+        trace_events = [
+            json.loads(line)
+            for line in (tmp_path / "traces.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        completed = [event for event in trace_events if event["phase"] == "completed"]
+        assert completed[0]["history"] == {
+            "assistant_chars": 5,
+            "assistant_persisted": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_stream_history_finalization_survives_caller_cancellation(
+        self, memory_history_store, monkeypatch
+    ):
+        started = asyncio.Event()
+        release = asyncio.Event()
+        original_append = memory_history_store.append_messages
+
+        async def delayed_append(convo_id, messages):
+            started.set()
+            await release.wait()
+            await original_append(convo_id, messages)
+
+        monkeypatch.setattr(memory_history_store, "append_messages", delayed_append)
+
+        waiter = asyncio.create_task(
+            RequestProcessor.finalize_stream_response(
+                "session-cancel", "Partial assistant", None
+            )
+        )
+        await started.wait()
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+
+        release.set()
+        if proxy_module.history_finalization_tasks:
+            await asyncio.gather(
+                *proxy_module.history_finalization_tasks,
+                return_exceptions=True,
+            )
+
+        assert memory_history_store.conversations["session-cancel"] == [
+            {"role": "assistant", "content": "Partial assistant"}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_stream_producer_persists_after_downstream_disconnect(
+        self, memory_history_store
+    ):
+        release = asyncio.Event()
+        request = Mock()
+        request.headers = {"content-type": "application/json"}
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = Mock()
+            mock_client.stream.return_value = _FakeStreamContext(
+                _DelayedStreamingResponse(release)
+            )
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            response = await ProxyHandler.stream_response(
+                request,
+                "https://test.example.com/v1/chat/completions",
+                {},
+                "session-disconnect",
+            )
+            stream = response.body_iterator
+            first_chunk = await anext(stream)
+            await stream.aclose()
+
+        assert b"First" in first_chunk
+        release.set()
+        if proxy_module.stream_producer_tasks:
+            await asyncio.gather(
+                *proxy_module.stream_producer_tasks,
+                return_exceptions=True,
+            )
+        if proxy_module.history_finalization_tasks:
+            await asyncio.gather(
+                *proxy_module.history_finalization_tasks,
+                return_exceptions=True,
+            )
+
+        assert memory_history_store.conversations["session-disconnect"] == [
+            {"role": "assistant", "content": "FirstSecond"}
+        ]
 
 
 class TestHeaderPreparation:

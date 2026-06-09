@@ -27,6 +27,7 @@ class RequestTrace:
     search: dict[str, Any] = field(default_factory=dict)
     rag: dict[str, str] = field(default_factory=dict)
     slot: dict[str, str] = field(default_factory=dict)
+    history: dict[str, Any] = field(default_factory=dict)
     timing: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     status_code: Optional[int] = None
@@ -107,6 +108,7 @@ class RequestTrace:
             "search": dict(self.search),
             "rag": dict(self.rag),
             "slot": dict(self.slot),
+            "history": dict(self.history),
             "timing": dict(self.timing),
             "warnings": list(self.warnings),
             "status_code": self.status_code,

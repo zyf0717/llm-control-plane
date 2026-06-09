@@ -64,7 +64,7 @@ The trace object is intentionally in-memory only in this phase; it is not persis
 
 ## Conversation History
 
-The proxy stores conversation history and conversation metadata in local SQLite (`var/history.sqlite3` by default) only when `X-Convo-ID` is supplied. `X-Convo-ID` is the canonical cache/session key for persisted history, route pinning, reasoning effort, and optional slot affinity. Clients should send only the new turn for an existing conversation; full-history replay is rejected with `400`.
+The proxy stores conversation history and conversation metadata in local SQLite (`var/history.sqlite3` by default) only when `X-Convo-ID` is supplied. `X-Convo-ID` is the canonical cache/session key for persisted history, route pinning, reasoning effort, and optional slot affinity. Streamed assistant responses are read by a proxy-owned producer task, so upstream streaming and history finalization can continue even if the downstream client disconnects. Clients should send only the new turn for an existing conversation; full-history replay is rejected with `400`.
 
 Example:
 
