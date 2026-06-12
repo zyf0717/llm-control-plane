@@ -4,9 +4,9 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException, Request
 
-from .workflow_executor import WorkflowExecutor
-from .workflow_registry import WorkflowRegistry
-from .workflow_store import SQLiteWorkflowStore
+from .executor import WorkflowExecutor
+from .registry import WorkflowRegistry
+from .store import SQLiteWorkflowStore
 
 
 def create_workflow_router(

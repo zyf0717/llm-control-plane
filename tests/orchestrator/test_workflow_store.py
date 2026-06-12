@@ -1,7 +1,7 @@
 import pytest
 
-from src.orchestrator.workflow_models import WorkflowRun
-from src.orchestrator.workflow_store import SQLiteWorkflowStore
+from src.orchestrator.workflow.models import WorkflowRun
+from src.orchestrator.workflow.store import SQLiteWorkflowStore
 
 
 @pytest.mark.asyncio

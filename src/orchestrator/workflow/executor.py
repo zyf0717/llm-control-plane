@@ -7,9 +7,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from .workflow_models import WorkflowRun, WorkflowSpec, WorkflowStepSpec
-from .workflow_registry import WorkflowRegistry
-from .workflow_store import SQLiteWorkflowStore
+from .models import WorkflowRun, WorkflowSpec, WorkflowStepSpec
+from .registry import WorkflowRegistry
+from .store import SQLiteWorkflowStore
 
 
 class WorkflowLLMClient(Protocol):

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from src.orchestrator.workflow_registry import WorkflowRegistry
+from src.orchestrator.workflow.registry import WorkflowRegistry
 
 
 def write_workflow(path: Path, *, body: str) -> None:

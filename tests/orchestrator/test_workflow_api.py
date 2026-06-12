@@ -4,9 +4,9 @@ from fastapi.testclient import TestClient
 
 from src.orchestrator import proxy as proxy_module
 from src.orchestrator.proxy import app
-from src.orchestrator.workflow_executor import WorkflowExecutor
-from src.orchestrator.workflow_registry import WorkflowRegistry
-from src.orchestrator.workflow_store import SQLiteWorkflowStore
+from src.orchestrator.workflow.executor import WorkflowExecutor
+from src.orchestrator.workflow.registry import WorkflowRegistry
+from src.orchestrator.workflow.store import SQLiteWorkflowStore
 
 
 class FakeLLMClient:

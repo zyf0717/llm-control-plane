@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from src.orchestrator.workflow_executor import WorkflowExecutor, render_template
-from src.orchestrator.workflow_registry import WorkflowRegistry
-from src.orchestrator.workflow_store import SQLiteWorkflowStore
+from src.orchestrator.workflow.executor import WorkflowExecutor, render_template
+from src.orchestrator.workflow.registry import WorkflowRegistry
+from src.orchestrator.workflow.store import SQLiteWorkflowStore
 
 
 class FakeLLMClient:

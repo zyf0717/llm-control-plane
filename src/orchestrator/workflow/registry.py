@@ -5,7 +5,7 @@ from typing import Any
 
 import yaml
 
-from .workflow_models import WorkflowSpec
+from .models import WorkflowSpec
 
 
 DEFAULT_WORKFLOW_DIR = Path("workflows")

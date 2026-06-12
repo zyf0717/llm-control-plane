@@ -231,25 +231,7 @@ app_ui = ui.page_fluid(
                         placeholder="Optional",
                         width="100%",
                     ),
-                    ui.layout_columns(
-                        ui.input_action_button("createWorkflowRun", "Create run"),
-                        ui.input_action_button("advanceWorkflowRun", "Run next step"),
-                        ui.input_action_button("runWorkflowToCompletion", "Run to completion"),
-                        col_widths=[4, 4, 4],
-                    ),
-                    ui.layout_columns(
-                        ui.input_text(
-                            "workflowRetryStepID",
-                            "Retry step",
-                            placeholder="failed step id",
-                            width="100%",
-                        ),
-                        ui.div(
-                            ui.input_action_button("retryWorkflowStep", "Retry"),
-                            style="display: flex; align-items: flex-end; height: 100%;",
-                        ),
-                        col_widths=[8, 4],
-                    ),
+                    ui.input_action_button("createWorkflowRun", "Create run"),
                 ),
                 ui.div(
                     input_action_row(
@@ -262,6 +244,24 @@ app_ui = ui.page_fluid(
                         "refreshWorkflowRuns",
                         "Refresh",
                         col_widths=[8, 4],
+                    ),
+                    ui.layout_columns(
+                        ui.input_action_button("advanceWorkflowRun", "Run next step"),
+                        ui.input_action_button(
+                            "runWorkflowToCompletion", "Run to completion"
+                        ),
+                        input_action_row(
+                            ui.input_text(
+                                "workflowRetryStepID",
+                                "",
+                                placeholder="failed step id",
+                                width="100%",
+                            ),
+                            "retryWorkflowStep",
+                            "Retry",
+                            col_widths=[7, 5],
+                        ),
+                        col_widths=[3, 3, 6],
                     ),
                     ui.output_ui("workflowRunsBox"),
                     ui.output_ui("workflowRunDetails"),
