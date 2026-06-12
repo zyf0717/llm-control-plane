@@ -4,6 +4,7 @@ from src.dashboard.app_server import (
     _format_trace_summary,
     _format_trace_timestamp,
     advance_workflow_to_terminal,
+    build_workflow_params_template,
     build_uploaded_file_context,
     build_fork_notice,
     build_search_failure_state,
@@ -35,6 +36,29 @@ def test_build_search_planner_context_includes_prompt_history_and_current_reques
     assert "Conversation history:\nuser: Earlier question" in context
     assert "assistant: Earlier answer" in context
     assert "Current user request:\nCurrent question" in context
+
+
+def test_build_workflow_params_template_uses_selected_schema_fields():
+    rendered = build_workflow_params_template(
+        {
+            "params_schema": {
+                "required": ["latest_user_prompt"],
+                "properties": {
+                    "latest_user_prompt": {"type": "string"},
+                    "conversation_context": {"type": "string"},
+                    "context": {"type": "string"},
+                },
+            }
+        }
+    )
+
+    assert rendered == (
+        '{\n'
+        '  "latest_user_prompt": "",\n'
+        '  "conversation_context": "",\n'
+        '  "context": ""\n'
+        '}'
+    )
 
 
 def test_build_uploaded_file_context_reads_utf8_files(tmp_path):

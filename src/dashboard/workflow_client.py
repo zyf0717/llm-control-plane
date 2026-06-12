@@ -40,7 +40,7 @@ async def fetch_workflow(workflow_id: str) -> dict[str, Any]:
         response = await client.get(
             f"{PROXY_BASE_URL}/workflows/{workflow_id}", headers=_headers()
         )
-        response.raise_for_status()
+        _raise_for_status(response)
         data = response.json()
         return data if isinstance(data, dict) else {}
 
@@ -52,7 +52,7 @@ async def create_workflow_run(workflow_id: str, payload: dict[str, Any]) -> dict
             headers=_headers(),
             json=payload,
         )
-        response.raise_for_status()
+        _raise_for_status(response)
         data = response.json()
         return data if isinstance(data, dict) else {}
 
@@ -79,7 +79,7 @@ async def fetch_workflow_run(run_id: str) -> dict[str, Any]:
         response = await client.get(
             f"{PROXY_BASE_URL}/workflow-runs/{run_id}", headers=_headers()
         )
-        response.raise_for_status()
+        _raise_for_status(response)
         data = response.json()
         return data if isinstance(data, dict) else {}
 
@@ -89,7 +89,7 @@ async def advance_workflow_run(run_id: str) -> dict[str, Any]:
         response = await client.post(
             f"{PROXY_BASE_URL}/workflow-runs/{run_id}/advance", headers=_headers()
         )
-        response.raise_for_status()
+        _raise_for_status(response)
         data = response.json()
         return data if isinstance(data, dict) else {}
 
@@ -101,7 +101,7 @@ async def run_workflow_to_completion(run_id: str) -> dict[str, Any]:
             headers=_headers(),
             json={},
         )
-        response.raise_for_status()
+        _raise_for_status(response)
         data = response.json()
         return data if isinstance(data, dict) else {}
 
@@ -112,6 +112,29 @@ async def retry_workflow_step(run_id: str, step_id: str) -> dict[str, Any]:
             f"{PROXY_BASE_URL}/workflow-runs/{run_id}/steps/{step_id}/retry",
             headers=_headers(),
         )
-        response.raise_for_status()
+        _raise_for_status(response)
         data = response.json()
         return data if isinstance(data, dict) else {}
+
+
+def _raise_for_status(response: httpx.Response) -> None:
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        detail = _response_error_detail(response)
+        if detail:
+            raise RuntimeError(detail) from exc
+        raise
+
+
+def _response_error_detail(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        detail = payload.get("detail")
+        if detail:
+            return str(detail)
+    text = str(getattr(response, "text", "") or "").strip()
+    return text

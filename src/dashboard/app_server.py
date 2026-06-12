@@ -275,6 +275,27 @@ def workflow_snapshot_has_running_step(snapshot: dict[str, Any] | None) -> bool:
     )
 
 
+def build_workflow_params_template(spec: dict[str, Any] | None) -> str:
+    if not isinstance(spec, dict):
+        return "{}"
+    schema = spec.get("params_schema")
+    if not isinstance(schema, dict):
+        return "{}"
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        properties = {}
+    required = schema.get("required")
+    required_names = [str(item) for item in required] if isinstance(required, list) else []
+
+    keys: list[str] = []
+    for key in [*required_names, *properties.keys()]:
+        text = str(key or "").strip()
+        if text and text not in keys:
+            keys.append(text)
+
+    return json.dumps({key: "" for key in keys}, indent=2)
+
+
 async def advance_workflow_to_terminal(
     run_id: str,
     advance: Callable[[str], Awaitable[dict[str, Any]]],
@@ -690,7 +711,13 @@ def server(input, output, session):
         if selected:
             selected_workflow_id.set(selected)
             try:
-                workflow_spec.set(await fetch_workflow(selected))
+                spec = await fetch_workflow(selected)
+                workflow_spec.set(spec)
+                ui.update_text_area(
+                    "workflowParams",
+                    value=build_workflow_params_template(spec),
+                    session=session,
+                )
             except Exception as exc:
                 workflow_status_message.set(f"Failed to load workflow: {exc}")
 
@@ -761,7 +788,13 @@ def server(input, output, session):
             workflow_spec.set(None)
             return
         try:
-            workflow_spec.set(await fetch_workflow(workflow_id))
+            spec = await fetch_workflow(workflow_id)
+            workflow_spec.set(spec)
+            ui.update_text_area(
+                "workflowParams",
+                value=build_workflow_params_template(spec),
+                session=session,
+            )
             workflow_status_message.set("")
         except Exception as exc:
             workflow_status_message.set(f"Failed to load workflow: {exc}")
@@ -1098,11 +1131,7 @@ def server(input, output, session):
 
     @render.ui
     def workflowSpecDetails():
-        status = workflow_status_message.get()
-        details = [format_workflow_spec(workflow_spec.get())]
-        if status:
-            details.insert(0, ui.card(ui.markdown(f"**Workflow status**\n\n{status}")))
-        return ui.div(*details)
+        return format_workflow_spec(workflow_spec.get())
 
     @render.ui
     def workflowRunDetails():

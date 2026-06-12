@@ -126,18 +126,20 @@ def format_step_timeline(snapshot: dict[str, Any] | None) -> ui.Tag:
         panels.append(ui.accordion_panel("No steps", ui.markdown("No step rows found.")))
     return ui.card(
         _format_run_header(run),
-        ui.markdown(
-            "**Progress:** "
-            f"`{summary['completed']} / {summary['total']} completed` "
-            f"(`{summary['percent']}%`)"
+        ui.tags.div(
+            f"{summary['completed']} / {summary['total']} completed",
+            style="font-size: 0.875rem; color: #6c757d; margin-bottom: 0.5rem;",
         ),
-        _progress_bar(summary["percent"]),
         ui.div(
             *[
-                _format_step_status_row(step, len(artifacts_by_step.get(str(step.get("step_id") or ""), [])))
+                _format_step_status_box(step, len(artifacts_by_step.get(str(step.get("step_id") or ""), [])))
                 for step in steps
                 if isinstance(step, dict)
             ],
+            style=(
+                "display: flex; flex-wrap: wrap; gap: 0.5rem; "
+                "align-items: stretch; margin-bottom: 0.75rem;"
+            ),
         ),
         ui.accordion(*panels, multiple=True, open=False),
     )
@@ -237,26 +239,7 @@ def _snapshot_steps(snapshot: dict[str, Any] | None) -> list[dict[str, Any]]:
     return [step for step in snapshot["steps"] if isinstance(step, dict)]
 
 
-def _progress_bar(percent: int) -> ui.Tag:
-    bounded = min(100, max(0, int(percent)))
-    return ui.tags.div(
-        ui.tags.div(
-            "",
-            style=(
-                f"width: {bounded}%; height: 0.6rem; "
-                "background: #0d6efd; border-radius: 999px;"
-            ),
-        ),
-        style=(
-            "width: 100%; height: 0.6rem; background: #e9ecef; "
-            "border-radius: 999px; overflow: hidden; margin-bottom: 0.75rem;"
-        ),
-        role="progressbar",
-        **{"aria-valuenow": str(bounded), "aria-valuemin": "0", "aria-valuemax": "100"},
-    )
-
-
-def _format_step_status_row(step: dict[str, Any], artifact_count: int) -> ui.Tag:
+def _format_step_status_box(step: dict[str, Any], artifact_count: int) -> ui.Tag:
     status = str(step.get("status") or "unknown")
     step_id = str(step.get("step_id") or "step")
     started = _compact_value(step.get("started_at"))
@@ -281,11 +264,22 @@ def _format_step_status_row(step: dict[str, Any], artifact_count: int) -> ui.Tag
                 step_id,
                 style="color: #212529; font-weight: 700;",
             ),
-            style="display: flex; gap: 0.5rem; align-items: center;",
+            style=(
+                "display: flex; gap: 0.5rem; align-items: center; "
+                "min-width: 0;"
+            ),
         ),
         ui.tags.div(
-            f"Started: {started} | Completed: {completed} | {output_flag} | {artifact_label}",
-            style="font-size: 0.875rem; color: #6c757d; margin-top: 0.25rem;",
+            f"Started {started}",
+            style="font-size: 0.75rem; color: #6c757d; margin-top: 0.35rem;",
+        ),
+        ui.tags.div(
+            f"Done {completed}",
+            style="font-size: 0.75rem; color: #6c757d;",
+        ),
+        ui.tags.div(
+            f"{output_flag} | {artifact_label}",
+            style="font-size: 0.75rem; color: #6c757d;",
         ),
     ]
     if error:
@@ -300,9 +294,10 @@ def _format_step_status_row(step: dict[str, Any], artifact_count: int) -> ui.Tag
         *blocks,
         style=(
             f"border-left: 0.25rem solid {_status_color(status)}; "
-            "padding: 0.5rem 0.75rem; margin-bottom: 0.5rem; "
+            "padding: 0.5rem 0.75rem; "
             "background: #ffffff; border-top: 1px solid #dee2e6; "
-            "border-right: 1px solid #dee2e6; border-bottom: 1px solid #dee2e6;"
+            "border-right: 1px solid #dee2e6; border-bottom: 1px solid #dee2e6; "
+            "flex: 1 1 13rem; max-width: 22rem; min-width: 13rem;"
         ),
     )
 

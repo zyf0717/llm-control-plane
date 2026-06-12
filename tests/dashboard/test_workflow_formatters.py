@@ -68,7 +68,7 @@ def test_group_workflow_artifacts_by_step_groups_unassigned_artifacts():
     assert grouped["unassigned"][0]["artifact_id"] == "a3"
 
 
-def test_format_step_timeline_renders_progress_status_error_and_artifact_counts():
+def test_format_step_timeline_renders_horizontal_step_boxes():
     rendered = str(
         format_step_timeline(
             {
@@ -104,6 +104,7 @@ def test_format_step_timeline_renders_progress_status_error_and_artifact_counts(
 
     assert "wf_123" in rendered
     assert "1 / 2 completed" in rendered
+    assert "progressbar" not in rendered
     assert "COMPLETED" in rendered
     assert "FAILED" in rendered
     assert "Error: boom" in rendered
