@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 import shinyswatch
 from dotenv import load_dotenv
 from shiny import reactive, render, ui
+from shiny.types import SilentException
 
 load_dotenv()
 
@@ -119,6 +120,13 @@ def resolve_workflow_routing_selection(
 
 def build_workflow_routing_choices(choices: Dict[str, str]) -> Dict[str, str]:
     return {"": WORKFLOW_ROUTING_NONE_LABEL, **choices}
+
+
+def _input_value(input_obj: Any, name: str, default: Any = None) -> Any:
+    try:
+        return getattr(input_obj, name)()
+    except SilentException:
+        return default
 
 
 def normalize_reasoning_effort(
@@ -1039,7 +1047,7 @@ def server(input, output, session):
         actual_endpoint_key = selected_endpoint_key
         latest_user_prompt = str(user_input or "").strip()
         search_query = latest_user_prompt
-        workflow_routing_input = input.workflowRouting()
+        workflow_routing_input = _input_value(input, "workflowRouting")
         workflow_routing_id = str(
             workflow_routing_input
             if workflow_routing_input is not None
@@ -1061,13 +1069,14 @@ def server(input, output, session):
         if uploaded_context and not workflow_routing_id:
             user_input = f"{user_input}\n\n{uploaded_context}"
 
+        system_prompt_input = _input_value(input, "systemPrompt")
         current_prompt = normalize_system_prompt(
-            input.systemPrompt()
-            if input.systemPrompt() is not None
+            system_prompt_input
+            if system_prompt_input is not None
             else prompt_state.get("prompt")
         )
         current_reasoning = normalize_reasoning_effort(
-            input.reasoningEffort(),
+            _input_value(input, "reasoningEffort"),
             default="medium",
         )
         forked_history: list[dict[str, Any]] = []
@@ -1157,8 +1166,10 @@ def server(input, output, session):
                 await update_workflow_run_selector()
                 await refresh_selected_workflow_run(run_id)
                 await reactive.flush()
-                workflow_stream_enabled = bool(input.stream())
-                workflow_output_reasoning = bool(input.outputReasoning())
+                workflow_stream_enabled = bool(_input_value(input, "stream", False))
+                workflow_output_reasoning = bool(
+                    _input_value(input, "outputReasoning", False)
+                )
 
                 async def apply_workflow_snapshot(
                     snapshot: dict[str, Any],
@@ -1326,7 +1337,9 @@ def server(input, output, session):
             return
 
         search_state = None
-        selected_search_provider = str(input.searchProvider() or "").strip()
+        selected_search_provider = str(
+            _input_value(input, "searchProvider") or ""
+        ).strip()
         if selected_search_provider and search_query:
             try:
                 if fork_reasons:
@@ -1365,19 +1378,20 @@ def server(input, output, session):
             merged_info = merge_run_info(metadata, search_state)
             run_info.set(merged_info)
 
+        rag_endpoint = _input_value(input, "ragEndpoint")
         response_stream = stream_chat_response(
             endpoint_key=actual_endpoint_key,
             text=user_input,
             endpoints_dict=current_endpoints,
-            stream=input.stream(),
-            output_json=input.outputJSON(),
+            stream=bool(_input_value(input, "stream", False)),
+            output_json=bool(_input_value(input, "outputJSON", False)),
             reasoning_effort=current_reasoning,
-            output_reasoning=input.outputReasoning(),
+            output_reasoning=bool(_input_value(input, "outputReasoning", False)),
             convo_id=convo_id,
             current_routing_info=current_run_info.get("routing", {}),
             system_prompt=system_prompt_to_send,
             extra_turn_messages=extra_turn_messages,
-            rag_endpoint=input.ragEndpoint() if input.ragEndpoint() else None,
+            rag_endpoint=rag_endpoint if rag_endpoint else None,
             on_metadata=publish_run_info,
             on_send_button_state=send_button_state.set,
             on_runtime=last_runtime.set,
