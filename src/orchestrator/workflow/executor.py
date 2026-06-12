@@ -34,7 +34,7 @@ class WorkflowSearchClient(Protocol):
         query: str,
         provider: str | None = None,
         count: int = 5,
-        use_planner: bool = True,
+        use_query_refiner: bool = True,
     ) -> dict[str, Any]:
         ...
 
@@ -307,7 +307,7 @@ class WorkflowExecutor:
                 or step.search_provider
                 or spec.defaults.search_provider
             )
-            use_planner = len(queries) == 1 and queries[0] == prompt.strip()
+            use_query_refiner = len(queries) == 1 and queries[0] == prompt.strip()
             if not any(query.strip() for query in queries):
                 raise ValueError(
                     "workflow search step produced no query; check upstream JSON output"
@@ -317,12 +317,16 @@ class WorkflowExecutor:
                     self.search_client.search(
                         query=query,
                         provider=provider,
-                        use_planner=use_planner,
+                        use_query_refiner=use_query_refiner,
                     )
                     for query in queries
                 )
             )
-            result = _merge_search_results(queries, results, use_planner=use_planner)
+            result = _merge_search_results(
+                queries,
+                results,
+                use_query_refiner=use_query_refiner,
+            )
             return WorkflowStepExecution(
                 output={
                     "text": json.dumps(result, indent=2),
@@ -427,13 +431,13 @@ def _extract_search_queries(prompt: str) -> list[str]:
 
 
 def _merge_search_results(
-    queries: list[str], results: list[dict[str, Any]], *, use_planner: bool
+    queries: list[str], results: list[dict[str, Any]], *, use_query_refiner: bool
 ) -> dict[str, Any]:
     if len(results) == 1:
         merged = dict(results[0])
         merged.setdefault("query", queries[0] if queries else "")
         merged["workflow_search"] = {
-            "planned_by_workflow": not use_planner,
+            "planned_by_workflow": not use_query_refiner,
             "queries": list(queries),
         }
         return merged

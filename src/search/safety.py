@@ -29,14 +29,18 @@ def wrap_search_results(response: SearchResponse) -> str:
         payload["degraded"] = True
     if response.original_query:
         payload["original_query"] = response.original_query
-    if response.planner:
-        planner_payload = {
-            "used": response.planner.get("used"),
+    query_refinement = response.query_refinement or response.planner
+    if query_refinement:
+        query_refinement_payload = {
+            "used": query_refinement.get("used"),
             "effective_query": response.query,
-            "degraded": response.planner.get("degraded"),
+            "degraded": query_refinement.get("degraded"),
         }
-        queries = response.planner.get("queries")
+        queries = query_refinement.get("queries")
         if isinstance(queries, list):
-            planner_payload["queries"] = [str(query) for query in queries if str(query).strip()]
-        payload["planner"] = planner_payload
+            query_refinement_payload["queries"] = [
+                str(query) for query in queries if str(query).strip()
+            ]
+        payload["query_refinement"] = query_refinement_payload
+        payload["planner"] = query_refinement_payload
     return json.dumps(payload, ensure_ascii=True)

@@ -4,11 +4,11 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from src.search.planner import SearchPlanner, SearchPlannerConfig
+from src.search.query_refiner import SearchQueryRefiner, SearchQueryRefinerConfig
 from src.search.types import SearchArgs
 
 
-class FakePlannerResponse:
+class FakeQueryRefinerResponse:
     def __init__(self, content: str):
         self.content = content
 
@@ -20,10 +20,10 @@ class FakePlannerResponse:
 
 
 @pytest.mark.asyncio
-async def test_planner_disabled_returns_original_query():
-    planner = SearchPlanner(SearchPlannerConfig(enabled=False))
+async def test_query_refiner_disabled_returns_original_query():
+    query_refiner = SearchQueryRefiner(SearchQueryRefinerConfig(enabled=False))
 
-    plan = await planner.plan(SearchArgs(query="already good"))
+    plan = await query_refiner.refine(SearchArgs(query="already good"))
 
     assert plan.effective_query == "already good"
     assert plan.used is False
@@ -31,7 +31,7 @@ async def test_planner_disabled_returns_original_query():
 
 
 @pytest.mark.asyncio
-async def test_valid_planner_response_rewrites_query():
+async def test_valid_query_refiner_response_rewrites_query():
     payload = json.dumps(
         {
             "needs_search": True,
@@ -41,15 +41,15 @@ async def test_valid_planner_response_rewrites_query():
             "source_preferences": ["github", "official_docs"],
         }
     )
-    planner = SearchPlanner(
-        SearchPlannerConfig(enabled=True, model_endpoint="https://planner.local")
+    query_refiner = SearchQueryRefiner(
+        SearchQueryRefinerConfig(enabled=True, model_endpoint="https://query_refiner.local")
     )
 
     with patch(
         "httpx.AsyncClient.post",
-        AsyncMock(return_value=FakePlannerResponse(payload)),
+        AsyncMock(return_value=FakeQueryRefinerResponse(payload)),
     ) as post:
-        plan = await planner.plan(
+        plan = await query_refiner.refine(
             SearchArgs(
                 query="does llama cpp expose kv cache metrics now?",
                 context="prior chat",
@@ -58,7 +58,7 @@ async def test_valid_planner_response_rewrites_query():
             )
         )
 
-    assert post.await_args.args[0] == "https://planner.local/v1/chat/completions"
+    assert post.await_args.args[0] == "https://query_refiner.local/v1/chat/completions"
     assert plan.effective_query == "llama.cpp KV cache metrics cached_tokens GitHub"
     assert plan.freshness == "week"
     assert plan.source_preferences == ["github", "official_docs"]
@@ -66,7 +66,7 @@ async def test_valid_planner_response_rewrites_query():
 
 
 @pytest.mark.asyncio
-async def test_planner_response_supports_capped_query_fanout():
+async def test_query_refiner_response_supports_capped_query_fanout():
     payload = json.dumps(
         {
             "query": "llama.cpp metrics GitHub",
@@ -78,10 +78,10 @@ async def test_planner_response_supports_capped_query_fanout():
             ],
         }
     )
-    planner = SearchPlanner(
-        SearchPlannerConfig(
+    query_refiner = SearchQueryRefiner(
+        SearchQueryRefinerConfig(
             enabled=True,
-            model_endpoint="https://planner.local",
+            model_endpoint="https://query_refiner.local",
             max_queries=3,
             max_output_tokens=1024,
         )
@@ -89,9 +89,9 @@ async def test_planner_response_supports_capped_query_fanout():
 
     with patch(
         "httpx.AsyncClient.post",
-        AsyncMock(return_value=FakePlannerResponse(payload)),
+        AsyncMock(return_value=FakeQueryRefinerResponse(payload)),
     ) as post:
-        plan = await planner.plan(SearchArgs(query="does llama cpp expose metrics?"))
+        plan = await query_refiner.refine(SearchArgs(query="does llama cpp expose metrics?"))
 
     body = post.await_args.kwargs["json"]
     user_payload = json.loads(body["messages"][1]["content"])
@@ -107,20 +107,20 @@ async def test_planner_response_supports_capped_query_fanout():
 
 
 @pytest.mark.asyncio
-async def test_planner_posts_configured_headers():
-    planner = SearchPlanner(
-        SearchPlannerConfig(
+async def test_query_refiner_posts_configured_headers():
+    query_refiner = SearchQueryRefiner(
+        SearchQueryRefinerConfig(
             enabled=True,
-            model_endpoint="https://planner.local",
+            model_endpoint="https://query_refiner.local",
             headers={"CF-Access-Client-Id": "id", "CF-Access-Client-Secret": "secret"},
         )
     )
 
     with patch(
         "httpx.AsyncClient.post",
-        AsyncMock(return_value=FakePlannerResponse('{"query": "planned"}')),
+        AsyncMock(return_value=FakeQueryRefinerResponse('{"query": "refined"}')),
     ) as post:
-        await planner.plan(SearchArgs(query="original"))
+        await query_refiner.refine(SearchArgs(query="original"))
 
     assert post.await_args.kwargs["headers"] == {
         "CF-Access-Client-Id": "id",
@@ -130,49 +130,49 @@ async def test_planner_posts_configured_headers():
 
 @pytest.mark.asyncio
 async def test_invalid_json_falls_back():
-    planner = SearchPlanner(
-        SearchPlannerConfig(enabled=True, model_endpoint="https://planner.local")
+    query_refiner = SearchQueryRefiner(
+        SearchQueryRefinerConfig(enabled=True, model_endpoint="https://query_refiner.local")
     )
 
     with patch(
         "httpx.AsyncClient.post",
-        AsyncMock(return_value=FakePlannerResponse("not json")),
+        AsyncMock(return_value=FakeQueryRefinerResponse("not json")),
     ):
-        plan = await planner.plan(SearchArgs(query="original"))
+        plan = await query_refiner.refine(SearchArgs(query="original"))
 
     assert plan.effective_query == "original"
     assert plan.degraded is True
-    assert plan.warning == "planner-failed: JSONDecodeError"
+    assert plan.warning == "query_refiner-failed: JSONDecodeError"
 
 
 @pytest.mark.asyncio
 async def test_timeout_falls_back():
-    planner = SearchPlanner(
-        SearchPlannerConfig(enabled=True, model_endpoint="https://planner.local")
+    query_refiner = SearchQueryRefiner(
+        SearchQueryRefinerConfig(enabled=True, model_endpoint="https://query_refiner.local")
     )
 
     with patch(
         "httpx.AsyncClient.post",
         AsyncMock(side_effect=httpx.TimeoutException("timeout")),
     ):
-        plan = await planner.plan(SearchArgs(query="original"))
+        plan = await query_refiner.refine(SearchArgs(query="original"))
 
     assert plan.effective_query == "original"
     assert plan.degraded is True
-    assert plan.warning == "planner-failed: TimeoutException"
+    assert plan.warning == "query_refiner-failed: TimeoutException"
 
 
 @pytest.mark.asyncio
-async def test_empty_planned_query_falls_back():
-    planner = SearchPlanner(
-        SearchPlannerConfig(enabled=True, model_endpoint="https://planner.local")
+async def test_empty_refined_query_falls_back():
+    query_refiner = SearchQueryRefiner(
+        SearchQueryRefinerConfig(enabled=True, model_endpoint="https://query_refiner.local")
     )
 
     with patch(
         "httpx.AsyncClient.post",
-        AsyncMock(return_value=FakePlannerResponse('{"query": ""}')),
+        AsyncMock(return_value=FakeQueryRefinerResponse('{"query": ""}')),
     ):
-        plan = await planner.plan(SearchArgs(query="original"))
+        plan = await query_refiner.refine(SearchArgs(query="original"))
 
     assert plan.effective_query == "original"
     assert plan.degraded is True
@@ -181,19 +181,19 @@ async def test_empty_planned_query_falls_back():
 
 @pytest.mark.asyncio
 async def test_long_context_is_truncated():
-    planner = SearchPlanner(
-        SearchPlannerConfig(
+    query_refiner = SearchQueryRefiner(
+        SearchQueryRefinerConfig(
             enabled=True,
-            model_endpoint="https://planner.local",
+            model_endpoint="https://query_refiner.local",
             max_context_chars=4,
         )
     )
 
     with patch(
         "httpx.AsyncClient.post",
-        AsyncMock(return_value=FakePlannerResponse('{"query": "q"}')),
+        AsyncMock(return_value=FakeQueryRefinerResponse('{"query": "q"}')),
     ) as post:
-        await planner.plan(SearchArgs(query="q", context="abcdef"))
+        await query_refiner.refine(SearchArgs(query="q", context="abcdef"))
 
     body = post.await_args.kwargs["json"]
     user_message = body["messages"][1]["content"]
@@ -209,15 +209,15 @@ async def test_source_preferences_are_sanitized():
             "source_preferences": [" github ", "", 3, "x" * 100] * 4,
         }
     )
-    planner = SearchPlanner(
-        SearchPlannerConfig(enabled=True, model_endpoint="https://planner.local")
+    query_refiner = SearchQueryRefiner(
+        SearchQueryRefinerConfig(enabled=True, model_endpoint="https://query_refiner.local")
     )
 
     with patch(
         "httpx.AsyncClient.post",
-        AsyncMock(return_value=FakePlannerResponse(payload)),
+        AsyncMock(return_value=FakeQueryRefinerResponse(payload)),
     ):
-        plan = await planner.plan(SearchArgs(query="q"))
+        plan = await query_refiner.refine(SearchArgs(query="q"))
 
     assert plan.freshness is None
     assert len(plan.source_preferences) == 8
@@ -226,17 +226,17 @@ async def test_source_preferences_are_sanitized():
 
 @pytest.mark.asyncio
 async def test_public_metadata_does_not_expose_prompt_or_raw_output():
-    planner = SearchPlanner(
-        SearchPlannerConfig(enabled=True, model_endpoint="https://planner.local")
+    query_refiner = SearchQueryRefiner(
+        SearchQueryRefinerConfig(enabled=True, model_endpoint="https://query_refiner.local")
     )
 
     with patch(
         "httpx.AsyncClient.post",
-        AsyncMock(return_value=FakePlannerResponse('```json\n{"query":"planned"}\n```')),
+        AsyncMock(return_value=FakeQueryRefinerResponse('```json\n{"query":"refined"}\n```')),
     ):
-        plan = await planner.plan(SearchArgs(query="original"))
+        plan = await query_refiner.refine(SearchArgs(query="original"))
 
     public = plan.to_public_dict()
-    assert public["effective_query"] == "planned"
+    assert public["effective_query"] == "refined"
     assert "messages" not in public
     assert "raw" not in public

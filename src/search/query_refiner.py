@@ -1,4 +1,4 @@
-"""LLM-backed query planning for explicit search requests."""
+"""LLM-backed query refinement for explicit search requests."""
 
 from __future__ import annotations
 
@@ -14,12 +14,12 @@ _ALLOWED_FRESHNESS = {"day", "week", "month", "none"}
 
 
 @dataclass(slots=True)
-class SearchPlannerConfig:
-    """Bounded planner configuration."""
+class SearchQueryRefinerConfig:
+    """Bounded query-refiner configuration."""
 
     enabled: bool = False
     model_endpoint: Optional[str] = None
-    model: str = "search-planner"
+    model: str = "search-query-refiner"
     timeout_ms: int = 7000
     max_context_chars: int = 12000
     max_output_tokens: int = 512
@@ -28,8 +28,8 @@ class SearchPlannerConfig:
 
 
 @dataclass(slots=True)
-class SearchPlan:
-    """Planner result safe to expose after filtering."""
+class SearchQueryRefinement:
+    """Query-refinement result safe to expose after filtering."""
 
     effective_query: str
     needs_search: bool = True
@@ -61,15 +61,15 @@ class SearchPlan:
         return payload
 
 
-class SearchPlanner:
-    """Turn-local search query planner."""
+class SearchQueryRefiner:
+    """Turn-local search query refiner."""
 
-    def __init__(self, config: SearchPlannerConfig):
+    def __init__(self, config: SearchQueryRefinerConfig):
         self.config = config
 
-    async def plan(self, args: SearchArgs) -> SearchPlan:
+    async def refine(self, args: SearchArgs) -> SearchQueryRefinement:
         if not self.config.enabled or not self.config.model_endpoint:
-            return SearchPlan(
+            return SearchQueryRefinement(
                 effective_query=args.query, queries=[args.query], used=False
             )
 
@@ -94,27 +94,27 @@ class SearchPlanner:
                 .get("content", "")
             )
             parsed = self._parse_json(content)
-            planned_queries = self._clean_queries(parsed, args.query)
-            if not planned_queries:
+            refined_queries = self._clean_queries(parsed, args.query)
+            if not refined_queries:
                 return self._fallback(args, "empty-query")
 
             freshness = self._clean_freshness(parsed.get("freshness"))
-            return SearchPlan(
-                effective_query=planned_queries[0],
+            return SearchQueryRefinement(
+                effective_query=refined_queries[0],
                 needs_search=bool(parsed.get("needs_search", True)),
                 freshness=freshness,
                 reason=self._clean_reason(parsed.get("reason")),
                 source_preferences=self._clean_source_preferences(
                     parsed.get("source_preferences", [])
                 ),
-                queries=planned_queries,
+                queries=refined_queries,
                 used=(
-                    planned_queries != [args.query]
+                    refined_queries != [args.query]
                     or (freshness is not None and freshness != args.freshness)
                 ),
             )
         except Exception as exc:
-            return self._fallback(args, f"planner-failed: {type(exc).__name__}")
+            return self._fallback(args, f"query_refiner-failed: {type(exc).__name__}")
 
     def _build_payload(self, args: SearchArgs) -> dict[str, object]:
         context = str(args.context or "")[: self.config.max_context_chars]
@@ -124,7 +124,7 @@ class SearchPlanner:
             if max_queries == 1
             else f"up to {max_queries} concise web search queries"
         )
-        system_prompt = f"""You are a SearchPlanner. Convert the user's request and optional context into {query_instruction}.
+        system_prompt = f"""You are a SearchQueryRefiner. Convert the user's request and optional context into {query_instruction}.
 
 Return strict JSON only:
 {{"needs_search": boolean, "query": string, "queries": string[], "freshness": "day" | "week" | "month" | "none" | null, "reason": string, "source_preferences": string[]}}
@@ -132,7 +132,7 @@ Return strict JSON only:
 Rules:
 - Preserve exact names, repo names, package names, commit hashes, PR numbers, and error messages.
 - Prefer primary sources for software questions: official docs, GitHub, release notes.
-- Put the best primary query in query and all planned queries in queries.
+- Put the best primary query in query and all refined queries in queries.
 - Return at most {max_queries} queries.
 - Do not create multiple queries unless they target meaningfully different source angles.
 - Do not answer the user.
@@ -174,7 +174,7 @@ Rules:
                 raise
             parsed = json.loads(content[start : end + 1])
         if not isinstance(parsed, dict):
-            raise ValueError("planner response must be an object")
+            raise ValueError("query refiner response must be an object")
         return parsed
 
     def _clean_queries(
@@ -227,8 +227,8 @@ Rules:
                 cleaned.append(item.strip()[:64])
         return cleaned[:8]
 
-    def _fallback(self, args: SearchArgs, warning: str) -> SearchPlan:
-        return SearchPlan(
+    def _fallback(self, args: SearchArgs, warning: str) -> SearchQueryRefinement:
+        return SearchQueryRefinement(
             effective_query=args.query,
             queries=[args.query],
             used=False,

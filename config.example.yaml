@@ -23,13 +23,13 @@ rag:
 
 search:
   enabled: false
-  model_endpoint: ""
-  model: "search-planner"
-  planner_enabled: false
-  planner_timeout_ms: 7000
-  planner_max_context_chars: 12000
-  planner_max_output_tokens: 512
-  planner_max_queries: 1
+  query_refiner_model_endpoint: ""
+  query_refiner_model: "search-query-refiner"
+  query_refiner_enabled: false
+  query_refiner_timeout_ms: 7000
+  query_refiner_max_context_chars: 12000
+  query_refiner_max_output_tokens: 512
+  query_refiner_max_queries: 1
   search_max_total_results: 10
   default_provider: "duckduckgo_html"
   timeout_ms: 7000

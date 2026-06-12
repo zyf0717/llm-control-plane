@@ -206,30 +206,36 @@ curl -X POST http://localhost:12340/search/web \
   -H "Content-Type: application/json" \
   -d '{
     "query": "qwen mtp llama.cpp",
-    "context": "optional compact planner context",
+    "context": "optional compact query-refiner context",
     "provider": "auto",
     "count": 5,
-    "freshness": "week"
+    "freshness": "week",
+    "use_query_refiner": true
   }'
 ```
 
 Request fields:
 
 - `query`: required search request
-- `context`: optional compact context for the search planner
+- `context`: optional compact context for the query refiner
 - `provider`: provider id or `auto`
 - `count`: optional result count
 - `freshness`: optional freshness hint such as `day`, `week`, or `month`
+- `use_query_refiner` / `useQueryRefiner`: optional boolean; set false to bypass query refinement
+- legacy aliases `use_planner` / `usePlanner` are accepted temporarily
 
 Behavior:
 
-- may plan one or more provider-ready queries through a bounded SearchPlanner when configured
-- may run async provider fanout when the planner returns multiple queries
-- sends one HTTP request to each selected search provider in priority order per planned query
+- may refine one request into one or more provider-ready queries through a bounded query refiner when configured
+- may run async provider fanout when the query refiner returns multiple queries
+- sends one HTTP request to each selected search provider in priority order per refined query
 - parses only the returned SERP payload
 - never fetches result pages or executes JavaScript
 - returns normalized result candidates plus degradation warnings
-- may include `original_query` and filtered `planner` metadata, including `queries`, when planning ran
+- may include `original_query` and filtered `query_refinement` metadata, including `queries`, when refinement ran
+- temporarily also emits a `planner` metadata alias for compatibility
 - includes `wrapped_results`, a JSON string marked as untrusted for downstream LLM use
+
+Single-Node/ad hoc search may use the query refiner. Workflow search uses workflow LLM query planning and dispatches those queries with the query refiner bypassed.
 
 TL;DR: the proxy API is OpenAI-compatible plus control headers for smart routing, conversation history, reasoning, RAG retrieval, and an optional lightweight search-discovery endpoint.

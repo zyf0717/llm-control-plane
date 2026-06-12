@@ -50,7 +50,7 @@ rag_config = config.get("rag", {})
 RAG_TOP_K = int(rag_config.get("top_k", 3))
 search_service = build_search_router(
     config.get("search", {}),
-    planner_headers=HeaderManager.create_auth_headers(),
+    query_refiner_headers=HeaderManager.create_auth_headers(),
 )
 
 logger = logging.getLogger(__name__)
@@ -1129,14 +1129,14 @@ class ProxyWorkflowSearchClient:
         query: str,
         provider: Optional[str] = None,
         count: int = 5,
-        use_planner: bool = True,
+        use_query_refiner: bool = True,
     ) -> Dict[str, Any]:
         response = await search_service.search(
             SearchArgs(
                 query=query,
                 provider=provider or "auto",
                 count=count,
-                use_planner=use_planner,
+                use_query_refiner=use_query_refiner,
             )
         )
         payload = response.to_dict()
@@ -1397,6 +1397,31 @@ async def list_models():
     return {"object": "list", "data": models}
 
 
+def _search_request_bool(
+    body: Dict[str, Any],
+    *,
+    new_snake: str,
+    new_camel: str,
+    old_snake: str,
+    old_camel: str,
+    default: bool,
+) -> bool:
+    for key in (new_snake, new_camel, old_snake, old_camel):
+        if key not in body:
+            continue
+        raw = body[key]
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, str):
+            normalized = raw.strip().lower()
+            if normalized in {"false", "0", "no", "off"}:
+                return False
+            if normalized in {"true", "1", "yes", "on"}:
+                return True
+        return bool(raw)
+    return default
+
+
 @app.post("/search/web")
 async def search_web(request: Request):
     """Return normalized candidate links from configured search providers."""
@@ -1418,7 +1443,14 @@ async def search_web(request: Request):
             region=body.get("region"),
             safe_search=body.get("safeSearch") or body.get("safe_search"),
             freshness=body.get("freshness"),
-            use_planner=body.get("use_planner", body.get("usePlanner", True)) is not False,
+            use_query_refiner=_search_request_bool(
+                body,
+                new_snake="use_query_refiner",
+                new_camel="useQueryRefiner",
+                old_snake="use_planner",
+                old_camel="usePlanner",
+                default=True,
+            ),
         )
         response = await search_service.search(args)
     except ValueError as exc:

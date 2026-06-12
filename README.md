@@ -1,6 +1,8 @@
 # llm-control-plane
 
-A self-hosted LLM orchestration layer that sits in front of multiple local or remote LLM endpoints. It exposes an OpenAI-compatible HTTP API, supports workload-aware routing for isolated tasks, and provides a Shiny dashboard for interactive use. Auto routing is intended for stateless, non-agentic requests; without `X-Convo-ID` there is no proxy-persisted conversation history, and dashboard conversations that do have a conversation id pin Auto to the first selected concrete endpoint.
+An open-source control plane for exploratory work around how LLMs, tools, retrieval, search, and multi-step workflows should function together. It sits in front of multiple local or remote LLM endpoints, exposes an OpenAI-compatible HTTP API, and provides a Shiny dashboard for interactive experiments.
+
+The repo is intentionally pragmatic rather than framework-heavy: it keeps routing, conversation state, RAG injection, ad hoc search, workflow execution, and observability visible enough to inspect and change. Auto routing is intended for stateless, non-agentic requests; dashboard conversations that have a conversation id pin Auto to the first selected concrete endpoint.
 
 ## Documentation
 
@@ -30,6 +32,8 @@ python llm_control_plane.py
 |---|---|
 | `src/orchestrator/` | FastAPI proxy, smart router, request/response shaping |
 | `src/dashboard/` | Shiny dashboard UI and server logic |
+| `src/search/` | Provider routing plus optional ad hoc query refinement |
+| `workflow_configs/` | Context-driven workflow definitions |
 | `config.yaml` | Local endpoint, routing, RAG, and search configuration |
 | `config.example.yaml` | Checked-in configuration template |
 | `.env.example` | Checked-in environment variable template |
@@ -43,5 +47,7 @@ pytest
 ```
 
 Project dependencies now live in `pyproject.toml`; the conda file is only a thin wrapper for local env creation.
+
+Ad hoc Single-Node search may use the query refiner to produce provider-ready search query/queries. Workflow search keeps query planning inside workflow LLM steps and bypasses the query refiner during dispatch.
 
 TL;DR: the root README is now the entry point; the detailed docs live under [`docs/`](docs/README.md).

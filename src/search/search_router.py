@@ -9,7 +9,7 @@ from typing import Optional
 
 from .http_client import SearchHttpClient, SearchHttpClientConfig
 from .normalize import dedupe_results
-from .planner import SearchPlanner
+from .query_refiner import SearchQueryRefiner
 from .search_cache import SearchCache
 from .types import SearchArgs, SearchProvider, SearchResponse
 
@@ -60,7 +60,7 @@ class SearchRouter:
         provider_configs: dict[str, SearchProviderConfig],
         http_client: Optional[SearchHttpClient] = None,
         cache: Optional[SearchCache] = None,
-        planner: Optional[SearchPlanner] = None,
+        query_refiner: Optional[SearchQueryRefiner] = None,
     ):
         self.config = config
         self.providers = providers
@@ -73,7 +73,7 @@ class SearchRouter:
             )
         )
         self.cache = cache or SearchCache(default_ttl_seconds=config.cache_ttl_seconds)
-        self.planner = planner
+        self.query_refiner = query_refiner
         self._last_request_at: dict[str, float] = {}
         self._rate_limit_lock = asyncio.Lock()
 
@@ -84,25 +84,25 @@ class SearchRouter:
 
         warnings: list[str] = []
         original_query = args.query
-        planner_metadata: dict[str, object] = {}
+        query_refinement_metadata: dict[str, object] = {}
         query_args = [args]
 
-        if self.planner is not None and args.use_planner:
-            plan = await self.planner.plan(args)
-            planner_metadata = plan.to_public_dict()
-            if plan.warning:
-                warnings.append(f"planner: {plan.warning}")
+        if self.query_refiner is not None and args.use_query_refiner:
+            refinement = await self.query_refiner.refine(args)
+            query_refinement_metadata = refinement.to_public_dict()
+            if refinement.warning:
+                warnings.append(f"query_refiner: {refinement.warning}")
 
             updates: dict[str, object] = {}
-            if plan.effective_query and plan.effective_query != args.query:
-                updates["query"] = plan.effective_query
-            if plan.freshness and plan.freshness != args.freshness:
-                updates["freshness"] = plan.freshness
+            if refinement.effective_query and refinement.effective_query != args.query:
+                updates["query"] = refinement.effective_query
+            if refinement.freshness and refinement.freshness != args.freshness:
+                updates["freshness"] = refinement.freshness
             if updates:
                 args = replace(args, **updates)
 
-            planned_queries = self._planned_queries(plan.queries, args.query)
-            query_args = [replace(args, query=query) for query in planned_queries]
+            refined_queries = self._refined_queries(refinement.queries, args.query)
+            query_args = [replace(args, query=query) for query in refined_queries]
 
         explicit_provider = args.provider not in {None, "", "auto"}
 
@@ -110,11 +110,11 @@ class SearchRouter:
             response = await self._search_one_query(query_args[0], explicit_provider)
             if warnings:
                 response.warnings = [*warnings, *response.warnings]
-            self._attach_planner_metadata(
+            self._attach_query_refinement_metadata(
                 response,
                 original_query=original_query,
                 effective_query=query_args[0].query,
-                planner_metadata=planner_metadata,
+                query_refinement_metadata=query_refinement_metadata,
             )
             return response
 
@@ -160,11 +160,11 @@ class SearchRouter:
                 warnings=warnings,
             )
 
-        self._attach_planner_metadata(
+        self._attach_query_refinement_metadata(
             response,
             original_query=original_query,
             effective_query=primary_query,
-            planner_metadata=planner_metadata,
+            query_refinement_metadata=query_refinement_metadata,
         )
         return response
 
@@ -205,8 +205,8 @@ class SearchRouter:
             warnings=warnings,
         )
 
-    def _planned_queries(self, queries: list[str], fallback_query: str) -> list[str]:
-        planned: list[str] = []
+    def _refined_queries(self, queries: list[str], fallback_query: str) -> list[str]:
+        refined: list[str] = []
         seen: set[str] = set()
         for query in [*queries, fallback_query]:
             candidate = str(query or "").strip()
@@ -214,21 +214,21 @@ class SearchRouter:
             if not candidate or key in seen:
                 continue
             seen.add(key)
-            planned.append(candidate)
-        return planned or [fallback_query]
+            refined.append(candidate)
+        return refined or [fallback_query]
 
-    def _attach_planner_metadata(
+    def _attach_query_refinement_metadata(
         self,
         response: SearchResponse,
         *,
         original_query: str,
         effective_query: str,
-        planner_metadata: dict[str, object],
+        query_refinement_metadata: dict[str, object],
     ) -> None:
         if original_query != effective_query:
             response.original_query = original_query
-        if planner_metadata:
-            response.planner = planner_metadata
+        if query_refinement_metadata:
+            response.query_refinement = query_refinement_metadata
 
     def _select_providers(self, args: SearchArgs) -> list[SearchProvider]:
         explicit_provider = args.provider not in {None, "", "auto"}

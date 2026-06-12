@@ -78,15 +78,17 @@ def build_search_success_state(search_response: Dict[str, Any]) -> Dict[str, Any
     if not isinstance(results, list):
         results = []
 
-    planner = search_response.get("planner")
-    if not isinstance(planner, dict):
-        planner = {}
+    query_refinement = search_response.get("query_refinement")
+    if not isinstance(query_refinement, dict):
+        query_refinement = search_response.get("planner")
+    if not isinstance(query_refinement, dict):
+        query_refinement = {}
 
     return {
         "provider": provider_id,
         "provider_label": format_search_provider_label(provider_id),
         "query": str(search_response.get("query") or "").strip(),
-        "planner": planner,
+        "query_refinement": query_refinement,
         "degraded": bool(search_response.get("degraded", False)),
         "warnings": warnings,
         "results": results,
@@ -100,13 +102,13 @@ def build_search_success_state(search_response: Dict[str, Any]) -> Dict[str, Any
     }
 
 
-def build_search_planner_context(
+def build_query_refiner_context(
     *,
     system_prompt: Optional[str],
     history: Any,
     user_input: str,
 ) -> str:
-    """Build compact source context for search planning."""
+    """Build compact source context for search query refinement."""
     sections = []
     prompt = normalize_system_prompt(system_prompt)
     if prompt:
@@ -172,8 +174,10 @@ def build_search_turn_messages(
     return [{"role": "user", "content": content}]
 
 
-def _search_planner_queries(planner: Dict[str, Any], fallback_query: str) -> list[str]:
-    raw_queries = planner.get("queries")
+def _query_refinement_queries(
+    query_refinement: Dict[str, Any], fallback_query: str
+) -> list[str]:
+    raw_queries = query_refinement.get("queries")
     queries = raw_queries if isinstance(raw_queries, list) else []
     cleaned = []
     seen = set()
@@ -193,19 +197,19 @@ def build_search_preface(search_state: Optional[Dict[str, Any]]) -> Optional[str
         return None
 
     provider_label = str(search_state.get("provider_label") or "Search").strip()
-    planner = (
-        search_state.get("planner")
-        if isinstance(search_state.get("planner"), dict)
+    query_refinement = (
+        search_state.get("query_refinement")
+        if isinstance(search_state.get("query_refinement"), dict)
         else {}
     )
     query = " ".join(str(search_state.get("query") or "").split())
-    planner_queries = _search_planner_queries(planner, query)
+    refined_queries = _query_refinement_queries(query_refinement, query)
     results = search_state.get("results")
     warnings = search_state.get("warnings") or []
     degraded = bool(search_state.get("degraded", False))
     heading = f"**Search candidates** via {provider_label}"
-    if planner.get("used") is True and planner_queries:
-        quoted_queries = "; ".join(f'"{item}"' for item in planner_queries)
+    if query_refinement.get("used") is True and refined_queries:
+        quoted_queries = "; ".join(f'"{item}"' for item in refined_queries)
         heading = f"{heading} for {quoted_queries}"
     lines = [heading]
 
@@ -248,11 +252,15 @@ def merge_run_info(
             "degraded": bool(search_state.get("degraded", False)),
             "warnings": list(search_state.get("warnings") or []),
         }
-        planner = search_state.get("planner")
+        query_refinement = search_state.get("query_refinement")
         query = str(search_state.get("query") or "").strip()
-        if isinstance(planner, dict) and planner.get("used") is True and query:
+        if (
+            isinstance(query_refinement, dict)
+            and query_refinement.get("used") is True
+            and query
+        ):
             merged["search"]["query"] = query
-            queries = _search_planner_queries(planner, query)
+            queries = _query_refinement_queries(query_refinement, query)
             if len(queries) > 1:
                 merged["search"]["queries"] = queries
 
@@ -1370,21 +1378,21 @@ def server(input, output, session):
         if selected_search_provider and search_query:
             try:
                 if fork_reasons:
-                    planner_history = forked_history
+                    query_refiner_history = forked_history
                 elif convo_id:
-                    planner_history = await fetch_convo_history(convo_id)
+                    query_refiner_history = await fetch_convo_history(convo_id)
                 else:
-                    planner_history = []
-                planner_context = build_search_planner_context(
+                    query_refiner_history = []
+                query_refiner_context = build_query_refiner_context(
                     system_prompt=current_prompt,
-                    history=planner_history,
+                    history=query_refiner_history,
                     user_input=user_input,
                 )
                 search_response = await fetch_search_results(
                     query=search_query,
                     provider=selected_search_provider,
                     count=5,
-                    context=planner_context,
+                    context=query_refiner_context,
                 )
                 search_state = build_search_success_state(search_response)
             except Exception as exc:

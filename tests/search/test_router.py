@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from src.search.planner import SearchPlan
+from src.search.query_refiner import SearchQueryRefinement
 from src.search.search_router import SearchConfig, SearchRouter, SearchProviderConfig
 from src.search.types import SearchArgs, SearchResponse, SearchResult
 
@@ -115,24 +115,24 @@ async def test_router_rejects_unknown_explicit_provider():
         await router.search(SearchArgs(query="q", provider="missing"))
 
 
-class StubPlanner:
-    def __init__(self, plan: SearchPlan):
+class StubQueryRefiner:
+    def __init__(self, plan: SearchQueryRefinement):
         self._plan = plan
         self.calls = 0
         self.last_args = None
 
-    async def plan(self, args):
+    async def refine(self, args):
         self.calls += 1
         self.last_args = args
         return self._plan
 
 
 @pytest.mark.asyncio
-async def test_router_calls_planner_before_provider_and_uses_effective_query():
+async def test_router_calls_query_refiner_before_provider_and_uses_effective_query():
     provider = StubProvider(
         "winner",
         SearchResponse(
-            query="planned query",
+            query="refined query",
             provider="winner",
             results=[
                 SearchResult(
@@ -147,25 +147,27 @@ async def test_router_calls_planner_before_provider_and_uses_effective_query():
             ],
         ),
     )
-    planner = StubPlanner(SearchPlan(effective_query="planned query", used=True))
+    query_refiner = StubQueryRefiner(
+        SearchQueryRefinement(effective_query="refined query", used=True)
+    )
     router = SearchRouter(
         SearchConfig(default_provider="winner", max_results=10),
         providers={"winner": provider},
         provider_configs={"winner": SearchProviderConfig(enabled=True, priority=10)},
-        planner=planner,
+        query_refiner=query_refiner,
     )
 
     response = await router.search(SearchArgs(query="original query"))
 
-    assert planner.calls == 1
-    assert planner.last_args.query == "original query"
-    assert provider.last_args.query == "planned query"
+    assert query_refiner.calls == 1
+    assert query_refiner.last_args.query == "original query"
+    assert provider.last_args.query == "refined query"
     assert response.original_query == "original query"
-    assert response.planner["effective_query"] == "planned query"
+    assert response.query_refinement["effective_query"] == "refined query"
 
 
 @pytest.mark.asyncio
-async def test_router_can_bypass_planner_for_preplanned_queries():
+async def test_router_can_bypass_query_refiner_for_workflow_planned_queries():
     provider = StubProvider(
         "winner",
         SearchResponse(
@@ -184,26 +186,28 @@ async def test_router_can_bypass_planner_for_preplanned_queries():
             ],
         ),
     )
-    planner = StubPlanner(SearchPlan(effective_query="planner query", used=True))
+    query_refiner = StubQueryRefiner(
+        SearchQueryRefinement(effective_query="query_refiner query", used=True)
+    )
     router = SearchRouter(
         SearchConfig(default_provider="winner", max_results=10),
         providers={"winner": provider},
         provider_configs={"winner": SearchProviderConfig(enabled=True, priority=10)},
-        planner=planner,
+        query_refiner=query_refiner,
     )
 
     response = await router.search(
-        SearchArgs(query="workflow planned query", use_planner=False)
+        SearchArgs(query="workflow planned query", use_query_refiner=False)
     )
 
-    assert planner.calls == 0
+    assert query_refiner.calls == 0
     assert provider.last_args.query == "workflow planned query"
     assert response.original_query is None
-    assert response.planner == {}
+    assert response.query_refinement == {}
 
 
 @pytest.mark.asyncio
-async def test_router_omits_original_query_when_planner_keeps_query():
+async def test_router_omits_original_query_when_query_refiner_keeps_query():
     provider = StubProvider(
         "winner",
         SearchResponse(
@@ -222,23 +226,25 @@ async def test_router_omits_original_query_when_planner_keeps_query():
             ],
         ),
     )
-    planner = StubPlanner(SearchPlan(effective_query="same query", used=False))
+    query_refiner = StubQueryRefiner(
+        SearchQueryRefinement(effective_query="same query", used=False)
+    )
     router = SearchRouter(
         SearchConfig(default_provider="winner", max_results=10),
         providers={"winner": provider},
         provider_configs={"winner": SearchProviderConfig(enabled=True, priority=10)},
-        planner=planner,
+        query_refiner=query_refiner,
     )
 
     response = await router.search(SearchArgs(query="same query"))
 
     assert response.original_query is None
     assert "original_query" not in response.to_dict()
-    assert response.planner["used"] is False
+    assert response.query_refinement["used"] is False
 
 
 @pytest.mark.asyncio
-async def test_planner_warning_does_not_stop_provider_search():
+async def test_query_refiner_warning_does_not_stop_provider_search():
     provider = StubProvider(
         "winner",
         SearchResponse(
@@ -257,25 +263,25 @@ async def test_planner_warning_does_not_stop_provider_search():
             ],
         ),
     )
-    planner = StubPlanner(
-        SearchPlan(
+    query_refiner = StubQueryRefiner(
+        SearchQueryRefinement(
             effective_query="original",
             degraded=True,
-            warning="planner-failed: TimeoutException",
+            warning="query_refiner-failed: TimeoutException",
         )
     )
     router = SearchRouter(
         SearchConfig(default_provider="winner", max_results=10),
         providers={"winner": provider},
         provider_configs={"winner": SearchProviderConfig(enabled=True, priority=10)},
-        planner=planner,
+        query_refiner=query_refiner,
     )
 
     response = await router.search(SearchArgs(query="original"))
 
     assert provider.calls == 1
-    assert response.warnings == ["planner: planner-failed: TimeoutException"]
-    assert response.planner["degraded"] is True
+    assert response.warnings == ["query_refiner: query_refiner-failed: TimeoutException"]
+    assert response.query_refinement["degraded"] is True
 
 
 class FanoutProvider:
@@ -317,10 +323,10 @@ class FanoutProvider:
 
 
 @pytest.mark.asyncio
-async def test_router_fans_out_planned_queries_and_dedupes_results():
+async def test_router_fans_out_refined_queries_and_dedupes_results():
     provider = FanoutProvider()
-    planner = StubPlanner(
-        SearchPlan(
+    query_refiner = StubQueryRefiner(
+        SearchQueryRefinement(
             effective_query="q1",
             queries=["q1", "q2"],
             used=True,
@@ -330,7 +336,7 @@ async def test_router_fans_out_planned_queries_and_dedupes_results():
         SearchConfig(default_provider="winner", max_results=10, max_total_results=2),
         providers={"winner": provider},
         provider_configs={"winner": SearchProviderConfig(enabled=True, priority=10)},
-        planner=planner,
+        query_refiner=query_refiner,
     )
 
     response = await router.search(SearchArgs(query="original query"))
@@ -340,7 +346,7 @@ async def test_router_fans_out_planned_queries_and_dedupes_results():
     assert response.query == "q1"
     assert response.provider == "winner"
     assert response.original_query == "original query"
-    assert response.planner["queries"] == ["q1", "q2"]
+    assert response.query_refinement["queries"] == ["q1", "q2"]
     assert [result.url for result in response.results] == [
         "https://example.com/a",
         "https://example.com/b",

@@ -148,7 +148,20 @@ search:
     ]
 
 
-def test_load_search_planner_max_context_chars_reads_config(tmp_path, monkeypatch):
+def test_load_query_refiner_max_context_chars_reads_config(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "search: {query_refiner_max_context_chars: 24}",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(utils, "CONFIG_PATH", config_path)
+
+    assert utils.load_query_refiner_max_context_chars() == 24
+
+
+def test_load_query_refiner_max_context_chars_accepts_legacy_key(
+    tmp_path, monkeypatch
+):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         "search: {planner_max_context_chars: 24}",
@@ -156,7 +169,7 @@ def test_load_search_planner_max_context_chars_reads_config(tmp_path, monkeypatc
     )
     monkeypatch.setattr(utils, "CONFIG_PATH", config_path)
 
-    assert utils.load_search_planner_max_context_chars() == 24
+    assert utils.load_query_refiner_max_context_chars() == 24
 
 
 def test_trim_search_context_preserves_tail():
@@ -183,7 +196,7 @@ def test_fetch_available_search_providers_returns_none_when_search_disabled(
 @pytest.mark.asyncio
 async def test_fetch_search_results_posts_to_proxy(monkeypatch):
     monkeypatch.setattr(utils, "PROXY_BASE_URL", "http://proxy.local")
-    monkeypatch.setattr(utils, "load_search_planner_max_context_chars", lambda: 12000)
+    monkeypatch.setattr(utils, "load_query_refiner_max_context_chars", lambda: 12000)
 
     response = Mock()
     response.raise_for_status = Mock()
@@ -244,7 +257,7 @@ async def test_fetch_convo_state_posts_to_proxy(monkeypatch):
 @pytest.mark.asyncio
 async def test_fetch_search_results_posts_trimmed_context(monkeypatch):
     monkeypatch.setattr(utils, "PROXY_BASE_URL", "http://proxy.local")
-    monkeypatch.setattr(utils, "load_search_planner_max_context_chars", lambda: 12)
+    monkeypatch.setattr(utils, "load_query_refiner_max_context_chars", lambda: 12)
 
     response = Mock()
     response.raise_for_status = Mock()

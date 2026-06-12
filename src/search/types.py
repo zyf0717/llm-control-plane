@@ -18,7 +18,7 @@ class SearchArgs:
     safe_search: Optional[str] = None
     freshness: Optional[str] = None
     context: Optional[str] = None
-    use_planner: bool = True
+    use_query_refiner: bool = True
 
 
 @dataclass(slots=True)
@@ -57,6 +57,7 @@ class SearchResponse:
     degraded: bool = False
     warnings: list[str] = field(default_factory=list)
     original_query: Optional[str] = None
+    query_refinement: dict[str, object] = field(default_factory=dict)
     planner: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
@@ -64,7 +65,12 @@ class SearchResponse:
         payload["results"] = [result.to_dict() for result in self.results]
         if not self.original_query:
             payload.pop("original_query", None)
-        if not self.planner:
+        refinement = self.query_refinement or self.planner
+        if refinement:
+            payload["query_refinement"] = refinement
+            payload["planner"] = refinement
+        else:
+            payload.pop("query_refinement", None)
             payload.pop("planner", None)
         return payload
 

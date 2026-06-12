@@ -28,13 +28,13 @@ rag:
 
 search:
   enabled: true
-  model_endpoint: "https://llm-server.example.com"
-  model: "search-planner"
-  planner_enabled: true
-  planner_timeout_ms: 7000
-  planner_max_context_chars: 24000
-  planner_max_output_tokens: 1024
-  planner_max_queries: 3
+  query_refiner_model_endpoint: "https://llm-server.example.com"
+  query_refiner_model: "search-query-refiner"
+  query_refiner_enabled: true
+  query_refiner_timeout_ms: 7000
+  query_refiner_max_context_chars: 24000
+  query_refiner_max_output_tokens: 1024
+  query_refiner_max_queries: 3
   search_max_total_results: 10
   default_provider: "duckduckgo_html"
   timeout_ms: 7000
@@ -124,14 +124,14 @@ The `search` block enables the lightweight candidate-discovery module exposed at
 | Field | Meaning |
 |---|---|
 | `enabled` | Enables the `/search/web` endpoint and internal provider router |
-| `model_endpoint` | Optional OpenAI-compatible endpoint for bounded query planning |
-| `model` | Planner model name; defaults to `search-planner` |
-| `planner_enabled` | Enables or disables planning; defaults to true when `model_endpoint` exists |
-| `planner_timeout_ms` | Planner request timeout; defaults to `timeout_ms` or 7000 |
-| `planner_max_context_chars` | Max optional context characters sent to the planner |
-| `planner_max_output_tokens` | Max planner response tokens |
-| `planner_max_queries` | Max planned query fanout; defaults to 1 |
-| `search_max_total_results` | Max deduped results returned across all planned queries |
+| `query_refiner_model_endpoint` | Optional OpenAI-compatible endpoint for bounded query refinement |
+| `query_refiner_model` | Query-refiner model name; defaults to `search-query-refiner` |
+| `query_refiner_enabled` | Enables or disables query refinement; defaults to true when `query_refiner_model_endpoint` exists |
+| `query_refiner_timeout_ms` | Query-refiner request timeout; defaults to `timeout_ms` or 7000 |
+| `query_refiner_max_context_chars` | Max optional context characters sent to the query refiner |
+| `query_refiner_max_output_tokens` | Max query-refiner response tokens |
+| `query_refiner_max_queries` | Max refined query fanout; defaults to 1 |
+| `search_max_total_results` | Max deduped results returned across all refined queries |
 | `default_provider` | Default provider id when `provider=auto` |
 | `timeout_ms` | Per-provider request timeout |
 | `max_results` | Hard cap on normalized results returned |
@@ -142,7 +142,11 @@ The `search` block enables the lightweight candidate-discovery module exposed at
 | `providers[].cache_ttl_seconds` | Optional provider-specific TTL override |
 | `providers[].min_interval_seconds` | Optional minimum delay between requests to the same provider |
 
-When `search.model_endpoint` is configured and planning is enabled, `/search/web` may run a bounded, non-persisted `SearchPlanner` call before provider execution. The planner returns one or more concise provider-ready queries; the first query becomes the effective search query. If `planner_max_queries` is greater than 1, provider searches run as an async fanout and results are deduped before applying `search_max_total_results`. Planner failure degrades to the original query and adds a warning.
+When `search.query_refiner_model_endpoint` is configured and query refinement is enabled, ad hoc `/search/web` calls may run a bounded, non-persisted query-refiner call before provider execution. The query refiner returns one or more concise provider-ready queries; the first query becomes the effective search query. If `query_refiner_max_queries` is greater than 1, provider searches run as an async fanout and results are deduped before applying `search_max_total_results`. Query-refiner failure degrades to the original query and adds a warning.
+
+Legacy aliases are still accepted for migration: `model_endpoint`, `model`, `planner_enabled`, `planner_timeout_ms`, `planner_max_context_chars`, `planner_max_output_tokens`, and `planner_max_queries`. New `query_refiner_*` keys win when both forms are present.
+
+Workflow search is different: workflow YAMLs use their workflow LLM steps to decide search queries and then dispatch those queries with the query refiner bypassed. This keeps workflow search planning in the workflow, not in the ad hoc search router.
 
 Supported built-in provider ids:
 

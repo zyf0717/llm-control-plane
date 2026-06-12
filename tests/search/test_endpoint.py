@@ -59,3 +59,77 @@ def test_search_web_endpoint_accepts_context():
     assert result.status_code == 200
     assert search.await_args.args[0].context == "prior context"
     assert "wrapped_results" in result.json()
+
+
+def test_search_web_endpoint_accepts_new_query_refiner_bypass_flag():
+    response = SearchResponse(query="alpha", provider="none", results=[], warnings=[])
+
+    with patch(
+        "src.orchestrator.proxy.search_service.search",
+        AsyncMock(return_value=response),
+    ) as search:
+        result = client.post(
+            "/search/web",
+            json={"query": "alpha", "use_query_refiner": False},
+        )
+
+    assert result.status_code == 200
+    assert search.await_args.args[0].use_query_refiner is False
+
+
+def test_search_web_endpoint_accepts_legacy_planner_bypass_flag():
+    response = SearchResponse(query="alpha", provider="none", results=[], warnings=[])
+
+    with patch(
+        "src.orchestrator.proxy.search_service.search",
+        AsyncMock(return_value=response),
+    ) as search:
+        result = client.post(
+            "/search/web",
+            json={"query": "alpha", "usePlanner": False},
+        )
+
+    assert result.status_code == 200
+    assert search.await_args.args[0].use_query_refiner is False
+
+
+def test_search_web_endpoint_prefers_new_query_refiner_flag_over_legacy_flag():
+    response = SearchResponse(query="alpha", provider="none", results=[], warnings=[])
+
+    with patch(
+        "src.orchestrator.proxy.search_service.search",
+        AsyncMock(return_value=response),
+    ) as search:
+        result = client.post(
+            "/search/web",
+            json={
+                "query": "alpha",
+                "use_query_refiner": False,
+                "usePlanner": True,
+            },
+        )
+
+    assert result.status_code == 200
+    assert search.await_args.args[0].use_query_refiner is False
+
+
+def test_search_web_endpoint_emits_query_refinement_and_planner_alias():
+    response = SearchResponse(
+        query="refined",
+        provider="none",
+        results=[],
+        warnings=[],
+        original_query="original",
+        query_refinement={"used": True, "effective_query": "refined"},
+    )
+
+    with patch(
+        "src.orchestrator.proxy.search_service.search",
+        AsyncMock(return_value=response),
+    ):
+        result = client.post("/search/web", json={"query": "original"})
+
+    assert result.status_code == 200
+    body = result.json()
+    assert body["query_refinement"] == {"used": True, "effective_query": "refined"}
+    assert body["planner"] == body["query_refinement"]

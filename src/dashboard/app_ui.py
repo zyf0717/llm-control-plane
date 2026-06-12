@@ -133,8 +133,10 @@ app_ui = ui.page_fluid(
 
         .dashboard-step-detail-box {
             border: 1px solid var(--bs-border-color);
+            border-radius: var(--bs-border-radius);
             background: var(--bs-body-bg);
             color: var(--bs-body-color);
+            overflow: hidden;
             min-width: 0;
         }
 
@@ -142,14 +144,27 @@ app_ui = ui.page_fluid(
             font-weight: 700;
             padding: 0.5rem 0.75rem;
             border-bottom: 1px solid var(--bs-border-color);
+            background: var(--bs-tertiary-bg, var(--bs-secondary-bg));
+            color: var(--bs-emphasis-color);
         }
 
         .dashboard-step-detail-body {
             max-height: 28rem;
             overflow: auto;
             padding: 0.75rem;
-            background-color: var(--bs-secondary-bg) !important;
-            color: var(--bs-emphasis-color) !important;
+            background: var(--bs-body-bg);
+            color: var(--bs-body-color);
+        }
+
+        .dashboard-step-detail-body .dashboard-trace-json {
+            background: transparent !important;
+            color: inherit !important;
+            padding: 0;
+        }
+
+        .dashboard-step-empty {
+            margin: 0;
+            color: var(--bs-secondary-color);
         }
 
         .dashboard-trace-json {

@@ -9,7 +9,7 @@ from src.dashboard.app_server import (
     build_fork_notice,
     build_search_failure_state,
     build_search_preface,
-    build_search_planner_context,
+    build_query_refiner_context,
     build_search_success_state,
     build_search_turn_messages,
     conversation_control_change_reasons,
@@ -21,8 +21,8 @@ from src.dashboard.app_server import (
 from src.search.safety import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER
 
 
-def test_build_search_planner_context_includes_prompt_history_and_current_request():
-    context = build_search_planner_context(
+def test_build_query_refiner_context_includes_prompt_history_and_current_request():
+    context = build_query_refiner_context(
         system_prompt="Prefer primary sources.",
         history=[
             {"role": "user", "content": "Earlier question"},
@@ -290,12 +290,12 @@ def test_build_search_preface_renders_results_and_warnings():
     assert "degraded" in preface.lower()
 
 
-def test_build_search_preface_shows_optimized_query_when_planner_used():
+def test_build_search_preface_shows_refined_query_when_query_refiner_used():
     state = build_search_success_state(
         {
             "provider": "duckduckgo_html",
             "query": "llama.cpp server KV cache metrics cached_tokens",
-            "planner": {
+            "query_refinement": {
                 "used": True,
                 "effective_query": "llama.cpp server KV cache metrics cached_tokens",
             },
@@ -316,12 +316,12 @@ def test_build_search_preface_shows_optimized_query_when_planner_used():
     assert merged["search"]["query"] == "llama.cpp server KV cache metrics cached_tokens"
 
 
-def test_build_search_preface_shows_all_fanout_queries_when_planner_used():
+def test_build_search_preface_shows_all_fanout_queries_when_query_refiner_used():
     state = build_search_success_state(
         {
             "provider": "duckduckgo_html",
             "query": "q1",
-            "planner": {"used": True, "queries": ["q1", "q2", "q1"]},
+            "query_refinement": {"used": True, "queries": ["q1", "q2", "q1"]},
             "results": [],
             "wrapped_results": '{"source":"web_search"}',
         }
@@ -337,12 +337,12 @@ def test_build_search_preface_shows_all_fanout_queries_when_planner_used():
     assert merged["search"]["queries"] == ["q1", "q2"]
 
 
-def test_build_search_preface_keeps_legacy_heading_without_planner_use():
+def test_build_search_preface_keeps_legacy_heading_without_query_refiner_use():
     state = build_search_success_state(
         {
             "provider": "duckduckgo_html",
             "query": "Ada Lovelace",
-            "planner": {"used": False},
+            "query_refinement": {"used": False},
             "results": [],
             "wrapped_results": '{"source":"web_search"}',
         }

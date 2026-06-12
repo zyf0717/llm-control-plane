@@ -261,7 +261,7 @@ async def test_search_step_can_use_json_field_from_previous_llm_output(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_search_step_fans_out_workflow_planned_queries_without_planner(tmp_path):
+async def test_search_step_fans_out_workflow_planned_queries_without_query_refiner(tmp_path):
     write_json_queries_workflow(tmp_path / "json_queries_sample.yaml")
     registry = WorkflowRegistry(tmp_path)
     registry.load()
@@ -280,7 +280,7 @@ async def test_search_step_fans_out_workflow_planned_queries_without_planner(tmp
         snapshot = await executor.advance(run_id)
 
         assert [call["query"] for call in search.calls] == ["query one", "query two"]
-        assert [call["use_planner"] for call in search.calls] == [False, False]
+        assert [call["use_query_refiner"] for call in search.calls] == [False, False]
         search_output = snapshot["steps"][1]["output_json"]["json"]
         assert search_output["queries"] == ["query one", "query two"]
         assert search_output["workflow_search"]["planned_by_workflow"] is True
@@ -322,7 +322,7 @@ async def test_llm_json_output_parser_accepts_fenced_json_for_workflow_queries(t
 
 
 @pytest.mark.asyncio
-async def test_search_step_can_dispatch_json_string_query_without_planner(tmp_path):
+async def test_search_step_can_dispatch_json_string_query_without_query_refiner(tmp_path):
     write_direct_search_workflow(tmp_path / "direct_search_sample.yaml")
     registry = WorkflowRegistry(tmp_path)
     registry.load()
@@ -345,7 +345,7 @@ async def test_search_step_can_dispatch_json_string_query_without_planner(tmp_pa
             {
                 "query": 'best "portable induction" cooktop',
                 "provider": None,
-                "use_planner": False,
+                "use_query_refiner": False,
             }
         ]
         assert llm.prompts == []

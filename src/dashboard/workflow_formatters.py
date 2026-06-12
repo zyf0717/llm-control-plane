@@ -341,7 +341,7 @@ def _format_step_detail_box(label: str, value: Any) -> ui.Tag:
                     class_="dashboard-trace-json",
                 )
                 if value is not None
-                else ui.markdown("No data.")
+                else ui.tags.div("No data.", class_="dashboard-step-empty")
             ),
             class_="dashboard-step-detail-body",
         ),
