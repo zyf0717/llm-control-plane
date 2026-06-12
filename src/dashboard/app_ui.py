@@ -111,17 +111,16 @@ app_ui = ui.page_fluid(
             outline-offset: 2px;
         }
 
-        .dashboard-step-button.is-active {
-            outline: 2px solid var(--dashboard-step-color, var(--bs-primary));
-            outline-offset: 2px;
+        .dashboard-step-button.is-active .dashboard-step-box {
+            box-shadow: 0 0 0 2px var(--dashboard-step-color, var(--bs-primary));
         }
 
         .dashboard-step-panel {
             width: 100%;
-            border: 1px solid var(--bs-border-color);
-            background: var(--bs-body-bg);
+            border: 0;
+            background: transparent;
             color: var(--bs-body-color);
-            padding: 0.75rem;
+            padding: 0;
             margin-bottom: 0.75rem;
         }
 
@@ -144,8 +143,8 @@ app_ui = ui.page_fluid(
             font-weight: 700;
             padding: 0.5rem 0.75rem;
             border-bottom: 1px solid var(--bs-border-color);
-            background: var(--bs-tertiary-bg, var(--bs-secondary-bg));
-            color: var(--bs-emphasis-color);
+            background: var(--bs-body-bg);
+            color: var(--bs-body-color);
         }
 
         .dashboard-step-detail-body {
