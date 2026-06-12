@@ -29,6 +29,26 @@ class JsonLLMClient:
         return {"text": self.text, "metadata": {"endpoint": kwargs["endpoint"]}}
 
 
+class StreamingLLMClient:
+    def __init__(self, chunks=None):
+        self.chunks = chunks or [
+            {"channel": "content", "content": "stream "},
+            {"channel": "content", "content": "answer"},
+        ]
+        self.prompts = []
+        self.complete_calls = 0
+
+    async def complete(self, **kwargs):
+        self.complete_calls += 1
+        self.prompts.append(kwargs)
+        return {"text": "complete answer", "metadata": {"endpoint": kwargs["endpoint"]}}
+
+    async def stream_complete(self, **kwargs):
+        self.prompts.append(kwargs)
+        for chunk in self.chunks:
+            yield chunk
+
+
 class BlockingLLMClient:
     def __init__(self):
         self.started = False
@@ -172,6 +192,46 @@ steps:
     depends_on: [search]
     prompt: "{{ outputs.search.text }}"
     output_key: synthesis
+""",
+        encoding="utf-8",
+    )
+
+
+def write_visible_llm_workflow(path: Path, *, visibility: str = "final") -> None:
+    path.write_text(
+        f"""
+id: visible_sample
+name: Visible Sample
+version: 0.1.0
+params_schema:
+  type: object
+  required: [goal]
+steps:
+  - id: first
+    kind: llm
+    chat_visibility: {visibility}
+    prompt: "{{{{ params.goal }}}}"
+    output_key: first
+""",
+        encoding="utf-8",
+    )
+
+
+def write_visible_search_workflow(path: Path) -> None:
+    path.write_text(
+        """
+id: visible_search_sample
+name: Visible Search Sample
+version: 0.1.0
+params_schema:
+  type: object
+  required: [goal]
+steps:
+  - id: search
+    kind: search
+    chat_visibility: intermediate
+    prompt: "{{ params.goal }}"
+    output_key: search
 """,
         encoding="utf-8",
     )
@@ -369,6 +429,129 @@ async def test_executor_requires_concrete_run_endpoint(tmp_path):
             await executor.create_run(
                 "sample", params={"goal": "ship"}, endpoint="smart"
             )
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_streaming_llm_step_accumulates_output_and_emits_deltas(tmp_path):
+    write_visible_llm_workflow(tmp_path / "visible.yaml", visibility="final")
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    llm = StreamingLLMClient()
+    executor = WorkflowExecutor(registry, store, llm)
+    try:
+        created = await executor.create_run(
+            "visible_sample", params={"goal": "ship"}, endpoint="node-a"
+        )
+        run_id = created["run"]["run_id"]
+
+        events = [
+            event
+            async for event in executor.run_to_completion_stream(
+                run_id, stream_llm=True
+            )
+        ]
+
+        deltas = [event for event in events if event["type"] == "step_delta"]
+        assert [event["content"] for event in deltas] == ["stream ", "answer"]
+        assert all(event["chat_visibility"] == "final" for event in deltas)
+        snapshot = events[-1]["snapshot"]
+        assert snapshot["run"]["status"] == "completed"
+        assert snapshot["steps"][0]["output_json"]["text"] == "stream answer"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_streaming_hidden_step_does_not_emit_chat_deltas(tmp_path):
+    write_visible_llm_workflow(tmp_path / "hidden.yaml", visibility="hidden")
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    llm = StreamingLLMClient()
+    executor = WorkflowExecutor(registry, store, llm)
+    try:
+        created = await executor.create_run(
+            "visible_sample", params={"goal": "ship"}, endpoint="node-a"
+        )
+        run_id = created["run"]["run_id"]
+
+        events = [
+            event
+            async for event in executor.run_to_completion_stream(
+                run_id, stream_llm=True
+            )
+        ]
+
+        assert not [event for event in events if event["type"] == "step_delta"]
+        completed = [event for event in events if event["type"] == "step_completed"]
+        assert completed[0]["content"] == ""
+        assert llm.complete_calls == 1
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_non_stream_visible_llm_emits_completion_content_once(tmp_path):
+    write_visible_llm_workflow(tmp_path / "visible.yaml", visibility="intermediate")
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    llm = StreamingLLMClient()
+    executor = WorkflowExecutor(registry, store, llm)
+    try:
+        created = await executor.create_run(
+            "visible_sample", params={"goal": "ship"}, endpoint="node-a"
+        )
+        run_id = created["run"]["run_id"]
+
+        events = [
+            event
+            async for event in executor.run_to_completion_stream(
+                run_id, stream_llm=False
+            )
+        ]
+
+        assert not [event for event in events if event["type"] == "step_delta"]
+        completed = [event for event in events if event["type"] == "step_completed"]
+        assert completed[0]["chat_visibility"] == "intermediate"
+        assert completed[0]["content"] == "complete answer"
+        assert completed[0]["streamed"] is False
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_visible_search_step_emits_completion_content_only(tmp_path):
+    write_visible_search_workflow(tmp_path / "visible_search.yaml")
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    search = CapturingSearchClient()
+    executor = WorkflowExecutor(registry, store, FakeLLMClient(), search)
+    try:
+        created = await executor.create_run(
+            "visible_search_sample", params={"goal": "ship"}, endpoint="node-a"
+        )
+        run_id = created["run"]["run_id"]
+
+        events = [
+            event
+            async for event in executor.run_to_completion_stream(
+                run_id, stream_llm=True
+            )
+        ]
+
+        assert not [event for event in events if event["type"] == "step_delta"]
+        completed = [event for event in events if event["type"] == "step_completed"]
+        assert completed[0]["chat_visibility"] == "intermediate"
+        assert '"results"' in completed[0]["content"]
     finally:
         await store.close()
 

@@ -6,7 +6,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from typing import Any, AsyncIterator, Protocol
 
 from .models import WorkflowRun, WorkflowSpec, WorkflowStepSpec
 from .registry import WorkflowRegistry
@@ -26,6 +26,18 @@ class WorkflowLLMClient(Protocol):
     ) -> dict[str, Any]:
         ...
 
+    async def stream_complete(
+        self,
+        *,
+        endpoint: str,
+        prompt: str,
+        convo_id: str,
+        reasoning_effort: str | None = None,
+        rag_endpoint: str | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        ...
+
 
 class WorkflowSearchClient(Protocol):
     async def search(
@@ -43,6 +55,7 @@ class WorkflowSearchClient(Protocol):
 class WorkflowStepExecution:
     output: dict[str, Any]
     artifact_text: str | None = None
+    streamed: bool = False
 
 
 class WorkflowExecutor:
@@ -179,6 +192,162 @@ class WorkflowExecutor:
         if snapshot is None:
             raise KeyError(f"unknown workflow run: {run_id}")
         return snapshot
+
+    async def run_to_completion_stream(
+        self,
+        run_id: str,
+        *,
+        max_steps: int | None = None,
+        stream_llm: bool = True,
+    ) -> AsyncIterator[dict[str, Any]]:
+        budget = max(1, int(max_steps or 100))
+        initial = await self.store.snapshot(run_id)
+        if initial is None:
+            yield {
+                "type": "error",
+                "run_id": run_id,
+                "error": f"unknown workflow run: {run_id}",
+            }
+            return
+
+        run = initial.get("run") if isinstance(initial.get("run"), dict) else {}
+        yield {
+            "type": "run_started",
+            "run_id": run_id,
+            "workflow_id": str(run.get("workflow_id") or ""),
+        }
+        yield {"type": "snapshot", "run_id": run_id, "snapshot": initial}
+
+        snapshot = initial
+        for _ in range(budget):
+            async for event in self._advance_stream(run_id, stream_llm=stream_llm):
+                if event.get("type") == "snapshot" and isinstance(
+                    event.get("snapshot"), dict
+                ):
+                    snapshot = event["snapshot"]
+                yield event
+            status = str(snapshot.get("run", {}).get("status") or "")
+            if status in {"completed", "failed", "cancelled"}:
+                yield {
+                    "type": "run_completed",
+                    "run_id": run_id,
+                    "workflow_id": str(
+                        snapshot.get("run", {}).get("workflow_id") or ""
+                    ),
+                    "status": status,
+                    "snapshot": snapshot,
+                }
+                return
+
+        yield {
+            "type": "run_completed",
+            "run_id": run_id,
+            "workflow_id": str(snapshot.get("run", {}).get("workflow_id") or ""),
+            "status": str(snapshot.get("run", {}).get("status") or ""),
+            "snapshot": snapshot,
+        }
+
+    async def _advance_stream(
+        self, run_id: str, *, stream_llm: bool
+    ) -> AsyncIterator[dict[str, Any]]:
+        run = await self.store.get_run(run_id)
+        if run is None:
+            yield {
+                "type": "error",
+                "run_id": run_id,
+                "error": f"unknown workflow run: {run_id}",
+            }
+            return
+        if run.status in {"completed", "failed", "cancelled"}:
+            snapshot = await self.store.snapshot(run_id)
+            if snapshot is not None:
+                yield {"type": "snapshot", "run_id": run_id, "snapshot": snapshot}
+            return
+
+        spec = self.registry.get(run.workflow_id)
+        snapshot = await self.store.snapshot(run_id)
+        if snapshot is None:
+            yield {
+                "type": "error",
+                "run_id": run_id,
+                "error": f"unknown workflow run: {run_id}",
+            }
+            return
+
+        next_step = self._next_runnable_step(spec, snapshot)
+        if next_step is None:
+            if self._all_steps_completed(snapshot):
+                await self.store.mark_run_status(
+                    run_id, "completed", current_step_id=None, completed=True
+                )
+                completed = await self.store.snapshot(run_id)
+                if completed is not None:
+                    yield {"type": "snapshot", "run_id": run_id, "snapshot": completed}
+            else:
+                yield {"type": "snapshot", "run_id": run_id, "snapshot": snapshot}
+            return
+
+        step_input = self._build_step_input(spec, snapshot, next_step)
+        await self.store.mark_step_running(run_id, next_step.id, step_input)
+        yield self._step_event(run, next_step, "step_started")
+        running_snapshot = await self.store.snapshot(run_id)
+        if running_snapshot is not None:
+            yield {"type": "snapshot", "run_id": run_id, "snapshot": running_snapshot}
+
+        execution: WorkflowStepExecution | None = None
+        try:
+            async for event in self._execute_step_stream(
+                run, spec, next_step, step_input, stream_llm=stream_llm
+            ):
+                if event.get("type") == "_execution_result":
+                    execution = event["execution"]
+                else:
+                    yield event
+            if execution is None:
+                raise RuntimeError("workflow step produced no execution result")
+        except Exception as exc:
+            await self.store.mark_step_failed(run_id, next_step.id, str(exc))
+            failed = await self.store.snapshot(run_id)
+            yield self._step_event(
+                run,
+                next_step,
+                "error",
+                error=str(exc),
+                snapshot=failed,
+            )
+            if failed is not None:
+                yield {"type": "snapshot", "run_id": run_id, "snapshot": failed}
+            return
+
+        await self.store.mark_step_completed(run_id, next_step.id, execution.output)
+        if execution.artifact_text:
+            await self.store.create_artifact(
+                artifact_id=f"wfa_{uuid.uuid4().hex[:12]}",
+                run_id=run_id,
+                step_id=next_step.id,
+                artifact_type="text",
+                name=next_step.output_key or next_step.id,
+                content_json=execution.output,
+                content_text=execution.artifact_text,
+            )
+        advanced = await self.store.snapshot(run_id)
+        if advanced is not None and self._next_runnable_step(spec, advanced) is None:
+            if self._all_steps_completed(advanced):
+                await self.store.mark_run_status(
+                    run_id, "completed", current_step_id=None, completed=True
+                )
+                advanced = await self.store.snapshot(run_id)
+
+        yield self._step_event(
+            run,
+            next_step,
+            "step_completed",
+            content=self._visible_step_content(next_step, execution),
+            streamed=execution.streamed,
+            snapshot=advanced,
+        )
+        if advanced is not None:
+            yield {"type": "snapshot", "run_id": run_id, "snapshot": advanced}
 
     async def retry_step(self, run_id: str, step_id: str) -> dict[str, Any]:
         run = await self.store.get_run(run_id)
@@ -360,6 +529,112 @@ class WorkflowExecutor:
             "metadata": dict(result.get("metadata") or {}),
         }
         return WorkflowStepExecution(output=output, artifact_text=text or None)
+
+    async def _execute_step_stream(
+        self,
+        run: WorkflowRun,
+        spec: WorkflowSpec,
+        step: WorkflowStepSpec,
+        step_input: dict[str, Any],
+        *,
+        stream_llm: bool,
+    ) -> AsyncIterator[dict[str, Any]]:
+        if step.kind != "llm" or not self._should_stream_step(step, stream_llm):
+            execution = await self._execute_step(run, spec, step, step_input)
+            yield {"type": "_execution_result", "execution": execution}
+            return
+
+        prompt = render_template(step.prompt or "", step_input)
+        endpoint = run.endpoint
+        if not endpoint:
+            raise ValueError("workflow step endpoint is required")
+        if endpoint.lower() == "smart":
+            raise ValueError("workflow step endpoint must be a concrete endpoint")
+        reasoning_effort = (
+            step.reasoning_effort or run.reasoning_effort or spec.defaults.reasoning_effort
+        )
+
+        stream_complete = getattr(self.llm_client, "stream_complete", None)
+        if stream_complete is None:
+            execution = await self._execute_step(run, spec, step, step_input)
+            yield {"type": "_execution_result", "execution": execution}
+            return
+
+        text_parts: list[str] = []
+        metadata: dict[str, Any] = {}
+        async for chunk in stream_complete(
+            endpoint=endpoint,
+            prompt=prompt,
+            convo_id=run.convo_id,
+            reasoning_effort=reasoning_effort,
+            rag_endpoint=run.rag_endpoint or step.rag_endpoint or spec.defaults.rag_endpoint,
+            max_tokens=step.max_tokens or spec.defaults.max_tokens,
+        ):
+            if not isinstance(chunk, dict):
+                continue
+            channel = str(chunk.get("channel") or "").strip()
+            content = str(chunk.get("content") or "")
+            if channel == "content" and content:
+                text_parts.append(content)
+            if isinstance(chunk.get("metadata"), dict):
+                metadata.update(chunk["metadata"])
+            if channel in {"content", "reasoning"} and content:
+                yield self._step_event(
+                    run,
+                    step,
+                    "step_delta",
+                    channel=channel,
+                    content=content,
+                )
+
+        text = "".join(text_parts)
+        parsed = _parse_json_text(text)
+        output = {
+            "text": text,
+            "json": parsed,
+            "metadata": metadata,
+        }
+        yield {
+            "type": "_execution_result",
+            "execution": WorkflowStepExecution(
+                output=output,
+                artifact_text=text or None,
+                streamed=True,
+            ),
+        }
+
+    @staticmethod
+    def _should_stream_step(step: WorkflowStepSpec, stream_llm: bool) -> bool:
+        return (
+            bool(stream_llm)
+            and step.chat_visibility != "hidden"
+            and step.chat_stream is not False
+        )
+
+    @staticmethod
+    def _visible_step_content(
+        step: WorkflowStepSpec, execution: WorkflowStepExecution
+    ) -> str:
+        if step.chat_visibility == "hidden":
+            return ""
+        return str(execution.output.get("text") or "").strip()
+
+    @staticmethod
+    def _step_event(
+        run: WorkflowRun,
+        step: WorkflowStepSpec,
+        event_type: str,
+        **extra: Any,
+    ) -> dict[str, Any]:
+        return {
+            "type": event_type,
+            "run_id": run.run_id,
+            "workflow_id": run.workflow_id,
+            "step_id": step.id,
+            "step_name": step.name,
+            "chat_visibility": step.chat_visibility,
+            **extra,
+        }
 
 
 _TEMPLATE_PATTERN = re.compile(

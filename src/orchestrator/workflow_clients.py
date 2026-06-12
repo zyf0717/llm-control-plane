@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Optional
 
 from src.search import SearchArgs, wrap_search_results
 
@@ -98,6 +98,79 @@ class ProxyWorkflowLLMClient:
 
         return {"text": text, "metadata": metadata}
 
+    async def stream_complete(
+        self,
+        *,
+        endpoint: str,
+        prompt: str,
+        convo_id: str,
+        reasoning_effort: Optional[str] = None,
+        rag_endpoint: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        endpoint_key = str(endpoint or "smart").strip() or "smart"
+        payload: Dict[str, Any] = {
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if max_tokens is not None:
+            payload["max_tokens"] = int(max_tokens)
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-Convo-ID": convo_id,
+        }
+        if reasoning_effort:
+            headers["X-Reasoning-Effort"] = reasoning_effort
+        if rag_endpoint:
+            headers["X-RAG-Endpoint"] = rag_endpoint
+        if endpoint_key != "smart":
+            headers["X-Allow-Route-Switch"] = "true"
+
+        request = _WorkflowRequest(
+            path=f"/{endpoint_key}",
+            body=payload,
+            headers=headers,
+        )
+        if endpoint_key == "smart":
+            from .proxy import smart_route
+
+            response = await smart_route(request)
+        else:
+            response = await proxy_request(endpoint_key, request)
+
+        response_headers = dict(getattr(response, "headers", {}) or {})
+        metadata = _metadata_from_headers(endpoint_key, response_headers)
+        if metadata:
+            yield {"channel": "metadata", "metadata": metadata}
+
+        async for data in _iter_sse_data(response):
+            if data == "[DONE]":
+                break
+            try:
+                obj = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if str(obj.get("type") or "").startswith("proxy."):
+                detail = obj.get("detail") or obj.get("error") or obj.get("type")
+                raise RuntimeError(str(detail))
+            for key in ("usage", "stats", "model_info", "runtime", "timings"):
+                if isinstance(obj.get(key), dict):
+                    yield {"channel": "metadata", "metadata": {key: obj[key]}}
+            choices = obj.get("choices") if isinstance(obj, dict) else []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") if isinstance(choices[0], dict) else {}
+            if not isinstance(delta, dict):
+                continue
+            reasoning = delta.get("reasoning") or delta.get("reasoning_content")
+            if reasoning:
+                yield {"channel": "reasoning", "content": str(reasoning)}
+            content = delta.get("content")
+            if content:
+                yield {"channel": "content", "content": str(content)}
+
 
 class ProxyWorkflowSearchClient:
     async def search(
@@ -119,3 +192,43 @@ class ProxyWorkflowSearchClient:
         payload = response.to_dict()
         payload["wrapped_results"] = wrap_search_results(response)
         return payload
+
+
+async def _iter_sse_data(response: Any) -> AsyncIterator[str]:
+    buffer = ""
+    body_iterator = getattr(response, "body_iterator", None)
+    if body_iterator is None:
+        return
+    async for chunk in body_iterator:
+        if isinstance(chunk, bytes):
+            buffer += chunk.decode("utf-8", errors="replace")
+        else:
+            buffer += str(chunk)
+        while "\n" in buffer:
+            line, buffer = buffer.split("\n", 1)
+            line = line.strip()
+            if line.startswith("data: "):
+                yield line[6:].strip()
+    for line in buffer.splitlines():
+        line = line.strip()
+        if line.startswith("data: "):
+            yield line[6:].strip()
+
+
+def _metadata_from_headers(endpoint_key: str, headers: Dict[str, Any]) -> Dict[str, Any]:
+    metadata: Dict[str, Any] = {
+        "endpoint": endpoint_key,
+    }
+    for header_name, header_value in headers.items():
+        lower_name = str(header_name).lower()
+        if lower_name == "x-trace-id":
+            metadata["trace_id"] = str(header_value)
+        elif lower_name.startswith("x-route-"):
+            metadata.setdefault("routing", {})[
+                lower_name.replace("x-route-", "").replace("-", "_")
+            ] = str(header_value)
+        elif lower_name.startswith("x-rag-"):
+            metadata.setdefault("rag", {})[
+                lower_name.replace("x-rag-", "").replace("-", "_")
+            ] = str(header_value)
+    return metadata

@@ -5,6 +5,7 @@ from typing import Any, Literal
 
 
 WorkflowStepKind = Literal["llm", "search", "manual"]
+WorkflowChatVisibility = Literal["hidden", "intermediate", "final"]
 WorkflowRunStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 WorkflowStepStatus = Literal["pending", "running", "completed", "failed", "skipped"]
 
@@ -45,6 +46,8 @@ class WorkflowStepSpec:
     rag_endpoint: str | None = None
     search_provider: str | None = None
     max_tokens: int | None = None
+    chat_visibility: WorkflowChatVisibility = "hidden"
+    chat_stream: bool | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "WorkflowStepSpec":
@@ -67,6 +70,12 @@ class WorkflowStepSpec:
         output_schema = data.get("output_schema")
         if output_schema is not None and not isinstance(output_schema, dict):
             raise ValueError(f"workflow step {step_id} output_schema must be an object")
+        chat_visibility = _optional_str(data.get("chat_visibility")) or "hidden"
+        if chat_visibility not in {"hidden", "intermediate", "final"}:
+            raise ValueError(
+                f"workflow step {step_id} has unsupported chat_visibility: "
+                f"{chat_visibility}"
+            )
 
         return cls(
             id=step_id,
@@ -80,6 +89,8 @@ class WorkflowStepSpec:
             rag_endpoint=_optional_str(data.get("rag_endpoint")),
             search_provider=_optional_str(data.get("search_provider")),
             max_tokens=_optional_int(data.get("max_tokens")),
+            chat_visibility=chat_visibility,  # type: ignore[arg-type]
+            chat_stream=_optional_bool(data.get("chat_stream")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -188,6 +199,20 @@ def _optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"expected integer, got {value!r}") from exc
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    raise ValueError(f"expected boolean, got {value!r}")
 
 
 def _required_str(data: dict[str, Any], field: str, context: str) -> str:

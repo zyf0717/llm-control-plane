@@ -44,6 +44,66 @@ def test_registry_loads_valid_specs(tmp_path):
     assert registry.get("sample").steps[1].depends_on == ["first"]
 
 
+def test_registry_loads_chat_visibility_fields(tmp_path):
+    write_workflow(
+        tmp_path / "sample.yaml",
+        body=minimal_workflow(
+            steps="""
+  - id: first
+    name: First
+    kind: llm
+    chat_visibility: intermediate
+    chat_stream: false
+    prompt: hello
+"""
+        ),
+    )
+
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+
+    step = registry.get("sample").steps[0]
+    assert step.chat_visibility == "intermediate"
+    assert step.chat_stream is False
+
+
+def test_registry_defaults_chat_visibility_to_hidden(tmp_path):
+    write_workflow(
+        tmp_path / "sample.yaml",
+        body=minimal_workflow(
+            steps="""
+  - id: first
+    name: First
+    kind: manual
+"""
+        ),
+    )
+
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+
+    step = registry.get("sample").steps[0]
+    assert step.chat_visibility == "hidden"
+    assert step.chat_stream is None
+
+
+def test_registry_rejects_invalid_chat_visibility(tmp_path):
+    write_workflow(
+        tmp_path / "sample.yaml",
+        body=minimal_workflow(
+            steps="""
+  - id: first
+    name: First
+    kind: manual
+    chat_visibility: public
+"""
+        ),
+    )
+
+    with pytest.raises(ValueError, match="chat_visibility"):
+        WorkflowRegistry(tmp_path).load()
+
+
 def test_default_workflow_config_directory_loads_shipped_specs():
     assert DEFAULT_WORKFLOW_DIR.name == "workflow_configs"
 

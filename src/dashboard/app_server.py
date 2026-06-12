@@ -1,5 +1,5 @@
 import json
-import os
+import time
 import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -53,8 +53,12 @@ from .workflow_server_helpers import (
     WORKFLOW_RUN_MAX_STEPS,
     advance_workflow_to_terminal,
     build_uploaded_file_context,
+    build_workflow_chat_run_payload,
     build_workflow_params_template,
+    format_workflow_conversation_context,
     merge_uploaded_context,
+    workflow_chat_response_text,
+    workflow_chat_run_info,
     workflow_snapshot_status,
 )
 from .workflow_client import (
@@ -65,6 +69,7 @@ from .workflow_client import (
     fetch_workflow_runs,
     fetch_workflows,
     retry_workflow_step,
+    stream_workflow_run_events,
 )
 from .workflow_formatters import (
     format_artifacts,
@@ -73,6 +78,10 @@ from .workflow_formatters import (
     format_workflow_run_choices,
     format_workflow_spec,
 )
+
+DEFAULT_WORKFLOW_ROUTING_ID = ""
+WORKFLOW_ROUTING_NONE_LABEL = "None"
+
 
 def resolve_endpoint_display_selection(
     choices: Dict[str, str],
@@ -88,6 +97,27 @@ def resolve_endpoint_display_selection(
                 return display_value
 
     return next(iter(choices), None)
+
+
+def resolve_workflow_routing_selection(
+    choices: Dict[str, str],
+    *,
+    current_selection: Optional[str],
+    default_workflow_id: str = DEFAULT_WORKFLOW_ROUTING_ID,
+) -> Optional[str]:
+    current = str(current_selection or "").strip()
+    if current in choices:
+        return current
+
+    default = str(default_workflow_id or "").strip()
+    if default in choices:
+        return default
+
+    return next(iter(choices), None)
+
+
+def build_workflow_routing_choices(choices: Dict[str, str]) -> Dict[str, str]:
+    return {"": WORKFLOW_ROUTING_NONE_LABEL, **choices}
 
 
 def normalize_reasoning_effort(
@@ -170,6 +200,7 @@ def server(input, output, session):
     workflow_spec = reactive.Value(None)
     workflow_runs = reactive.Value([])
     selected_workflow_id = reactive.Value("")
+    selected_workflow_routing_id = reactive.Value(DEFAULT_WORKFLOW_ROUTING_ID)
     selected_workflow_run_id = reactive.Value("")
     workflow_run_snapshot = reactive.Value(None)
     workflow_status_message = reactive.Value("")
@@ -374,9 +405,32 @@ def server(input, output, session):
     async def update_workflow_selector() -> None:
         with reactive.isolate():
             current_selection = str(selected_workflow_id.get() or "").strip()
+            workflow_routing_input = input.workflowRouting()
+            current_routing_selection = str(
+                workflow_routing_input
+                if workflow_routing_input is not None
+                else selected_workflow_routing_id.get()
+            ).strip()
         workflows = await fetch_workflows()
         workflow_specs.set(workflows)
         choices = format_workflow_choices(workflows)
+        routing_choices = build_workflow_routing_choices(choices)
+
+        routing_selected = resolve_workflow_routing_selection(
+            routing_choices,
+            current_selection=current_routing_selection,
+        )
+        ui.update_select(
+            "workflowRouting",
+            choices=routing_choices,
+            selected=routing_selected,
+            session=session,
+        )
+        selected_workflow_routing_id.set(routing_selected or "")
+        await session.send_custom_message(
+            "workflowRoutingState", {"active": bool(routing_selected)}
+        )
+
         selected = current_selection if current_selection in choices else None
         if selected is None and choices:
             selected = next(iter(choices))
@@ -476,6 +530,15 @@ def server(input, output, session):
             workflow_status_message.set("")
         except Exception as exc:
             workflow_status_message.set(f"Failed to load workflow: {exc}")
+
+    @reactive.Effect
+    @reactive.event(input.workflowRouting)
+    async def _sync_selected_workflow_routing():
+        workflow_routing_id = str(input.workflowRouting() or "").strip()
+        selected_workflow_routing_id.set(workflow_routing_id)
+        await session.send_custom_message(
+            "workflowRoutingState", {"active": bool(workflow_routing_id)}
+        )
 
     @reactive.Effect
     @reactive.event(input.workflowRunSelector)
@@ -853,6 +916,19 @@ def server(input, output, session):
             if isinstance(trace, dict) and trace.get("id"):
                 sections.append(f"**Trace**<br>Trace ID: {trace['id']}")
 
+        if info and "workflow" in info:
+            workflow = info["workflow"]
+            if isinstance(workflow, dict):
+                workflow_lines = []
+                if workflow.get("workflow_id"):
+                    workflow_lines.append(f"Workflow: {workflow['workflow_id']}")
+                if workflow.get("run_id"):
+                    workflow_lines.append(f"Run: {workflow['run_id']}")
+                if workflow.get("status"):
+                    workflow_lines.append(f"Status: {workflow['status']}")
+                if workflow_lines:
+                    sections.append("**Workflow**<br>" + "<br>".join(workflow_lines))
+
         routing_info = None
         if info and "routing" in info:
             routing_info = info["routing"]
@@ -960,7 +1036,14 @@ def server(input, output, session):
         selected_endpoint_key = current_endpoint_key()
         convo_id = current_active_convo_id() or None
         actual_endpoint_key = selected_endpoint_key
-        search_query = str(user_input or "").strip()
+        latest_user_prompt = str(user_input or "").strip()
+        search_query = latest_user_prompt
+        workflow_routing_input = input.workflowRouting()
+        workflow_routing_id = str(
+            workflow_routing_input
+            if workflow_routing_input is not None
+            else selected_workflow_routing_id.get()
+        ).strip()
         prompt_state = (
             get_system_prompt_state(convo_id)
             if convo_id
@@ -973,24 +1056,9 @@ def server(input, output, session):
             if files_data.get("key") == file_upload_key.get()
             else None
         )
-        if uploaded_files and len(uploaded_files) > 0:
-            file_contents = []
-            for file_info in uploaded_files:
-                try:
-                    if not os.path.exists(file_info["datapath"]):
-                        continue
-                    with open(file_info["datapath"], "r", encoding="utf-8") as handle:
-                        content = handle.read()
-                    file_contents.append(
-                        f"--- File: {file_info['name']} ---\n{content}"
-                    )
-                except Exception as exc:
-                    filename = file_info.get("name", "unknown")
-                    file_contents.append(
-                        f"--- Error reading {filename}: {str(exc)} ---"
-                    )
-            if file_contents:
-                user_input = f"{user_input}\n\n{'\n\n'.join(file_contents)}"
+        uploaded_context = build_uploaded_file_context(uploaded_files)
+        if uploaded_context and not workflow_routing_id:
+            user_input = f"{user_input}\n\n{uploaded_context}"
 
         current_prompt = normalize_system_prompt(
             input.systemPrompt()
@@ -1042,6 +1110,218 @@ def server(input, output, session):
             current_prompt,
             bool(prompt_state.get("started")),
         )
+
+        if workflow_routing_id:
+            started_at = time.time()
+            send_button_state.set("busy")
+            try:
+                endpoint_for_workflow = str(actual_endpoint_key or "").strip()
+                if not endpoint_for_workflow:
+                    raise ValueError("select a machine endpoint")
+                if endpoint_for_workflow.lower() == "smart":
+                    raise ValueError(
+                        "workflow routing requires a concrete Machine Endpoint"
+                    )
+
+                if fork_reasons:
+                    workflow_history = forked_history
+                elif convo_id:
+                    loaded_history = await fetch_convo_history(convo_id)
+                    workflow_history = (
+                        loaded_history if isinstance(loaded_history, list) else []
+                    )
+                else:
+                    workflow_history = []
+
+                spec = await fetch_workflow(workflow_routing_id)
+                payload = build_workflow_chat_run_payload(
+                    spec,
+                    latest_user_prompt=latest_user_prompt,
+                    conversation_context=format_workflow_conversation_context(
+                        workflow_history
+                    ),
+                    context=current_prompt,
+                    uploaded_context=uploaded_context,
+                    endpoint=endpoint_for_workflow,
+                    reasoning_effort=current_reasoning,
+                    convo_id=convo_id or "",
+                )
+                created = await create_workflow_run(workflow_routing_id, payload)
+                run_id = str(created.get("run_id") or "").strip()
+                if not run_id:
+                    raise ValueError("workflow API did not return run_id")
+
+                workflow_status_message.set(f"Created run {run_id}.")
+                selected_workflow_run_id.set(run_id)
+                await update_workflow_run_selector()
+                await refresh_selected_workflow_run(run_id)
+                await reactive.flush()
+                workflow_stream_enabled = bool(input.stream())
+                workflow_output_reasoning = bool(input.outputReasoning())
+
+                async def apply_workflow_snapshot(
+                    snapshot: dict[str, Any],
+                    *,
+                    step_number: int | None = None,
+                ) -> None:
+                    workflow_run_snapshot.set(snapshot)
+                    selected_workflow_run_id.set(run_id)
+                    status = workflow_snapshot_status(snapshot) or "unknown"
+                    if step_number is not None:
+                        workflow_status_message.set(
+                            f"Advanced {run_id}: step {step_number}, status {status}."
+                        )
+                    await update_workflow_run_selector()
+                    await reactive.flush()
+
+                async def workflow_response_stream():
+                    rendered_final = False
+                    open_intermediate_step = ""
+                    final_reasoning_open = False
+                    step_count = 0
+                    final_snapshot: dict[str, Any] | None = None
+
+                    async def close_intermediate():
+                        nonlocal open_intermediate_step
+                        if open_intermediate_step:
+                            open_intermediate_step = ""
+                            return "</em>\n\n---\n\n"
+                        return ""
+
+                    async def close_final_reasoning():
+                        nonlocal final_reasoning_open
+                        if final_reasoning_open:
+                            final_reasoning_open = False
+                            return "</em>\n\n---\n\n"
+                        return ""
+
+                    async for event in stream_workflow_run_events(
+                        run_id,
+                        stream=workflow_stream_enabled,
+                        max_steps=WORKFLOW_RUN_MAX_STEPS,
+                    ):
+                        event_type = str(event.get("type") or "")
+                        snapshot = event.get("snapshot")
+                        if isinstance(snapshot, dict):
+                            final_snapshot = snapshot
+                            if event_type in {"step_completed", "snapshot"}:
+                                step_count += 1 if event_type == "step_completed" else 0
+                                await apply_workflow_snapshot(
+                                    snapshot,
+                                    step_number=(
+                                        step_count
+                                        if event_type == "step_completed"
+                                        else None
+                                    ),
+                                )
+
+                        visibility = str(event.get("chat_visibility") or "hidden")
+                        step_id = str(event.get("step_id") or "")
+                        step_name = str(
+                            event.get("step_name") or step_id or "Workflow step"
+                        )
+
+                        if event_type == "step_delta":
+                            content = str(event.get("content") or "")
+                            channel = str(event.get("channel") or "content")
+                            if not content:
+                                continue
+                            if visibility == "intermediate" and channel == "content":
+                                if open_intermediate_step != step_id:
+                                    closing = await close_intermediate()
+                                    if closing:
+                                        yield closing
+                                    open_intermediate_step = step_id
+                                    yield f"<em>**{step_name}**\n\n"
+                                yield content
+                            elif visibility == "final":
+                                if open_intermediate_step:
+                                    yield await close_intermediate()
+                                if channel == "reasoning":
+                                    if workflow_output_reasoning:
+                                        if not final_reasoning_open:
+                                            final_reasoning_open = True
+                                            yield "<em>"
+                                        yield content
+                                elif channel == "content":
+                                    if final_reasoning_open:
+                                        yield await close_final_reasoning()
+                                    rendered_final = True
+                                    yield content
+                            continue
+
+                        if event_type == "step_completed":
+                            content = str(event.get("content") or "")
+                            streamed = bool(event.get("streamed"))
+                            if visibility == "intermediate":
+                                if streamed:
+                                    if open_intermediate_step == step_id:
+                                        yield await close_intermediate()
+                                elif content:
+                                    yield (
+                                        f"<em>**{step_name}**\n\n"
+                                        f"{content}</em>\n\n---\n\n"
+                                    )
+                            elif visibility == "final" and content and not streamed:
+                                if open_intermediate_step:
+                                    yield await close_intermediate()
+                                if final_reasoning_open:
+                                    yield await close_final_reasoning()
+                                rendered_final = True
+                                yield content
+                            continue
+
+                        if event_type == "error":
+                            if open_intermediate_step:
+                                yield await close_intermediate()
+                            if final_reasoning_open:
+                                yield await close_final_reasoning()
+                            yield f"Error: {event.get('error') or 'workflow failed'}"
+                            return
+
+                        if event_type == "run_completed":
+                            if open_intermediate_step:
+                                yield await close_intermediate()
+                            if final_reasoning_open:
+                                yield await close_final_reasoning()
+                            if isinstance(snapshot, dict):
+                                final_snapshot = snapshot
+                            if final_snapshot is not None:
+                                status = (
+                                    workflow_snapshot_status(final_snapshot)
+                                    or "unknown"
+                                )
+                                workflow_status_message.set(
+                                    f"Ran {run_id}: status {status}."
+                                )
+                                run_info.set(workflow_chat_run_info(final_snapshot))
+                                if not rendered_final:
+                                    rendered_final = True
+                                    yield workflow_chat_response_text(final_snapshot)
+                            return
+
+                await chat.append_message_stream(workflow_response_stream())
+                if convo_id and not bool(prompt_state.get("started")):
+                    apply_system_prompt_view(
+                        set_system_prompt_state(
+                            convo_id,
+                            prompt=current_prompt,
+                            committed_prompt=current_prompt,
+                            reasoning_effort=current_reasoning,
+                            started=True,
+                            locked=False,
+                        )
+                    )
+            except Exception as exc:
+                message = f"Workflow routing failed: {exc}"
+                workflow_status_message.set(message)
+                await chat.append_message(
+                    {"role": "assistant", "content": f"Error: {message}"}
+                )
+            finally:
+                last_runtime.set(time.time() - started_at)
+                send_button_state.set("ready")
+            return
 
         search_state = None
         selected_search_provider = str(input.searchProvider() or "").strip()

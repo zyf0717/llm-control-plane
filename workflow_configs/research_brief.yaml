@@ -33,6 +33,7 @@ steps:
   - id: synthesize_brief
     name: Synthesize brief
     kind: llm
+    chat_visibility: final
     depends_on: [search_context]
     prompt: |
       Question:

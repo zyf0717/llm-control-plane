@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 from fastapi.testclient import TestClient
 
@@ -26,6 +27,26 @@ params_schema:
 steps:
   - id: first
     kind: llm
+    prompt: "{{ params.goal }}"
+    output_key: first
+""",
+        encoding="utf-8",
+    )
+
+
+def write_visible_workflow(path: Path) -> None:
+    path.write_text(
+        """
+id: visible
+name: Visible
+version: 0.1.0
+params_schema:
+  type: object
+  required: [goal]
+steps:
+  - id: first
+    kind: llm
+    chat_visibility: final
     prompt: "{{ params.goal }}"
     output_key: first
 """,
@@ -101,6 +122,44 @@ def test_workflow_api_validates_required_params(tmp_path):
         assert "missing required workflow params" in response.json()["detail"]
 
 
+def test_workflow_api_run_stream_emits_ordered_events(tmp_path):
+    write_visible_workflow(tmp_path / "visible.yaml")
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+
+    with TestClient(app) as client:
+        client.portal.call(store.initialize)
+        proxy_module.set_workflow_components(
+            registry=registry,
+            store=store,
+            executor=WorkflowExecutor(registry, store, FakeLLMClient()),
+        )
+        create_response = client.post(
+            "/workflows/visible/runs",
+            json={"params": {"goal": "ship"}, "endpoint": "node-a"},
+        )
+        assert create_response.status_code == 200
+        run_id = create_response.json()["run_id"]
+
+        with client.stream(
+            "POST",
+            f"/workflow-runs/{run_id}/run-stream",
+            json={"stream": False},
+        ) as response:
+            assert response.status_code == 200
+            events = _decode_sse_events(response.read().decode("utf-8"))
+
+        event_types = [event["type"] for event in events]
+        assert event_types[:3] == ["run_started", "snapshot", "step_started"]
+        assert "step_completed" in event_types
+        assert event_types[-1] == "run_completed"
+        completed = next(event for event in events if event["type"] == "step_completed")
+        assert completed["chat_visibility"] == "final"
+        assert completed["content"] == "ok"
+        assert events[-1]["snapshot"]["run"]["status"] == "completed"
+
+
 def test_workflow_api_rejects_smart_endpoint(tmp_path):
     write_workflow(tmp_path / "sample.yaml")
     registry = WorkflowRegistry(tmp_path)
@@ -148,3 +207,16 @@ def test_workflow_api_delete_runs_clears_history(tmp_path):
         assert delete_response.status_code == 200
         assert delete_response.json()["deleted"]["workflow_runs"] == 1
         assert client.get("/workflow-runs").json()["runs"] == []
+
+
+def _decode_sse_events(text: str) -> list[dict]:
+    events = []
+    for block in text.strip().split("\n\n"):
+        data_lines = [
+            line[len("data:") :].strip()
+            for line in block.splitlines()
+            if line.startswith("data:")
+        ]
+        if data_lines:
+            events.append(json.loads("\n".join(data_lines)))
+    return events

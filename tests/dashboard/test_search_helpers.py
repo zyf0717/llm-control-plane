@@ -1,10 +1,12 @@
 import pytest
 
 from src.dashboard.app_server import (
+    build_workflow_routing_choices,
     build_fork_notice,
     conversation_control_change_reasons,
     normalize_reasoning_effort,
     resolve_endpoint_display_selection,
+    resolve_workflow_routing_selection,
 )
 from src.dashboard.search_flow import (
     build_query_refiner_context,
@@ -21,8 +23,12 @@ from src.dashboard.trace_formatters import (
 from src.dashboard.workflow_server_helpers import (
     advance_workflow_to_terminal,
     build_uploaded_file_context,
+    build_workflow_chat_params,
+    build_workflow_chat_run_payload,
     build_workflow_params_template,
+    format_workflow_conversation_context,
     merge_uploaded_context,
+    workflow_chat_response_text,
 )
 from src.search.safety import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER
 
@@ -89,6 +95,237 @@ def test_merge_uploaded_context_appends_to_existing_param():
         "goal": "ship",
         "uploaded_context": "manual upload\n\nfile upload",
     }
+
+
+def test_build_workflow_chat_params_maps_contextual_search_schema():
+    params = build_workflow_chat_params(
+        {
+            "params_schema": {
+                "required": ["latest_user_prompt"],
+                "properties": {
+                    "latest_user_prompt": {"type": "string"},
+                    "conversation_context": {"type": "string"},
+                    "context": {"type": "string"},
+                    "uploaded_context": {"type": "string"},
+                },
+            }
+        },
+        latest_user_prompt="find sources",
+        conversation_context="user: previous",
+        context="system prompt",
+        uploaded_context="file contents",
+    )
+
+    assert params == {
+        "latest_user_prompt": "find sources",
+        "conversation_context": "user: previous",
+        "context": "system prompt",
+        "uploaded_context": "file contents",
+    }
+
+
+def test_build_workflow_chat_params_maps_goal_and_question_schemas():
+    assert build_workflow_chat_params(
+        {
+            "params_schema": {
+                "required": ["goal"],
+                "properties": {"goal": {"type": "string"}},
+            }
+        },
+        latest_user_prompt="plan this",
+    ) == {"goal": "plan this"}
+    assert build_workflow_chat_params(
+        {
+            "params_schema": {
+                "required": ["question"],
+                "properties": {"question": {"type": "string"}},
+            }
+        },
+        latest_user_prompt="research this",
+    ) == {"question": "research this"}
+
+
+def test_build_workflow_chat_params_omits_unknown_required_param():
+    params = build_workflow_chat_params(
+        {"params_schema": {"required": ["custom"], "properties": {}}},
+        latest_user_prompt="cannot infer",
+    )
+
+    assert params == {}
+
+
+def test_build_workflow_chat_run_payload_excludes_single_node_rag_and_search():
+    payload = build_workflow_chat_run_payload(
+        {
+            "params_schema": {
+                "required": ["latest_user_prompt"],
+                "properties": {
+                    "latest_user_prompt": {"type": "string"},
+                    "uploaded_context": {"type": "string"},
+                },
+            }
+        },
+        latest_user_prompt="latest only",
+        uploaded_context="--- File: notes.txt ---\nfile contents",
+        endpoint="node-a",
+        reasoning_effort="high",
+        convo_id="convo-1",
+    )
+
+    assert payload == {
+        "params": {
+            "latest_user_prompt": "latest only",
+            "uploaded_context": "--- File: notes.txt ---\nfile contents",
+        },
+        "endpoint": "node-a",
+        "reasoning_effort": "high",
+        "convo_id": "convo-1",
+    }
+    assert "rag_endpoint" not in payload
+    assert "search_provider" not in payload
+    assert "file contents" not in payload["params"]["latest_user_prompt"]
+
+
+def test_format_workflow_conversation_context_skips_system_messages():
+    rendered = format_workflow_conversation_context(
+        [
+            {"role": "system", "content": "hidden"},
+            {"role": "user", "content": "Earlier question"},
+            {"role": "assistant", "content": "Earlier answer"},
+            {"role": "", "content": "skip"},
+        ]
+    )
+
+    assert rendered == "user: Earlier question\n\nassistant: Earlier answer"
+
+
+def test_workflow_chat_response_text_uses_last_completed_step_text():
+    text = workflow_chat_response_text(
+        {
+            "run": {"run_id": "wf_1", "workflow_id": "sample", "status": "completed"},
+            "steps": [
+                {
+                    "step_id": "first",
+                    "status": "completed",
+                    "output_json": {"text": "first answer"},
+                },
+                {
+                    "step_id": "second",
+                    "status": "completed",
+                    "output_json": {"text": "final answer"},
+                },
+            ],
+        }
+    )
+
+    assert text == "final answer"
+
+
+def test_workflow_chat_response_text_falls_back_to_artifact_text():
+    text = workflow_chat_response_text(
+        {
+            "run": {"run_id": "wf_1", "workflow_id": "sample", "status": "completed"},
+            "steps": [
+                {"step_id": "first", "status": "completed", "output_json": {}},
+            ],
+            "artifacts": [{"content_text": "artifact answer"}],
+        }
+    )
+
+    assert text == "artifact answer"
+
+
+def test_workflow_chat_response_text_reports_failed_step_error():
+    text = workflow_chat_response_text(
+        {
+            "run": {"run_id": "wf_1", "workflow_id": "sample", "status": "failed"},
+            "steps": [
+                {"step_id": "search", "status": "failed", "error": "bad query"},
+            ],
+        }
+    )
+
+    assert "Workflow `sample` run `wf_1` ended with status `failed`." in text
+    assert "Failed step `search`: bad query" in text
+
+
+def test_workflow_chat_response_text_reports_non_terminal_status():
+    text = workflow_chat_response_text(
+        {
+            "run": {"run_id": "wf_1", "workflow_id": "sample", "status": "running"},
+            "steps": [],
+        }
+    )
+
+    assert text == "Workflow `sample` run `wf_1` is still in progress with status `running`."
+
+
+def test_build_workflow_routing_choices_prepends_none_option():
+    choices = build_workflow_routing_choices(
+        {"contextual_search": "Contextual Search"}
+    )
+
+    assert choices == {
+        "": "None",
+        "contextual_search": "Contextual Search",
+    }
+
+
+def test_resolve_workflow_routing_selection_defaults_to_none():
+    selected = resolve_workflow_routing_selection(
+        {
+            "": "None",
+            "implementation_plan": "Implementation Plan",
+            "contextual_search": "Contextual Search",
+        },
+        current_selection="",
+    )
+
+    assert selected == ""
+
+
+def test_resolve_workflow_routing_selection_preserves_valid_current_selection():
+    selected = resolve_workflow_routing_selection(
+        {
+            "": "None",
+            "implementation_plan": "Implementation Plan",
+            "contextual_search": "Contextual Search",
+        },
+        current_selection="implementation_plan",
+    )
+
+    assert selected == "implementation_plan"
+
+
+def test_resolve_workflow_routing_selection_falls_back_to_none_option():
+    selected = resolve_workflow_routing_selection(
+        {
+            "": "None",
+            "research_brief": "Research Brief",
+            "implementation_plan": "Implementation Plan",
+        },
+        current_selection="missing",
+    )
+
+    assert selected == ""
+
+
+def test_resolve_workflow_routing_selection_falls_back_to_first_without_none_option():
+    selected = resolve_workflow_routing_selection(
+        {
+            "research_brief": "Research Brief",
+            "implementation_plan": "Implementation Plan",
+        },
+        current_selection="missing",
+    )
+
+    assert selected == "research_brief"
+
+
+def test_resolve_workflow_routing_selection_handles_empty_choices():
+    selected = resolve_workflow_routing_selection({}, current_selection="missing")
+
+    assert selected is None
 
 
 @pytest.mark.asyncio

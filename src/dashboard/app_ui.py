@@ -177,6 +177,37 @@ app_ui = ui.page_fluid(
             border: 0 !important;
         }
 
+        .dashboard-workflow-disabled {
+            position: relative;
+            opacity: 0.58;
+        }
+
+        .dashboard-workflow-disabled label {
+            color: var(--bs-secondary-color) !important;
+        }
+
+        .dashboard-workflow-disabled .selectize-control,
+        .dashboard-workflow-disabled .selectize-input,
+        .dashboard-workflow-disabled select {
+            cursor: not-allowed !important;
+            filter: grayscale(1);
+        }
+
+        .dashboard-workflow-disabled .selectize-input,
+        .dashboard-workflow-disabled .form-select {
+            background-color: var(--bs-secondary-bg) !important;
+            border-color: var(--bs-secondary-color) !important;
+            box-shadow: inset 0 0 0 1px var(--bs-secondary-color);
+        }
+
+        .dashboard-workflow-disabled-note {
+            display: block;
+            margin-top: 0.25rem;
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--bs-secondary-color);
+        }
+
         @media (max-width: 991.98px) {
             :root {
                 --dashboard-panel-height: auto;
@@ -196,6 +227,54 @@ app_ui = ui.page_fluid(
         }
         """),
     ui.tags.script("""
+        const workflowDisabledNotes = {
+            ragEndpoint: "Controlled by workflow",
+            searchProvider: "Controlled by workflow"
+        };
+
+        function dashboardInputContainer(input) {
+            return input.closest(".form-group, .shiny-input-container") || input.parentElement;
+        }
+
+        function setWorkflowDisabledNote(container, id, disabled) {
+            if (!container) return;
+            const existing = container.querySelector(".dashboard-workflow-disabled-note");
+            if (!disabled) {
+                if (existing) existing.remove();
+                return;
+            }
+            if (existing) return;
+            const note = document.createElement("span");
+            note.className = "dashboard-workflow-disabled-note";
+            note.textContent = workflowDisabledNotes[id] || "Controlled by workflow";
+            container.appendChild(note);
+        }
+
+        function setDashboardSelectDisabled(id, disabled) {
+            const input = document.getElementById(id);
+            if (!input) return;
+            const container = dashboardInputContainer(input);
+            input.disabled = disabled;
+            input.setAttribute("aria-disabled", disabled ? "true" : "false");
+            if (container) {
+                container.classList.toggle("dashboard-workflow-disabled", disabled);
+            }
+            setWorkflowDisabledNote(container, id, disabled);
+            if (input.selectize) {
+                if (disabled) {
+                    input.selectize.disable();
+                } else {
+                    input.selectize.enable();
+                }
+            }
+        }
+
+        Shiny.addCustomMessageHandler("workflowRoutingState", function(message) {
+            const active = Boolean(message && message.active);
+            setDashboardSelectDisabled("ragEndpoint", active);
+            setDashboardSelectDisabled("searchProvider", active);
+        });
+
         document.addEventListener("click", function(event) {
             const button = event.target.closest(".dashboard-step-button");
             if (!button) return;
@@ -299,6 +378,13 @@ app_ui = ui.page_fluid(
                             "searchProvider",
                             "Search Provider",
                             choices=[],
+                            width="100%",
+                        ),
+                        ui.input_select(
+                            "workflowRouting",
+                            "Workflow Routing",
+                            choices={"": "None"},
+                            selected="",
                             width="100%",
                         ),
                         ui.output_ui("file_upload_ui"),

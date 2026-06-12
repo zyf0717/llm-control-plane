@@ -33,6 +33,7 @@ steps:
   - id: target_assessment
     name: Target assessment
     kind: llm
+    chat_visibility: intermediate
     depends_on: [search_context]
     prompt: |
       Goal:
@@ -53,6 +54,7 @@ steps:
   - id: architecture_plan
     name: Architecture plan
     kind: llm
+    chat_visibility: intermediate
     depends_on: [target_assessment]
     prompt: |
       Goal:
@@ -67,6 +69,7 @@ steps:
   - id: commit_plan
     name: Commit and test plan
     kind: llm
+    chat_visibility: final
     depends_on: [architecture_plan]
     prompt: |
       Architecture plan:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
 from .executor import WorkflowExecutor
 from .registry import WorkflowRegistry
@@ -86,6 +88,22 @@ def create_workflow_router(
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @router.post("/workflow-runs/{run_id}/run-stream")
+    async def run_to_completion_stream(run_id: str, request: Request):
+        body = await _json_body(request, allow_empty=True)
+        max_steps = body.get("max_steps") if isinstance(body, dict) else None
+        stream_llm = bool(body.get("stream", True)) if isinstance(body, dict) else True
+
+        async def events():
+            async for event in executor_getter().run_to_completion_stream(
+                run_id,
+                max_steps=max_steps,
+                stream_llm=stream_llm,
+            ):
+                yield _sse_event(event)
+
+        return StreamingResponse(events(), media_type="text/event-stream")
+
     @router.post("/workflow-runs/{run_id}/steps/{step_id}/retry")
     async def retry_step(run_id: str, step_id: str):
         try:
@@ -118,3 +136,11 @@ def _dict_or_empty(value: Any) -> dict[str, Any]:
 def _optional_str(value: Any) -> str | None:
     text = str(value or "").strip()
     return text or None
+
+
+def _sse_event(event: dict[str, Any]) -> bytes:
+    event_type = str(event.get("type") or "message")
+    return (
+        f"event: {event_type}\n"
+        f"data: {json.dumps(event, default=str)}\n\n"
+    ).encode("utf-8")

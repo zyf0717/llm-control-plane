@@ -24,6 +24,7 @@ steps:
   - id: plan_search_queries
     name: Plan search queries
     kind: llm
+    chat_visibility: intermediate
     prompt: |
       Latest user prompt:
       {{ params.latest_user_prompt }}
@@ -68,6 +69,7 @@ steps:
   - id: consolidate_reply
     name: Consolidate reply
     kind: llm
+    chat_visibility: final
     depends_on: [search_evidence]
     prompt: |
       Latest user prompt:
