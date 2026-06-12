@@ -18,6 +18,7 @@ class SearchArgs:
     safe_search: Optional[str] = None
     freshness: Optional[str] = None
     context: Optional[str] = None
+    use_planner: bool = True
 
 
 @dataclass(slots=True)

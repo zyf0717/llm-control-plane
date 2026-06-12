@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import uuid
@@ -33,6 +34,7 @@ class WorkflowSearchClient(Protocol):
         query: str,
         provider: str | None = None,
         count: int = 5,
+        use_planner: bool = True,
     ) -> dict[str, Any]:
         ...
 
@@ -299,14 +301,30 @@ class WorkflowExecutor:
                         "metadata": {"kind": "search", "skipped": "no-search-client"},
                     }
                 )
-            result = await self.search_client.search(
-                query=prompt,
-                provider=run.search_provider
+            queries = _extract_search_queries(prompt)
+            provider = (
+                run.search_provider
                 or step.search_provider
-                or spec.defaults.search_provider,
+                or spec.defaults.search_provider
             )
+            use_planner = len(queries) == 1 and queries[0] == prompt.strip()
+            results = await asyncio.gather(
+                *(
+                    self.search_client.search(
+                        query=query,
+                        provider=provider,
+                        use_planner=use_planner,
+                    )
+                    for query in queries
+                )
+            )
+            result = _merge_search_results(queries, results, use_planner=use_planner)
             return WorkflowStepExecution(
-                output={"text": json.dumps(result, indent=2), "json": result, "metadata": {"kind": "search"}},
+                output={
+                    "text": json.dumps(result, indent=2),
+                    "json": result,
+                    "metadata": {"kind": "search"},
+                },
                 artifact_text=json.dumps(result, indent=2),
             )
 
@@ -336,17 +354,21 @@ class WorkflowExecutor:
         return WorkflowStepExecution(output=output, artifact_text=text or None)
 
 
-_TEMPLATE_PATTERN = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*}}")
+_TEMPLATE_PATTERN = re.compile(
+    r"{{\s*(?:(json)\s+)?([A-Za-z_][A-Za-z0-9_.]*)\s*}}"
+)
 
 
 def render_template(template: str, context: dict[str, Any]) -> str:
     def replace(match: re.Match[str]) -> str:
         value: Any = context
-        for part in match.group(1).split("."):
+        for part in match.group(2).split("."):
             if isinstance(value, dict) and part in value:
                 value = value[part]
             else:
                 return ""
+        if match.group(1) == "json":
+            return json.dumps(value, ensure_ascii=False)
         if isinstance(value, (dict, list)):
             return json.dumps(value, indent=2)
         return "" if value is None else str(value)
@@ -362,6 +384,88 @@ def _parse_json_text(text: str) -> Any:
         return json.loads(stripped)
     except json.JSONDecodeError:
         return None
+
+
+def _extract_search_queries(prompt: str) -> list[str]:
+    stripped = str(prompt or "").strip()
+    parsed = _parse_json_text(stripped)
+    raw_queries: list[Any] = []
+    if isinstance(parsed, dict):
+        if isinstance(parsed.get("queries"), list):
+            raw_queries.extend(parsed["queries"])
+        elif parsed.get("query") is not None:
+            raw_queries.append(parsed.get("query"))
+    elif isinstance(parsed, list):
+        raw_queries.extend(parsed)
+    elif isinstance(parsed, str):
+        raw_queries.append(parsed)
+    else:
+        raw_queries.append(stripped)
+
+    queries: list[str] = []
+    seen: set[str] = set()
+    for raw_query in raw_queries:
+        query = str(raw_query or "").strip()
+        key = " ".join(query.lower().split())
+        if not query or key in seen:
+            continue
+        seen.add(key)
+        queries.append(query)
+    return queries or [stripped]
+
+
+def _merge_search_results(
+    queries: list[str], results: list[dict[str, Any]], *, use_planner: bool
+) -> dict[str, Any]:
+    if len(results) == 1:
+        merged = dict(results[0])
+        merged.setdefault("query", queries[0] if queries else "")
+        merged["workflow_search"] = {
+            "planned_by_workflow": not use_planner,
+            "queries": list(queries),
+        }
+        return merged
+
+    seen_urls: set[str] = set()
+    merged_results: list[Any] = []
+    warnings: list[str] = []
+    per_query: list[dict[str, Any]] = []
+    degraded = False
+    providers: set[str] = set()
+
+    for query, result in zip(queries, results):
+        response = dict(result)
+        response["query"] = str(response.get("query") or query)
+        per_query.append(response)
+        degraded = degraded or bool(response.get("degraded"))
+        provider = str(response.get("provider") or "").strip()
+        if provider and provider != "none":
+            providers.add(provider)
+        if isinstance(response.get("warnings"), list):
+            warnings.extend(str(item) for item in response["warnings"])
+        for item in response.get("results") or []:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "").strip()
+            key = url or json.dumps(item, sort_keys=True)
+            if key in seen_urls:
+                continue
+            seen_urls.add(key)
+            merged_results.append(item)
+
+    return {
+        "query": queries[0] if queries else "",
+        "queries": list(queries),
+        "provider": next(iter(providers)) if len(providers) == 1 else "fanout",
+        "results": merged_results,
+        "warnings": warnings,
+        "degraded": degraded or any(not (result.get("results") or []) for result in results),
+        "per_query": per_query,
+        "workflow_search": {
+            "planned_by_workflow": True,
+            "queries": list(queries),
+        },
+    }
 
 
 def _utc_now() -> str:

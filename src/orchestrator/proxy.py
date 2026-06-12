@@ -1129,9 +1129,15 @@ class ProxyWorkflowSearchClient:
         query: str,
         provider: Optional[str] = None,
         count: int = 5,
+        use_planner: bool = True,
     ) -> Dict[str, Any]:
         response = await search_service.search(
-            SearchArgs(query=query, provider=provider or "auto", count=count)
+            SearchArgs(
+                query=query,
+                provider=provider or "auto",
+                count=count,
+                use_planner=use_planner,
+            )
         )
         payload = response.to_dict()
         payload["wrapped_results"] = wrap_search_results(response)
@@ -1412,6 +1418,7 @@ async def search_web(request: Request):
             region=body.get("region"),
             safe_search=body.get("safeSearch") or body.get("safe_search"),
             freshness=body.get("freshness"),
+            use_planner=body.get("use_planner", body.get("usePlanner", True)) is not False,
         )
         response = await search_service.search(args)
     except ValueError as exc:

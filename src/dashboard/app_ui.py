@@ -9,7 +9,6 @@ def input_action_row(
     *,
     col_widths=None,
     button_class=None,
-    class_=None,
 ):
     """Render one input control with a trailing aligned action button."""
     return ui.layout_columns(
@@ -23,7 +22,6 @@ def input_action_row(
             style="display: flex; align-items: flex-end; height: 100%;",
         ),
         col_widths=col_widths or [10, 2],
-        class_=class_,
     )
 
 
@@ -74,8 +72,12 @@ app_ui = ui.page_fluid(
             width: 100%;
         }
 
-        .dashboard-form-action {
-            margin-top: 0.25rem;
+        .dashboard-workflow-upload-file .shiny-label-null {
+            display: none;
+        }
+
+        .dashboard-workflow-upload-file .form-group {
+            margin-bottom: 0;
         }
 
         .dashboard-trace-json {
@@ -256,7 +258,7 @@ app_ui = ui.page_fluid(
                     ui.input_action_button(
                         "createWorkflowRun",
                         "Create run",
-                        class_="btn-primary dashboard-full-width-action dashboard-form-action",
+                        class_="btn-primary dashboard-full-width-action",
                     ),
                 ),
                 ui.div(

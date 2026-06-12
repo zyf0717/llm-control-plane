@@ -87,7 +87,7 @@ class SearchRouter:
         planner_metadata: dict[str, object] = {}
         query_args = [args]
 
-        if self.planner is not None:
+        if self.planner is not None and args.use_planner:
             plan = await self.planner.plan(args)
             planner_metadata = plan.to_public_dict()
             if plan.warning:

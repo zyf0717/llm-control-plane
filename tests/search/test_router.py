@@ -165,6 +165,44 @@ async def test_router_calls_planner_before_provider_and_uses_effective_query():
 
 
 @pytest.mark.asyncio
+async def test_router_can_bypass_planner_for_preplanned_queries():
+    provider = StubProvider(
+        "winner",
+        SearchResponse(
+            query="workflow planned query",
+            provider="winner",
+            results=[
+                SearchResult(
+                    title="Hit",
+                    url="https://example.com",
+                    snippet="snippet",
+                    rank=1,
+                    provider="winner",
+                    engine="winner",
+                    fetched_at="2026-06-06T00:00:00+00:00",
+                )
+            ],
+        ),
+    )
+    planner = StubPlanner(SearchPlan(effective_query="planner query", used=True))
+    router = SearchRouter(
+        SearchConfig(default_provider="winner", max_results=10),
+        providers={"winner": provider},
+        provider_configs={"winner": SearchProviderConfig(enabled=True, priority=10)},
+        planner=planner,
+    )
+
+    response = await router.search(
+        SearchArgs(query="workflow planned query", use_planner=False)
+    )
+
+    assert planner.calls == 0
+    assert provider.last_args.query == "workflow planned query"
+    assert response.original_query is None
+    assert response.planner == {}
+
+
+@pytest.mark.asyncio
 async def test_router_omits_original_query_when_planner_keeps_query():
     provider = StubProvider(
         "winner",

@@ -1,7 +1,7 @@
 id: contextual_search
 name: Contextual Search
 version: 0.1.0
-description: Plan search terms from the latest user turn in conversation context, search, then answer the latest prompt.
+description: Search from the latest user turn, then answer using conversation context and retrieved evidence.
 
 params_schema:
   type: object
@@ -21,43 +21,11 @@ defaults:
   stream: false
 
 steps:
-  - id: plan_search_terms
-    name: Plan search terms
-    kind: llm
-    prompt: |
-      Latest user prompt:
-      {{ params.latest_user_prompt }}
-
-      Conversation history / existing context:
-      {{ params.conversation_context }}
-
-      Additional context:
-      {{ params.context }}
-      {{ params.uploaded_context }}
-
-      Infer the user's actual information need from the latest turn in context.
-      Return strict JSON only:
-      {
-        "query": "one concise web search query",
-        "reason": "why this query targets the latest prompt",
-        "source_preferences": ["preferred primary source domains or source types"]
-      }
-
-      Query rules:
-      - Put only the best single web query in "query".
-      - Keep the query under 180 characters.
-      - Prefer primary sources and exact named entities.
-      - Use site filters when the source is obvious, for example
-        site:platform.openai.com/docs or site:github.com/openai/openai-python.
-      - Do not include markdown, bullets, multiple candidate queries, or explanatory prose.
-    output_key: search_plan
-
   - id: search_evidence
     name: Search evidence
     kind: search
-    depends_on: [plan_search_terms]
     prompt: |
-      {{ outputs.search_plan.json.query }}
+      {{ json params.latest_user_prompt }}
     output_key: search_evidence
 
   - id: consolidate_reply
@@ -74,9 +42,6 @@ steps:
       Additional context:
       {{ params.context }}
       {{ params.uploaded_context }}
-
-      Search plan:
-      {{ outputs.search_plan.text }}
 
       Search evidence:
       {{ outputs.search_evidence.text }}

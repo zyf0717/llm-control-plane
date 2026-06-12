@@ -12,7 +12,6 @@ from src.search.safety import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER
 
 load_dotenv()
 
-from .app_ui import input_action_row
 from .chat_client import stream_chat_response
 from .formatters import (
     format_all_available_models,
@@ -1028,20 +1027,33 @@ def server(input, output, session):
                 class_="form-label",
                 **{"for": "workflowUploadFile"},
             ),
-            input_action_row(
-                ui.input_file(
-                    "workflowUploadFile",
-                    "",
-                    button_label="Upload (UTF-8)",
-                    placeholder="No files uploaded",
-                    multiple=True,
-                    width="100%",
+            ui.div(
+                ui.div(
+                    ui.input_file(
+                        "workflowUploadFile",
+                        "",
+                        button_label="Upload (UTF-8)",
+                        placeholder="No files uploaded",
+                        multiple=True,
+                        width="100%",
+                    ),
+                    class_="dashboard-workflow-upload-file",
+                    style="flex: 1 1 auto; min-width: 0;",
                 ),
-                "clearWorkflowUpload",
-                "Clear",
-                col_widths=[8, 4],
+                ui.div(
+                    ui.input_action_button(
+                        "clearWorkflowUpload",
+                        "Clear",
+                        class_="dashboard-full-width-action",
+                    ),
+                    style="flex: 0 0 5.5rem;",
+                ),
+                style=(
+                    "display: flex; align-items: flex-start; "
+                    "gap: 0.5rem; width: 100%;"
+                ),
             ),
-            class_="dashboard-form-action",
+            style="margin-top: 0.25rem;",
         )
 
     @reactive.Effect
