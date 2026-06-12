@@ -210,7 +210,8 @@ curl -X POST http://localhost:12340/search/web \
     "provider": "auto",
     "count": 5,
     "freshness": "week",
-    "use_query_refiner": true
+    "use_query_refiner": true,
+    "use_reranker": true
   }'
 ```
 
@@ -222,6 +223,7 @@ Request fields:
 - `count`: optional result count
 - `freshness`: optional freshness hint such as `day`, `week`, or `month`
 - `use_query_refiner` / `useQueryRefiner`: optional boolean; set false to bypass query refinement
+- `use_reranker` / `useReranker`: optional boolean; set false to bypass post-retrieval reranking
 
 Behavior:
 
@@ -229,11 +231,13 @@ Behavior:
 - may run async provider fanout when the query refiner returns multiple queries
 - sends one HTTP request to each selected search provider in priority order per refined query
 - parses only the returned SERP payload
+- may rerank deduped result candidates through a bounded reranker when configured
 - never fetches result pages or executes JavaScript
 - returns normalized result candidates plus degradation warnings
 - may include `original_query` and filtered `query_refinement` metadata, including `queries`, when refinement ran
+- may include filtered `reranking` metadata when reranking ran
 - includes `wrapped_results`, a JSON string marked as untrusted for downstream LLM use
 
-Single-Node/ad hoc search may use the query refiner. Workflow search uses workflow LLM query planning and dispatches those queries with the query refiner bypassed.
+Single-Node/ad hoc search may use the query refiner. Workflow search may either use the query refiner for plain search prompts or bypass it for workflow-planned JSON queries. Both paths may use post-retrieval reranking.
 
 TL;DR: the proxy API is OpenAI-compatible plus control headers for smart routing, conversation history, reasoning, RAG retrieval, and an optional lightweight search-discovery endpoint.

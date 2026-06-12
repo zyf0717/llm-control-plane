@@ -35,6 +35,13 @@ search:
   query_refiner_max_context_chars: 24000
   query_refiner_max_output_tokens: 1024
   query_refiner_max_queries: 3
+  reranker_model_endpoint: "https://llm-server.example.com"
+  reranker_model: "search-reranker"
+  reranker_enabled: true
+  reranker_timeout_ms: 7000
+  reranker_max_context_chars: 12000
+  reranker_max_candidates: 20
+  reranker_max_output_tokens: 1024
   search_max_total_results: 10
   default_provider: "duckduckgo_html"
   timeout_ms: 7000
@@ -131,6 +138,13 @@ The `search` block enables the lightweight candidate-discovery module exposed at
 | `query_refiner_max_context_chars` | Max optional context characters sent to the query refiner |
 | `query_refiner_max_output_tokens` | Max query-refiner response tokens |
 | `query_refiner_max_queries` | Max refined query fanout; defaults to 1 |
+| `reranker_model_endpoint` | Optional OpenAI-compatible endpoint for bounded post-retrieval reranking |
+| `reranker_model` | Reranker model name; defaults to `search-reranker` |
+| `reranker_enabled` | Enables or disables reranking; defaults to true when `reranker_model_endpoint` exists |
+| `reranker_timeout_ms` | Reranker request timeout; defaults to `timeout_ms` or 7000 |
+| `reranker_max_context_chars` | Max optional context characters sent to the reranker |
+| `reranker_max_candidates` | Max deduped candidates sent to the reranker |
+| `reranker_max_output_tokens` | Max reranker response tokens |
 | `search_max_total_results` | Max deduped results returned across all refined queries |
 | `default_provider` | Default provider id when `provider=auto` |
 | `timeout_ms` | Per-provider request timeout |
@@ -144,7 +158,9 @@ The `search` block enables the lightweight candidate-discovery module exposed at
 
 When `search.query_refiner_model_endpoint` is configured and query refinement is enabled, ad hoc `/search/web` calls may run a bounded, non-persisted query-refiner call before provider execution. The query refiner returns one or more concise provider-ready queries; the first query becomes the effective search query. If `query_refiner_max_queries` is greater than 1, provider searches run as an async fanout and results are deduped before applying `search_max_total_results`. Query-refiner failure degrades to the original query and adds a warning.
 
-Workflow search is different: workflow YAMLs use their workflow LLM steps to decide search queries and then dispatch those queries with the query refiner bypassed. This keeps workflow search planning in the workflow, not in the ad hoc search router.
+When `search.reranker_model_endpoint` is configured and reranking is enabled, search runs a bounded, non-persisted reranker call after provider retrieval and dedupe. Reranker failure preserves provider order and adds a warning.
+
+Workflow search can use either query-refiner planning or workflow-owned planning. Plain search prompts may use the query refiner. Workflow-planned JSON queries should set `use_query_refiner: false`; they can still use post-retrieval reranking.
 
 Supported built-in provider ids:
 

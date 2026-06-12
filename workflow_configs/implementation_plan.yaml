@@ -22,6 +22,17 @@ steps:
   - id: search_context
     name: Search context
     kind: search
+    use_query_refiner: true
+    use_reranker: true
+    rerank_context: |
+      Goal:
+      {{ params.goal }}
+
+      Manual context:
+      {{ params.context }}
+
+      Uploaded context:
+      {{ params.uploaded_context }}
     prompt: |
       {{ params.goal }}
 

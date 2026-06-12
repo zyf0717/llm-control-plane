@@ -62,6 +62,17 @@ steps:
   - id: search_evidence
     name: Search evidence
     kind: search
+    use_query_refiner: false
+    use_reranker: true
+    rerank_context: |
+      Latest user prompt:
+      {{ params.latest_user_prompt }}
+
+      Conversation history / existing context:
+      {{ params.conversation_context }}
+
+      Search plan:
+      {{ outputs.search_plan.text }}
     depends_on: [plan_search_queries]
     prompt: |
       {{ outputs.search_plan.json.queries }}

@@ -77,6 +77,43 @@ def test_search_web_endpoint_accepts_new_query_refiner_bypass_flag():
     assert search.await_args.args[0].use_query_refiner is False
 
 
+def test_search_web_endpoint_accepts_reranker_bypass_flag():
+    response = SearchResponse(query="alpha", provider="none", results=[], warnings=[])
+
+    with patch(
+        "src.orchestrator.proxy_services.search_service.search",
+        AsyncMock(return_value=response),
+    ) as search:
+        result = client.post(
+            "/search/web",
+            json={"query": "alpha", "use_reranker": False},
+        )
+
+    assert result.status_code == 200
+    assert search.await_args.args[0].use_reranker is False
+
+
+def test_search_web_endpoint_accepts_reranker_camel_flag_and_context():
+    response = SearchResponse(query="alpha", provider="none", results=[], warnings=[])
+
+    with patch(
+        "src.orchestrator.proxy_services.search_service.search",
+        AsyncMock(return_value=response),
+    ) as search:
+        result = client.post(
+            "/search/web",
+            json={
+                "query": "alpha",
+                "useReranker": False,
+                "rerankContext": "ranking context",
+            },
+        )
+
+    assert result.status_code == 200
+    assert search.await_args.args[0].use_reranker is False
+    assert search.await_args.args[0].rerank_context == "ranking context"
+
+
 def test_search_web_endpoint_ignores_legacy_planner_bypass_flag():
     response = SearchResponse(query="alpha", provider="none", results=[], warnings=[])
 
@@ -133,3 +170,22 @@ def test_search_web_endpoint_emits_query_refinement_without_planner_alias():
     body = result.json()
     assert body["query_refinement"] == {"used": True, "effective_query": "refined"}
     assert "planner" not in body
+
+
+def test_search_web_endpoint_emits_reranking_metadata():
+    response = SearchResponse(
+        query="alpha",
+        provider="none",
+        results=[],
+        warnings=[],
+        reranking={"used": True, "model": "search-reranker"},
+    )
+
+    with patch(
+        "src.orchestrator.proxy_services.search_service.search",
+        AsyncMock(return_value=response),
+    ):
+        result = client.post("/search/web", json={"query": "alpha"})
+
+    assert result.status_code == 200
+    assert result.json()["reranking"] == {"used": True, "model": "search-reranker"}

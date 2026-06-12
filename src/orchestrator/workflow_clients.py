@@ -4,6 +4,7 @@ import json
 from typing import Any, AsyncIterator, Dict, Optional
 
 from src.search import SearchArgs, wrap_search_results
+from src.search.types import SearchResponse, SearchResult
 
 from . import proxy_services as services
 from .upstream_proxy import proxy_request
@@ -180,6 +181,8 @@ class ProxyWorkflowSearchClient:
         provider: Optional[str] = None,
         count: int = 5,
         use_query_refiner: bool = True,
+        use_reranker: bool = True,
+        rerank_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         response = await services.search_service.search(
             SearchArgs(
@@ -187,8 +190,42 @@ class ProxyWorkflowSearchClient:
                 provider=provider or "auto",
                 count=count,
                 use_query_refiner=use_query_refiner,
+                use_reranker=use_reranker,
+                rerank_context=rerank_context,
             )
         )
+        payload = response.to_dict()
+        payload["wrapped_results"] = wrap_search_results(response)
+        return payload
+
+    async def rerank_results(
+        self,
+        *,
+        query: str,
+        results: list[dict[str, Any]],
+        context: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        reranker = getattr(services.search_service, "reranker", None)
+        search_results = [_search_result_from_dict(item) for item in results]
+        if reranker is None or not search_results:
+            response = SearchResponse(query=query, provider="fanout", results=search_results)
+            payload = response.to_dict()
+            payload["wrapped_results"] = wrap_search_results(response)
+            return payload
+
+        reranking = await reranker.rerank(
+            query=query,
+            results=search_results,
+            context=context,
+        )
+        response = SearchResponse(
+            query=query,
+            provider="fanout",
+            results=reranking.results,
+            reranking=reranking.to_public_dict(),
+        )
+        if reranking.warning:
+            response.warnings.append(f"reranker: {reranking.warning}")
         payload = response.to_dict()
         payload["wrapped_results"] = wrap_search_results(response)
         return payload
@@ -232,3 +269,25 @@ def _metadata_from_headers(endpoint_key: str, headers: Dict[str, Any]) -> Dict[s
                 lower_name.replace("x-rag-", "").replace("-", "_")
             ] = str(header_value)
     return metadata
+
+
+def _search_result_from_dict(item: dict[str, Any]) -> SearchResult:
+    return SearchResult(
+        title=str(item.get("title") or ""),
+        url=str(item.get("url") or ""),
+        snippet=(
+            str(item.get("snippet"))
+            if item.get("snippet") is not None
+            else None
+        ),
+        rank=int(item.get("rank") or 0),
+        provider=str(item.get("provider") or ""),
+        engine=str(item.get("engine") or ""),
+        fetched_at=str(item.get("fetched_at") or ""),
+        score=(
+            float(item["score"])
+            if item.get("score") is not None
+            else None
+        ),
+        ranking=dict(item.get("ranking") or {}),
+    )

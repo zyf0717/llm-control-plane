@@ -30,6 +30,13 @@ search:
   query_refiner_max_context_chars: 12000
   query_refiner_max_output_tokens: 512
   query_refiner_max_queries: 1
+  reranker_model_endpoint: ""
+  reranker_model: "search-reranker"
+  reranker_enabled: false
+  reranker_timeout_ms: 7000
+  reranker_max_context_chars: 12000
+  reranker_max_candidates: 20
+  reranker_max_output_tokens: 1024
   search_max_total_results: 10
   default_provider: "duckduckgo_html"
   timeout_ms: 7000

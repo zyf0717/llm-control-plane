@@ -41,4 +41,10 @@ def wrap_search_results(response: SearchResponse) -> str:
                 str(query) for query in queries if str(query).strip()
             ]
         payload["query_refinement"] = query_refinement_payload
+    if response.reranking:
+        payload["reranking"] = {
+            "used": response.reranking.get("used"),
+            "degraded": response.reranking.get("degraded"),
+            "model": response.reranking.get("model"),
+        }
     return json.dumps(payload, ensure_ascii=True)

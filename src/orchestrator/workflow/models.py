@@ -45,6 +45,9 @@ class WorkflowStepSpec:
     reasoning_effort: str | None = None
     rag_endpoint: str | None = None
     search_provider: str | None = None
+    use_query_refiner: bool | None = None
+    use_reranker: bool | None = None
+    rerank_context: str | None = None
     max_tokens: int | None = None
     chat_visibility: WorkflowChatVisibility = "hidden"
     chat_stream: bool | None = None
@@ -88,6 +91,9 @@ class WorkflowStepSpec:
             reasoning_effort=_optional_str(data.get("reasoning_effort")),
             rag_endpoint=_optional_str(data.get("rag_endpoint")),
             search_provider=_optional_str(data.get("search_provider")),
+            use_query_refiner=_optional_bool(data.get("use_query_refiner")),
+            use_reranker=_optional_bool(data.get("use_reranker")),
+            rerank_context=_optional_str(data.get("rerank_context")),
             max_tokens=_optional_int(data.get("max_tokens")),
             chat_visibility=chat_visibility,  # type: ignore[arg-type]
             chat_stream=_optional_bool(data.get("chat_stream")),

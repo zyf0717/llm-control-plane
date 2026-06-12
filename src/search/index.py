@@ -12,6 +12,7 @@ from .providers import (
     WikipediaOpenSearchProvider,
 )
 from .query_refiner import SearchQueryRefiner, SearchQueryRefinerConfig
+from .reranker import SearchReranker, SearchRerankerConfig
 from .search_router import SearchConfig, SearchProviderConfig, SearchRouter
 
 
@@ -80,12 +81,34 @@ def build_search_router(
         if query_refiner_config.enabled and query_refiner_config.model_endpoint
         else None
     )
+    reranker_endpoint = search_config.get("reranker_model_endpoint")
+    reranker_config = SearchRerankerConfig(
+        enabled=bool(search_config.get("reranker_enabled", bool(reranker_endpoint))),
+        model_endpoint=reranker_endpoint,
+        model=str(search_config.get("reranker_model", "search-reranker")),
+        timeout_ms=int(
+            search_config.get(
+                "reranker_timeout_ms",
+                search_config.get("timeout_ms", 7000),
+            )
+        ),
+        max_context_chars=int(search_config.get("reranker_max_context_chars", 12000)),
+        max_candidates=int(search_config.get("reranker_max_candidates", 20)),
+        max_output_tokens=int(search_config.get("reranker_max_output_tokens", 1024)),
+        headers=dict(query_refiner_headers),
+    )
+    reranker = (
+        SearchReranker(reranker_config)
+        if reranker_config.enabled and reranker_config.model_endpoint
+        else None
+    )
 
     return SearchRouter(
         config,
         providers=providers,
         provider_configs=provider_configs,
         query_refiner=query_refiner,
+        reranker=reranker,
     )
 
 def _build_provider_config(

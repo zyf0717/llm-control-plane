@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from src.search.query_refiner import SearchQueryRefinement
+from src.search.reranker import SearchReranking
 from src.search.search_router import SearchConfig, SearchRouter, SearchProviderConfig
 from src.search.types import SearchArgs, SearchResponse, SearchResult
 
@@ -125,6 +126,32 @@ class StubQueryRefiner:
         self.calls += 1
         self.last_args = args
         return self._plan
+
+
+class StubReranker:
+    def __init__(self, warning: str | None = None):
+        self.calls = 0
+        self.last_query = None
+        self.last_context = None
+        self.warning = warning
+
+    async def rerank(self, *, query, results, context=None):
+        self.calls += 1
+        self.last_query = query
+        self.last_context = context
+        if self.warning:
+            return SearchReranking(
+                results=results,
+                used=False,
+                degraded=True,
+                warning=self.warning,
+            )
+        reranked = list(reversed(results))
+        for index, result in enumerate(reranked, start=1):
+            result.rank = index
+            result.score = 1.0 / index
+            result.ranking = {"reranker": "stub"}
+        return SearchReranking(results=reranked, used=True, model="stub")
 
 
 @pytest.mark.asyncio
@@ -352,3 +379,150 @@ async def test_router_fans_out_refined_queries_and_dedupes_results():
         "https://example.com/b",
     ]
     assert [result.rank for result in response.results] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_router_reranks_single_query_after_provider_results():
+    provider = StubProvider(
+        "winner",
+        SearchResponse(
+            query="q",
+            provider="winner",
+            results=[
+                SearchResult(
+                    title="A",
+                    url="https://example.com/a",
+                    snippet="snippet a",
+                    rank=1,
+                    provider="winner",
+                    engine="winner",
+                    fetched_at="2026-06-06T00:00:00+00:00",
+                ),
+                SearchResult(
+                    title="B",
+                    url="https://example.com/b",
+                    snippet="snippet b",
+                    rank=2,
+                    provider="winner",
+                    engine="winner",
+                    fetched_at="2026-06-06T00:00:00+00:00",
+                ),
+            ],
+        ),
+    )
+    reranker = StubReranker()
+    router = SearchRouter(
+        SearchConfig(default_provider="winner", max_results=10),
+        providers={"winner": provider},
+        provider_configs={"winner": SearchProviderConfig(enabled=True, priority=10)},
+        reranker=reranker,
+    )
+
+    response = await router.search(
+        SearchArgs(query="q", context="refiner context", rerank_context="rerank context")
+    )
+
+    assert reranker.calls == 1
+    assert reranker.last_query == "q"
+    assert reranker.last_context == "rerank context"
+    assert [result.title for result in response.results] == ["B", "A"]
+    assert response.results[0].score == 1.0
+    assert response.reranking == {"used": True, "degraded": False, "model": "stub"}
+
+
+@pytest.mark.asyncio
+async def test_router_can_bypass_reranker():
+    provider = StubProvider(
+        "winner",
+        SearchResponse(
+            query="q",
+            provider="winner",
+            results=[
+                SearchResult(
+                    title="A",
+                    url="https://example.com/a",
+                    snippet="snippet",
+                    rank=1,
+                    provider="winner",
+                    engine="winner",
+                    fetched_at="2026-06-06T00:00:00+00:00",
+                )
+            ],
+        ),
+    )
+    reranker = StubReranker()
+    router = SearchRouter(
+        SearchConfig(default_provider="winner", max_results=10),
+        providers={"winner": provider},
+        provider_configs={"winner": SearchProviderConfig(enabled=True, priority=10)},
+        reranker=reranker,
+    )
+
+    response = await router.search(SearchArgs(query="q", use_reranker=False))
+
+    assert reranker.calls == 0
+    assert response.reranking == {}
+
+
+@pytest.mark.asyncio
+async def test_router_reranks_fanout_after_merged_dedupe():
+    provider = FanoutProvider()
+    query_refiner = StubQueryRefiner(
+        SearchQueryRefinement(
+            effective_query="q1",
+            queries=["q1", "q2"],
+            used=True,
+        )
+    )
+    reranker = StubReranker()
+    router = SearchRouter(
+        SearchConfig(default_provider="winner", max_results=10, max_total_results=3),
+        providers={"winner": provider},
+        provider_configs={"winner": SearchProviderConfig(enabled=True, priority=10)},
+        query_refiner=query_refiner,
+        reranker=reranker,
+    )
+
+    response = await router.search(SearchArgs(query="original query"))
+
+    assert reranker.calls == 1
+    assert [result.url for result in response.results] == [
+        "https://example.com/c",
+        "https://example.com/b",
+        "https://example.com/a",
+    ]
+    assert [result.rank for result in response.results] == [1, 2, 3]
+
+
+@pytest.mark.asyncio
+async def test_router_reranker_warning_does_not_fail_search():
+    provider = StubProvider(
+        "winner",
+        SearchResponse(
+            query="q",
+            provider="winner",
+            results=[
+                SearchResult(
+                    title="A",
+                    url="https://example.com/a",
+                    snippet="snippet",
+                    rank=1,
+                    provider="winner",
+                    engine="winner",
+                    fetched_at="2026-06-06T00:00:00+00:00",
+                )
+            ],
+        ),
+    )
+    router = SearchRouter(
+        SearchConfig(default_provider="winner", max_results=10),
+        providers={"winner": provider},
+        provider_configs={"winner": SearchProviderConfig(enabled=True, priority=10)},
+        reranker=StubReranker(warning="reranker-failed: TimeoutException"),
+    )
+
+    response = await router.search(SearchArgs(query="q"))
+
+    assert response.results[0].title == "A"
+    assert response.warnings == ["reranker: reranker-failed: TimeoutException"]
+    assert response.reranking["degraded"] is True

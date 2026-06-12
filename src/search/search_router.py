@@ -10,6 +10,7 @@ from typing import Optional
 from .http_client import SearchHttpClient, SearchHttpClientConfig
 from .normalize import dedupe_results
 from .query_refiner import SearchQueryRefiner
+from .reranker import SearchReranker
 from .search_cache import SearchCache
 from .types import SearchArgs, SearchProvider, SearchResponse
 
@@ -61,6 +62,7 @@ class SearchRouter:
         http_client: Optional[SearchHttpClient] = None,
         cache: Optional[SearchCache] = None,
         query_refiner: Optional[SearchQueryRefiner] = None,
+        reranker: Optional[SearchReranker] = None,
     ):
         self.config = config
         self.providers = providers
@@ -74,6 +76,7 @@ class SearchRouter:
         )
         self.cache = cache or SearchCache(default_ttl_seconds=config.cache_ttl_seconds)
         self.query_refiner = query_refiner
+        self.reranker = reranker
         self._last_request_at: dict[str, float] = {}
         self._rate_limit_lock = asyncio.Lock()
 
@@ -110,6 +113,7 @@ class SearchRouter:
             response = await self._search_one_query(query_args[0], explicit_provider)
             if warnings:
                 response.warnings = [*warnings, *response.warnings]
+            await self._attach_reranking_metadata(response, query_args[0])
             self._attach_query_refinement_metadata(
                 response,
                 original_query=original_query,
@@ -166,6 +170,7 @@ class SearchRouter:
             effective_query=primary_query,
             query_refinement_metadata=query_refinement_metadata,
         )
+        await self._attach_reranking_metadata(response, query_args[0])
         return response
 
     async def _search_one_query(
@@ -229,6 +234,22 @@ class SearchRouter:
             response.original_query = original_query
         if query_refinement_metadata:
             response.query_refinement = query_refinement_metadata
+
+    async def _attach_reranking_metadata(
+        self, response: SearchResponse, args: SearchArgs
+    ) -> None:
+        if self.reranker is None or not args.use_reranker or not response.results:
+            return
+
+        reranking = await self.reranker.rerank(
+            query=args.query,
+            results=response.results,
+            context=args.rerank_context if args.rerank_context is not None else args.context,
+        )
+        response.results = reranking.results
+        response.reranking = reranking.to_public_dict()
+        if reranking.warning:
+            response.warnings.append(f"reranker: {reranking.warning}")
 
     def _select_providers(self, args: SearchArgs) -> list[SearchProvider]:
         explicit_provider = args.provider not in {None, "", "auto"}

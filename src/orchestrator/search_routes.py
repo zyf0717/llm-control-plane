@@ -61,6 +61,13 @@ async def search_web(request: Request):
                 camel_key="useQueryRefiner",
                 default=True,
             ),
+            use_reranker=search_request_bool(
+                body,
+                snake_key="use_reranker",
+                camel_key="useReranker",
+                default=True,
+            ),
+            rerank_context=body.get("rerank_context") or body.get("rerankContext"),
         )
         response = await services.search_service.search(args)
     except ValueError as exc:

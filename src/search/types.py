@@ -19,6 +19,8 @@ class SearchArgs:
     freshness: Optional[str] = None
     context: Optional[str] = None
     use_query_refiner: bool = True
+    use_reranker: bool = True
+    rerank_context: Optional[str] = None
 
 
 @dataclass(slots=True)
@@ -42,9 +44,16 @@ class SearchResult:
     provider: str
     engine: str
     fetched_at: str
+    score: Optional[float] = None
+    ranking: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        payload = asdict(self)
+        if self.score is None:
+            payload.pop("score", None)
+        if not self.ranking:
+            payload.pop("ranking", None)
+        return payload
 
 
 @dataclass(slots=True)
@@ -58,6 +67,7 @@ class SearchResponse:
     warnings: list[str] = field(default_factory=list)
     original_query: Optional[str] = None
     query_refinement: dict[str, object] = field(default_factory=dict)
+    reranking: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
@@ -66,6 +76,8 @@ class SearchResponse:
             payload.pop("original_query", None)
         if not self.query_refinement:
             payload.pop("query_refinement", None)
+        if not self.reranking:
+            payload.pop("reranking", None)
         return payload
 
 
