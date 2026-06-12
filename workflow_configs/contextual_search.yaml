@@ -25,6 +25,7 @@ steps:
     name: Plan search queries
     kind: llm
     chat_visibility: intermediate
+    chat_stream: false
     prompt: |
       Latest user prompt:
       {{ params.latest_user_prompt }}

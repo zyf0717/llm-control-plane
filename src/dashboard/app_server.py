@@ -55,6 +55,7 @@ from .workflow_server_helpers import (
     build_uploaded_file_context,
     build_workflow_chat_run_payload,
     build_workflow_params_template,
+    format_workflow_intermediate_content,
     format_workflow_conversation_context,
     merge_uploaded_context,
     workflow_chat_response_text,
@@ -1260,7 +1261,8 @@ def server(input, output, session):
                                 elif content:
                                     yield (
                                         f"<em>**{step_name}**\n\n"
-                                        f"{content}</em>\n\n---\n\n"
+                                        f"{format_workflow_intermediate_content(content)}"
+                                        "</em>\n\n---\n\n"
                                     )
                             elif visibility == "final" and content and not streamed:
                                 if open_intermediate_step:

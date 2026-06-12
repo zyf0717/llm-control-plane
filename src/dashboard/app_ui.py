@@ -200,14 +200,6 @@ app_ui = ui.page_fluid(
             box-shadow: inset 0 0 0 1px var(--bs-secondary-color);
         }
 
-        .dashboard-workflow-disabled-note {
-            display: block;
-            margin-top: 0.25rem;
-            font-size: 0.75rem;
-            font-weight: 600;
-            color: var(--bs-secondary-color);
-        }
-
         @media (max-width: 991.98px) {
             :root {
                 --dashboard-panel-height: auto;
@@ -227,27 +219,8 @@ app_ui = ui.page_fluid(
         }
         """),
     ui.tags.script("""
-        const workflowDisabledNotes = {
-            ragEndpoint: "Controlled by workflow",
-            searchProvider: "Controlled by workflow"
-        };
-
         function dashboardInputContainer(input) {
             return input.closest(".form-group, .shiny-input-container") || input.parentElement;
-        }
-
-        function setWorkflowDisabledNote(container, id, disabled) {
-            if (!container) return;
-            const existing = container.querySelector(".dashboard-workflow-disabled-note");
-            if (!disabled) {
-                if (existing) existing.remove();
-                return;
-            }
-            if (existing) return;
-            const note = document.createElement("span");
-            note.className = "dashboard-workflow-disabled-note";
-            note.textContent = workflowDisabledNotes[id] || "Controlled by workflow";
-            container.appendChild(note);
         }
 
         function setDashboardSelectDisabled(id, disabled) {
@@ -259,7 +232,6 @@ app_ui = ui.page_fluid(
             if (container) {
                 container.classList.toggle("dashboard-workflow-disabled", disabled);
             }
-            setWorkflowDisabledNote(container, id, disabled);
             if (input.selectize) {
                 if (disabled) {
                     input.selectize.disable();

@@ -161,6 +161,24 @@ def workflow_chat_run_info(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def format_workflow_intermediate_content(content: str) -> str:
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    parsed = _parse_json_content(text)
+    if parsed is None:
+        return text
+    if isinstance(parsed, dict):
+        return "\n".join(
+            f"- {key}: {_compact_json_value(value)}"
+            for key, value in parsed.items()
+            if value not in (None, "", [], {})
+        )
+    if isinstance(parsed, list):
+        return "\n".join(f"- {_compact_json_value(item)}" for item in parsed)
+    return str(parsed)
+
+
 async def advance_workflow_to_terminal(
     run_id: str,
     advance_once: Callable[[str], Awaitable[dict[str, Any]]],
@@ -235,6 +253,26 @@ def _workflow_param_keys(spec: dict[str, Any] | None) -> list[str]:
         if text and text not in keys:
             keys.append(text)
     return keys
+
+
+def _parse_json_content(text: str) -> Any:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return None
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if len(lines) >= 3 and lines[0].strip().startswith("```"):
+            stripped = "\n".join(lines[1:-1]).strip()
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+
+
+def _compact_json_value(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
 
 
 def _last_completed_step_text(snapshot: dict[str, Any] | None) -> str:

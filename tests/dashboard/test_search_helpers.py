@@ -26,6 +26,7 @@ from src.dashboard.workflow_server_helpers import (
     build_workflow_chat_params,
     build_workflow_chat_run_payload,
     build_workflow_params_template,
+    format_workflow_intermediate_content,
     format_workflow_conversation_context,
     merge_uploaded_context,
     workflow_chat_response_text,
@@ -258,6 +259,34 @@ def test_workflow_chat_response_text_reports_non_terminal_status():
     )
 
     assert text == "Workflow `sample` run `wf_1` is still in progress with status `running`."
+
+
+def test_format_workflow_intermediate_content_renders_json_generically():
+    rendered = format_workflow_intermediate_content(
+        """
+{
+  "queries": ["World War II overview", "World War II causes timeline"],
+  "reason": "The user asks for a definition of World War II.",
+  "source_preferences": ["encyclopedia", "educational history sites"]
+}
+"""
+    )
+
+    assert rendered == (
+        '- queries: ["World War II overview", "World War II causes timeline"]\n'
+        "- reason: The user asks for a definition of World War II.\n"
+        '- source_preferences: ["encyclopedia", "educational history sites"]'
+    )
+
+
+def test_format_workflow_intermediate_content_pretty_prints_unknown_json():
+    rendered = format_workflow_intermediate_content('{"foo": {"bar": 1}}')
+
+    assert rendered == '- foo: {"bar": 1}'
+
+
+def test_format_workflow_intermediate_content_leaves_text_as_is():
+    assert format_workflow_intermediate_content("plain update") == "plain update"
 
 
 def test_build_workflow_routing_choices_prepends_none_option():
