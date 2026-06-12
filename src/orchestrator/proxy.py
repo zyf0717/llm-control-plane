@@ -33,6 +33,10 @@ from .utils import (
     process_non_stream_response,
     process_stream_line,
 )
+from .workflow_api import create_workflow_router
+from .workflow_executor import WorkflowExecutor
+from .workflow_registry import WorkflowRegistry
+from .workflow_store import SQLiteWorkflowStore, build_workflow_store_from_env
 
 # Configuration
 load_dotenv()
@@ -50,6 +54,9 @@ logger = logging.getLogger(__name__)
 
 # Global conversation store
 history_store: HistoryStore = MemoryHistoryStore()
+workflow_registry = WorkflowRegistry()
+workflow_store: SQLiteWorkflowStore = build_workflow_store_from_env()
+workflow_executor: Optional[WorkflowExecutor] = None
 
 # Global cache of reachable endpoints
 reachable_endpoints: Dict[str, dict] = {}
@@ -134,6 +141,22 @@ def set_history_store(store: HistoryStore) -> None:
     history_store = store
 
 
+def set_workflow_components(
+    *,
+    registry: Optional[WorkflowRegistry] = None,
+    store: Optional[SQLiteWorkflowStore] = None,
+    executor: Optional[WorkflowExecutor] = None,
+) -> None:
+    """Swap workflow components for tests or alternate runtime wiring."""
+    global workflow_registry, workflow_store, workflow_executor
+    if registry is not None:
+        workflow_registry = registry
+    if store is not None:
+        workflow_store = store
+    if executor is not None:
+        workflow_executor = executor
+
+
 async def initialize_history_store() -> None:
     """Initialize the configured history store with memory fallback."""
     global history_store
@@ -165,12 +188,50 @@ async def shutdown_history_store() -> None:
     await history_store.close()
 
 
+async def initialize_workflow_components() -> None:
+    """Initialize workflow registry, store, and executor."""
+    global workflow_registry, workflow_store, workflow_executor
+    workflow_registry.load()
+    workflow_store = build_workflow_store_from_env()
+    await workflow_store.initialize()
+    workflow_executor = WorkflowExecutor(
+        workflow_registry,
+        workflow_store,
+        ProxyWorkflowLLMClient(),
+        ProxyWorkflowSearchClient(),
+    )
+
+
+async def startup_workflow_components() -> None:
+    await initialize_workflow_components()
+
+
+async def shutdown_workflow_components() -> None:
+    await workflow_store.close()
+
+
+def get_workflow_registry() -> WorkflowRegistry:
+    return workflow_registry
+
+
+def get_workflow_store() -> SQLiteWorkflowStore:
+    return workflow_store
+
+
+def get_workflow_executor() -> WorkflowExecutor:
+    if workflow_executor is None:
+        raise RuntimeError("Workflow executor is not initialized")
+    return workflow_executor
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await startup_history_store()
+    await startup_workflow_components()
     try:
         yield
     finally:
+        await shutdown_workflow_components()
         await shutdown_history_store()
 
 
@@ -970,6 +1031,117 @@ async def proxy_request(
     return await ProxyHandler.non_stream_response(
         request, target_url, body, convo_id, combined_headers, trace
     )
+
+
+class _WorkflowRequest:
+    def __init__(self, *, path: str, body: Dict[str, Any], headers: Dict[str, str]):
+        self.method = "POST"
+        self.headers = headers
+        self.query_params: Dict[str, str] = {}
+        self.url = type("URL", (), {"path": path})()
+        self._body = json.dumps(body).encode("utf-8")
+        self._json = body
+
+    async def body(self) -> bytes:
+        return self._body
+
+    async def json(self) -> Dict[str, Any]:
+        return self._json
+
+
+class ProxyWorkflowLLMClient:
+    async def complete(
+        self,
+        *,
+        endpoint: str,
+        prompt: str,
+        convo_id: str,
+        reasoning_effort: Optional[str] = None,
+        rag_endpoint: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        endpoint_key = str(endpoint or "smart").strip() or "smart"
+        payload: Dict[str, Any] = {
+            "stream": False,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if max_tokens is not None:
+            payload["max_tokens"] = int(max_tokens)
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-Convo-ID": convo_id,
+        }
+        if reasoning_effort:
+            headers["X-Reasoning-Effort"] = reasoning_effort
+        if rag_endpoint:
+            headers["X-RAG-Endpoint"] = rag_endpoint
+        if endpoint_key != "smart":
+            headers["X-Allow-Route-Switch"] = "true"
+
+        request = _WorkflowRequest(
+            path=f"/{endpoint_key}",
+            body=payload,
+            headers=headers,
+        )
+        response = await (
+            smart_route(request) if endpoint_key == "smart" else proxy_request(endpoint_key, request)
+        )
+        response_body = getattr(response, "body", b"") or b""
+        try:
+            response_json = json.loads(response_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            response_json = {}
+
+        text = extract_assistant_text(response_json) or ""
+        response_headers = dict(getattr(response, "headers", {}) or {})
+        metadata = {
+            "endpoint": endpoint_key,
+            "status_code": getattr(response, "status_code", None),
+        }
+        for header_name, header_value in response_headers.items():
+            lower_name = str(header_name).lower()
+            if lower_name == "x-trace-id":
+                metadata["trace_id"] = str(header_value)
+            elif lower_name.startswith("x-route-"):
+                metadata.setdefault("routing", {})[
+                    lower_name.replace("x-route-", "").replace("-", "_")
+                ] = str(header_value)
+            elif lower_name.startswith("x-rag-"):
+                metadata.setdefault("rag", {})[
+                    lower_name.replace("x-rag-", "").replace("-", "_")
+                ] = str(header_value)
+
+        for key in ("usage", "stats", "model_info", "runtime", "timings"):
+            if isinstance(response_json.get(key), dict):
+                metadata[key] = response_json[key]
+
+        return {"text": text, "metadata": metadata}
+
+
+class ProxyWorkflowSearchClient:
+    async def search(
+        self,
+        *,
+        query: str,
+        provider: Optional[str] = None,
+        count: int = 5,
+    ) -> Dict[str, Any]:
+        response = await search_service.search(
+            SearchArgs(query=query, provider=provider or "auto", count=count)
+        )
+        payload = response.to_dict()
+        payload["wrapped_results"] = wrap_search_results(response)
+        return payload
+
+
+app.include_router(
+    create_workflow_router(
+        registry_getter=get_workflow_registry,
+        store_getter=get_workflow_store,
+        executor_getter=get_workflow_executor,
+    )
+)
 
 
 ##########  API Endpoints ##########

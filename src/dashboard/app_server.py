@@ -44,6 +44,24 @@ from .utils import (
     find_model_by_endpoint,
     read_trace_events,
 )
+from .workflow_client import (
+    advance_workflow_run,
+    create_workflow_run,
+    fetch_workflow,
+    fetch_workflow_run,
+    fetch_workflow_runs,
+    fetch_workflows,
+    retry_workflow_step,
+    run_workflow_to_completion,
+)
+from .workflow_formatters import (
+    format_artifacts,
+    format_step_timeline,
+    format_workflow_choices,
+    format_workflow_run_choices,
+    format_workflow_run_table,
+    format_workflow_spec,
+)
 
 TRACE_DISPLAY_TIMEZONE_LABEL = "GMT+8"
 
@@ -367,6 +385,13 @@ def server(input, output, session):
     history_refresh_trigger = reactive.Value(0)
     history_selected_convo_id = reactive.Value("")
     trace_snapshot = reactive.Value(None)
+    workflow_specs = reactive.Value([])
+    workflow_spec = reactive.Value(None)
+    workflow_runs = reactive.Value([])
+    selected_workflow_id = reactive.Value("")
+    selected_workflow_run_id = reactive.Value("")
+    workflow_run_snapshot = reactive.Value(None)
+    workflow_status_message = reactive.Value("")
 
     def current_active_convo_id() -> str:
         return str(input.convoID() or "").strip()
@@ -487,6 +512,16 @@ def server(input, output, session):
             selected=selected,
             session=session,
         )
+        workflow_choices = {"smart": "smart", **choices}
+        workflow_selected = (
+            selected if selected in workflow_choices else next(iter(workflow_choices), "smart")
+        )
+        ui.update_select(
+            "workflowEndpoint",
+            choices=workflow_choices,
+            selected=workflow_selected,
+            session=session,
+        )
 
     async def update_rag_endpoints(current_selection: Optional[str] = None) -> None:
         rag_choices, default_selection = await fetch_available_rag_endpoints()
@@ -531,6 +566,50 @@ def server(input, output, session):
             session=session,
         )
 
+    async def update_workflow_selector() -> None:
+        with reactive.isolate():
+            current_selection = str(selected_workflow_id.get() or "").strip()
+        workflows = await fetch_workflows()
+        workflow_specs.set(workflows)
+        choices = format_workflow_choices(workflows)
+        selected = current_selection if current_selection in choices else None
+        if selected is None and choices:
+            selected = next(iter(choices))
+        ui.update_select(
+            "workflowSelector",
+            choices=choices,
+            selected=selected,
+            session=session,
+        )
+        if selected:
+            selected_workflow_id.set(selected)
+            try:
+                workflow_spec.set(await fetch_workflow(selected))
+            except Exception as exc:
+                workflow_status_message.set(f"Failed to load workflow: {exc}")
+
+    async def update_workflow_run_selector() -> None:
+        with reactive.isolate():
+            current_selection = str(selected_workflow_run_id.get() or "").strip()
+        runs = await fetch_workflow_runs()
+        workflow_runs.set(runs)
+        choices = format_workflow_run_choices(runs)
+        selected = current_selection if current_selection in choices else None
+        if selected is None and choices:
+            selected = next(iter(choices))
+        ui.update_select(
+            "workflowRunSelector",
+            choices=choices,
+            selected=selected,
+            session=session,
+        )
+        if selected:
+            selected_workflow_run_id.set(selected)
+            try:
+                workflow_run_snapshot.set(await fetch_workflow_run(selected))
+            except Exception as exc:
+                workflow_status_message.set(f"Failed to load workflow run: {exc}")
+
     shinyswatch.theme_picker_server()
 
     @reactive.Effect
@@ -539,6 +618,8 @@ def server(input, output, session):
         await update_rag_endpoints()
         await update_search_providers()
         await update_history_selector()
+        await update_workflow_selector()
+        await update_workflow_run_selector()
 
     @reactive.Effect
     def _initialize_convo_id():
@@ -554,6 +635,134 @@ def server(input, output, session):
     async def _refresh_rag_endpoints():
         await update_rag_endpoints(str(input.ragEndpoint() or ""))
         await update_search_providers(str(input.searchProvider() or ""))
+
+    @reactive.Effect
+    @reactive.event(input.refreshWorkflows)
+    async def _refresh_workflows():
+        await update_workflow_selector()
+
+    @reactive.Effect
+    @reactive.event(input.refreshWorkflowRuns)
+    async def _refresh_workflow_runs():
+        await update_workflow_run_selector()
+
+    @reactive.Effect
+    @reactive.event(input.workflowSelector)
+    async def _sync_selected_workflow():
+        workflow_id = str(input.workflowSelector() or "").strip()
+        selected_workflow_id.set(workflow_id)
+        if not workflow_id:
+            workflow_spec.set(None)
+            return
+        try:
+            workflow_spec.set(await fetch_workflow(workflow_id))
+            workflow_status_message.set("")
+        except Exception as exc:
+            workflow_status_message.set(f"Failed to load workflow: {exc}")
+
+    @reactive.Effect
+    @reactive.event(input.workflowRunSelector)
+    async def _sync_selected_workflow_run():
+        run_id = str(input.workflowRunSelector() or "").strip()
+        selected_workflow_run_id.set(run_id)
+        if not run_id:
+            workflow_run_snapshot.set(None)
+            return
+        try:
+            workflow_run_snapshot.set(await fetch_workflow_run(run_id))
+            workflow_status_message.set("")
+        except Exception as exc:
+            workflow_status_message.set(f"Failed to load workflow run: {exc}")
+
+    def workflow_endpoint_key() -> str:
+        raw = str(input.workflowEndpoint() or "smart").strip() or "smart"
+        if raw == "smart":
+            return "smart"
+        return endpoint_display_mapping.get().get(raw, raw)
+
+    def workflow_params_payload() -> dict[str, Any]:
+        raw = str(input.workflowParams() or "").strip()
+        if not raw:
+            return {}
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("workflow params must be a JSON object")
+        return data
+
+    async def refresh_selected_workflow_run(run_id: str) -> None:
+        workflow_run_snapshot.set(await fetch_workflow_run(run_id))
+        selected_workflow_run_id.set(run_id)
+        await update_workflow_run_selector()
+
+    @reactive.Effect
+    @reactive.event(input.createWorkflowRun)
+    async def _create_workflow_run():
+        workflow_id = str(selected_workflow_id.get() or input.workflowSelector() or "").strip()
+        if not workflow_id:
+            workflow_status_message.set("Select a workflow first.")
+            return
+        try:
+            payload = {
+                "params": workflow_params_payload(),
+                "endpoint": workflow_endpoint_key(),
+            }
+            reasoning = str(input.workflowReasoning() or "").strip()
+            if reasoning:
+                payload["reasoning_effort"] = reasoning
+            convo_id = str(input.workflowConvoID() or "").strip()
+            if convo_id:
+                payload["convo_id"] = convo_id
+            created = await create_workflow_run(workflow_id, payload)
+            run_id = str(created.get("run_id") or "").strip()
+            if not run_id:
+                raise ValueError("workflow API did not return run_id")
+            workflow_status_message.set(f"Created run {run_id}.")
+            await refresh_selected_workflow_run(run_id)
+        except Exception as exc:
+            workflow_status_message.set(f"Create run failed: {exc}")
+
+    @reactive.Effect
+    @reactive.event(input.advanceWorkflowRun)
+    async def _advance_workflow_run():
+        run_id = str(selected_workflow_run_id.get() or input.workflowRunSelector() or "").strip()
+        if not run_id:
+            workflow_status_message.set("Select a run first.")
+            return
+        try:
+            workflow_run_snapshot.set(await advance_workflow_run(run_id))
+            workflow_status_message.set(f"Advanced run {run_id}.")
+            await update_workflow_run_selector()
+        except Exception as exc:
+            workflow_status_message.set(f"Advance failed: {exc}")
+
+    @reactive.Effect
+    @reactive.event(input.runWorkflowToCompletion)
+    async def _run_workflow_to_completion():
+        run_id = str(selected_workflow_run_id.get() or input.workflowRunSelector() or "").strip()
+        if not run_id:
+            workflow_status_message.set("Select a run first.")
+            return
+        try:
+            workflow_run_snapshot.set(await run_workflow_to_completion(run_id))
+            workflow_status_message.set(f"Ran {run_id} to terminal state.")
+            await update_workflow_run_selector()
+        except Exception as exc:
+            workflow_status_message.set(f"Run failed: {exc}")
+
+    @reactive.Effect
+    @reactive.event(input.retryWorkflowStep)
+    async def _retry_workflow_step():
+        run_id = str(selected_workflow_run_id.get() or input.workflowRunSelector() or "").strip()
+        step_id = str(input.workflowRetryStepID() or "").strip()
+        if not run_id or not step_id:
+            workflow_status_message.set("Select a run and enter a failed step id.")
+            return
+        try:
+            workflow_run_snapshot.set(await retry_workflow_step(run_id, step_id))
+            workflow_status_message.set(f"Retried step {step_id}.")
+            await update_workflow_run_selector()
+        except Exception as exc:
+            workflow_status_message.set(f"Retry failed: {exc}")
 
     @reactive.Effect
     @reactive.event(input.endpoint)
@@ -691,6 +900,26 @@ def server(input, output, session):
     @reactive.event(input.info_accordion)
     def _track_accordion_state():
         info_accordion_open.set("info_panel" in (input.info_accordion() or []))
+
+    @render.ui
+    def workflowSpecDetails():
+        status = workflow_status_message.get()
+        details = [format_workflow_spec(workflow_spec.get())]
+        if status:
+            details.insert(0, ui.card(ui.markdown(f"**Workflow status**\n\n{status}")))
+        return ui.div(*details)
+
+    @render.ui
+    def workflowRunsBox():
+        return format_workflow_run_table(workflow_runs.get())
+
+    @render.ui
+    def workflowRunDetails():
+        snapshot = workflow_run_snapshot.get()
+        return ui.div(
+            format_step_timeline(snapshot),
+            format_artifacts(snapshot),
+        )
 
     @render.ui
     def outputRunInfo():

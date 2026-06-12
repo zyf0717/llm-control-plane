@@ -1,0 +1,56 @@
+id: repo_review
+name: Repository Review
+version: 0.1.0
+description: Review a repository area and produce next implementation steps.
+
+params_schema:
+  type: object
+  required: [repository, question]
+  properties:
+    repository:
+      type: string
+    question:
+      type: string
+    relevant_paths:
+      type: array
+      items:
+        type: string
+
+defaults:
+  endpoint: smart
+  reasoning_effort: high
+  stream: false
+
+steps:
+  - id: inspect_context
+    name: Inspect context
+    kind: llm
+    prompt: |
+      Repository: {{ params.repository }}
+      Question: {{ params.question }}
+      Relevant paths: {{ params.relevant_paths }}
+
+      Summarize the current architecture from the provided context.
+    output_key: current_state
+
+  - id: identify_gap
+    name: Identify gap
+    kind: llm
+    depends_on: [inspect_context]
+    prompt: |
+      Current state:
+      {{ outputs.current_state.text }}
+
+      Identify the implementation gap and the next architectural move.
+    output_key: gap_analysis
+
+  - id: produce_plan
+    name: Produce plan
+    kind: llm
+    depends_on: [identify_gap]
+    prompt: |
+      Gap analysis:
+      {{ outputs.gap_analysis.text }}
+
+      Produce a concrete implementation plan.
+    output_key: plan

@@ -181,6 +181,95 @@ app_ui = ui.page_fluid(
             ui.div("Multi-node UI coming soon!"),
         ),
         ui.nav_panel(
+            "Workflows",
+            ui.layout_columns(
+                ui.div(
+                    input_action_row(
+                        ui.input_select(
+                            "workflowSelector",
+                            "Workflow",
+                            choices={},
+                            width="100%",
+                        ),
+                        "refreshWorkflows",
+                        "Refresh",
+                        col_widths=[8, 4],
+                    ),
+                    ui.output_ui("workflowSpecDetails"),
+                    ui.input_text_area(
+                        "workflowParams",
+                        "Params JSON",
+                        value='{\n  "goal": ""\n}',
+                        rows=8,
+                        width="100%",
+                    ),
+                    ui.layout_columns(
+                        ui.input_select(
+                            "workflowEndpoint",
+                            "Endpoint",
+                            choices={"smart": "smart"},
+                            selected="smart",
+                            width="100%",
+                        ),
+                        ui.input_select(
+                            "workflowReasoning",
+                            "Reasoning",
+                            choices={
+                                "": "Default",
+                                "low": "Low",
+                                "medium": "Medium",
+                                "high": "High",
+                            },
+                            selected="",
+                            width="100%",
+                        ),
+                        col_widths=[7, 5],
+                    ),
+                    ui.input_text(
+                        "workflowConvoID",
+                        "Conversation ID",
+                        placeholder="Optional",
+                        width="100%",
+                    ),
+                    ui.layout_columns(
+                        ui.input_action_button("createWorkflowRun", "Create run"),
+                        ui.input_action_button("advanceWorkflowRun", "Run next step"),
+                        ui.input_action_button("runWorkflowToCompletion", "Run to completion"),
+                        col_widths=[4, 4, 4],
+                    ),
+                    ui.layout_columns(
+                        ui.input_text(
+                            "workflowRetryStepID",
+                            "Retry step",
+                            placeholder="failed step id",
+                            width="100%",
+                        ),
+                        ui.div(
+                            ui.input_action_button("retryWorkflowStep", "Retry"),
+                            style="display: flex; align-items: flex-end; height: 100%;",
+                        ),
+                        col_widths=[8, 4],
+                    ),
+                ),
+                ui.div(
+                    input_action_row(
+                        ui.input_select(
+                            "workflowRunSelector",
+                            "Run",
+                            choices={},
+                            width="100%",
+                        ),
+                        "refreshWorkflowRuns",
+                        "Refresh",
+                        col_widths=[8, 4],
+                    ),
+                    ui.output_ui("workflowRunsBox"),
+                    ui.output_ui("workflowRunDetails"),
+                ),
+                col_widths=[4, 8],
+            ),
+        ),
+        ui.nav_panel(
             "History",
             input_action_row(
                 ui.input_select(

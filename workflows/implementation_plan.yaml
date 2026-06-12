@@ -1,0 +1,54 @@
+id: implementation_plan
+name: Implementation Plan
+version: 0.1.0
+description: Produce a staged implementation plan from a goal and optional context.
+
+params_schema:
+  type: object
+  required: [goal]
+  properties:
+    goal:
+      type: string
+    context:
+      type: string
+
+defaults:
+  endpoint: smart
+  reasoning_effort: high
+  stream: false
+
+steps:
+  - id: clarify_target
+    name: Clarify target
+    kind: llm
+    prompt: |
+      Goal:
+      {{ params.goal }}
+
+      Context:
+      {{ params.context }}
+
+      Identify the intended target state, non-goals, and constraints.
+    output_key: target_assessment
+
+  - id: architecture_plan
+    name: Architecture plan
+    kind: llm
+    depends_on: [clarify_target]
+    prompt: |
+      Based on this target assessment:
+      {{ outputs.target_assessment.text }}
+
+      Produce the implementation architecture and module boundaries.
+    output_key: architecture_plan
+
+  - id: commit_plan
+    name: Commit plan
+    kind: llm
+    depends_on: [architecture_plan]
+    prompt: |
+      Based on this architecture plan:
+      {{ outputs.architecture_plan.text }}
+
+      Produce a sequenced commit plan with tests and acceptance criteria.
+    output_key: commit_plan
