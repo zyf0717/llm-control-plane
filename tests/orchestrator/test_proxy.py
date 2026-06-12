@@ -10,9 +10,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.logging_config import LOG_DIR_ENV
-from src.orchestrator import proxy as proxy_module
+from src.orchestrator import proxy_services as proxy_module
 from src.orchestrator.history_store import MemoryHistoryStore
-from src.orchestrator.proxy import ProxyHandler, RequestProcessor, app
+from src.orchestrator.proxy import app
+from src.orchestrator.request_processor import RequestProcessor
+from src.orchestrator.upstream_proxy import ProxyHandler
 from src.orchestrator.utils import HeaderManager
 from src.search.safety import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER
 
@@ -104,7 +106,7 @@ class TestEndpointRouting:
         # Mock the endpoints configuration
         mock_endpoints = [{"name": "test-endpoint", "url": "https://test.example.com"}]
 
-        with patch("src.orchestrator.proxy.endpoints", mock_endpoints):
+        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints):
             # Should route to v1/chat/completions
             result = RequestProcessor.get_endpoint_url("/test-endpoint")
             assert result == "https://test.example.com/v1/chat/completions"
@@ -114,7 +116,7 @@ class TestEndpointRouting:
         # Mock the endpoints configuration
         mock_endpoints = [{"name": "test-endpoint", "url": "https://test.example.com"}]
 
-        with patch("src.orchestrator.proxy.endpoints", mock_endpoints):
+        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints):
             # Should route to v1/chat/completions
             result = RequestProcessor.get_endpoint_url("/test-endpoint")
             assert result == "https://test.example.com/v1/chat/completions"
@@ -122,7 +124,7 @@ class TestEndpointRouting:
     def test_get_target_endpoint_unknown(self):
         """Test endpoint routing for unknown endpoints."""
         # Mock empty endpoints configuration
-        with patch("src.orchestrator.proxy.endpoints", []):
+        with patch("src.orchestrator.proxy_services.endpoints", []):
             result = RequestProcessor.get_endpoint_url("/unknown-endpoint")
             assert result is None
 
@@ -131,7 +133,7 @@ class TestEndpointRouting:
         # Mock the endpoints configuration
         mock_endpoints = [{"name": "test-endpoint", "url": "https://test.example.com"}]
 
-        with patch("src.orchestrator.proxy.endpoints", mock_endpoints):
+        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints):
             # Should extract the first part of the path
             result = RequestProcessor.get_endpoint_url("/test-endpoint/some/subpath")
             assert result == "https://test.example.com/v1/chat/completions"
@@ -143,7 +145,7 @@ class TestEndpointRouting:
         mock_endpoints = [{"name": "test-endpoint", "url": "https://test.example.com"}]
         payload = {"choices": [{"message": {"content": "Hello"}}]}
 
-        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = AsyncMock()
@@ -177,7 +179,7 @@ class TestEndpointRouting:
         monkeypatch.setenv(LOG_DIR_ENV, str(tmp_path))
         mock_endpoints = [{"name": "test-endpoint", "url": "https://test.example.com"}]
 
-        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = Mock()
@@ -216,7 +218,7 @@ class TestEndpointRouting:
         monkeypatch.setenv(LOG_DIR_ENV, str(tmp_path))
         mock_endpoints = [{"name": "test-endpoint", "url": "https://test.example.com"}]
 
-        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = Mock()
@@ -997,7 +999,7 @@ class TestCanonicalConversationState:
             {"name": "primary", "url": "https://primary.example.com"},
             {"name": "secondary", "url": "https://secondary.example.com"},
         ]
-        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = AsyncMock()
@@ -1027,7 +1029,7 @@ class TestCanonicalConversationState:
             {"name": "primary", "url": "https://primary.example.com"},
             {"name": "secondary", "url": "https://secondary.example.com"},
         ]
-        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = AsyncMock()
@@ -1079,7 +1081,7 @@ class TestCanonicalConversationState:
 
     def test_reasoning_conflict_without_opt_in_returns_409(self, client):
         mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
-        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = AsyncMock()
@@ -1112,7 +1114,7 @@ class TestCanonicalConversationState:
         self, client, memory_history_store
     ):
         mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
-        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = AsyncMock()
@@ -1157,7 +1159,7 @@ class TestCanonicalConversationState:
 
     def test_pinned_reasoning_is_reused_when_later_turn_omits_header(self, client):
         mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
-        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = AsyncMock()
@@ -1192,7 +1194,7 @@ class TestCanonicalConversationState:
 
     def test_no_convo_id_keeps_stateless_behavior(self, client):
         mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
-        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = AsyncMock()
@@ -1223,7 +1225,7 @@ class TestCanonicalConversationState:
         slots_response.raise_for_status = Mock()
         slots_response.json.return_value = [{"id": 2, "is_processing": False}]
 
-        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = AsyncMock()
@@ -1257,7 +1259,7 @@ class TestCanonicalConversationState:
         slots_response = Mock()
         slots_response.raise_for_status.side_effect = Exception("not found")
 
-        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = AsyncMock()
@@ -1325,7 +1327,7 @@ class TestModelsEndpoint:
         }
 
         with (
-            patch("src.orchestrator.proxy.endpoints", mock_endpoints),
+            patch("src.orchestrator.proxy_services.endpoints", mock_endpoints),
             patch("httpx.AsyncClient") as mock_client_class,
         ):
 
@@ -1394,7 +1396,7 @@ class TestModelsEndpoint:
         ]
 
         with (
-            patch("src.orchestrator.proxy.endpoints", mock_endpoints),
+            patch("src.orchestrator.proxy_services.endpoints", mock_endpoints),
             patch("httpx.AsyncClient") as mock_client_class,
         ):
             mock_client = AsyncMock()
@@ -1443,7 +1445,7 @@ class TestModelsEndpoint:
         }
 
         with (
-            patch("src.orchestrator.proxy.endpoints", mock_endpoints),
+            patch("src.orchestrator.proxy_services.endpoints", mock_endpoints),
             patch("httpx.AsyncClient") as mock_client_class,
         ):
 
@@ -1479,7 +1481,7 @@ class TestModelsEndpoint:
     def test_list_models_empty_config(self):
         """Test models endpoint with empty configuration."""
         test_client = TestClient(app)
-        with patch("src.orchestrator.proxy.endpoints", []):
+        with patch("src.orchestrator.proxy_services.endpoints", []):
             response = test_client.get("/models")
 
             assert response.status_code == 200

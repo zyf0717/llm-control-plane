@@ -32,6 +32,7 @@ HISTORY_DB_PATH=var/history.sqlite3
 - `API_KEY_ID` and `API_KEY_SECRET` are attached to upstream requests.
 - `PROXY_BASE_URL` is used by the dashboard to call the proxy.
 - `HISTORY_DB_PATH` optionally overrides the default local SQLite history database path (`var/history.sqlite3`).
+  Leave it unset or blank to use the default path.
 
 ## Run
 

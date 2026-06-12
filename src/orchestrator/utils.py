@@ -43,11 +43,9 @@ class SSEAccumulator:
 def extract_assistant_text(resp_json: Dict) -> Optional[str]:
     """Extract assistant text from response JSON (OpenAI-style)."""
     ch0 = (resp_json.get("choices") or [None])[0] or {}
-    # New-style
     if isinstance(ch0.get("message"), dict):
         return ch0["message"].get("content")
-    # v0/legacy fallback
-    return ch0.get("text")
+    return None
 
 
 def create_error_sse_message(error_type: str, **kwargs) -> bytes:

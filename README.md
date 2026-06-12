@@ -30,8 +30,8 @@ python llm_control_plane.py
 
 | Path | Purpose |
 |---|---|
-| `src/orchestrator/` | FastAPI proxy, smart router, request/response shaping |
-| `src/dashboard/` | Shiny dashboard UI and server logic |
+| `src/orchestrator/` | FastAPI app composition, request processing, upstream proxying, smart routing, workflow APIs |
+| `src/dashboard/` | Shiny UI plus extracted search/workflow/trace server helpers |
 | `src/search/` | Provider routing plus optional ad hoc query refinement |
 | `workflow_configs/` | Context-driven workflow definitions |
 | `config.yaml` | Local endpoint, routing, RAG, and search configuration |

@@ -29,11 +29,12 @@ class TestHistoryStoreConfiguration:
         assert isinstance(store, SQLiteHistoryStore)
         assert store.db_path == db_path
 
-    def test_build_history_store_uses_memory_when_disabled(self):
+    def test_build_history_store_uses_default_sqlite_path_when_env_is_blank(self):
         with patch.dict(os.environ, {"HISTORY_DB_PATH": ""}, clear=True):
             store = build_history_store_from_env()
 
-        assert isinstance(store, MemoryHistoryStore)
+        assert isinstance(store, SQLiteHistoryStore)
+        assert store.db_path == DEFAULT_HISTORY_DB_PATH
 
 
 class TestSQLiteHistoryStore:

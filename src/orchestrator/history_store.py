@@ -504,9 +504,5 @@ class SQLiteHistoryStore(HistoryStore):
 
 def build_history_store_from_env() -> HistoryStore:
     raw_db_path = os.getenv("HISTORY_DB_PATH")
-    if raw_db_path is not None and not raw_db_path.strip():
-        logger.info("HISTORY_DB_PATH is blank; using in-memory history store")
-        return MemoryHistoryStore()
-
-    db_path = Path(raw_db_path) if raw_db_path else DEFAULT_HISTORY_DB_PATH
+    db_path = Path(raw_db_path.strip()) if raw_db_path and raw_db_path.strip() else DEFAULT_HISTORY_DB_PATH
     return SQLiteHistoryStore(db_path)

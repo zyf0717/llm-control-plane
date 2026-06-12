@@ -19,11 +19,10 @@ def build_search_router(
     search_config: dict[str, Any] | None = None,
     *,
     query_refiner_headers: dict[str, str] | None = None,
-    planner_headers: dict[str, str] | None = None,
 ) -> SearchRouter:
     """Build a config-driven search router with explicit provider allowlist."""
     search_config = search_config or {}
-    query_refiner_headers = query_refiner_headers or planner_headers or {}
+    query_refiner_headers = query_refiner_headers or {}
     provider_settings = search_config.get("providers", {})
     providers = {
         "duckduckgo_html": DuckDuckGoHtmlProvider(),
@@ -58,61 +57,22 @@ def build_search_router(
         max_body_bytes=int(search_config.get("max_body_bytes", 2_500_000)),
         max_retries=int(search_config.get("max_retries", 1)),
     )
-    query_refiner_endpoint = _search_config_value(
-        search_config,
-        "query_refiner_model_endpoint",
-        "model_endpoint",
-    )
+    query_refiner_endpoint = search_config.get("query_refiner_model_endpoint")
     query_refiner_config = SearchQueryRefinerConfig(
         enabled=bool(
-            _search_config_value(
-                search_config,
-                "query_refiner_enabled",
-                "planner_enabled",
-                bool(query_refiner_endpoint),
-            )
+            search_config.get("query_refiner_enabled", bool(query_refiner_endpoint))
         ),
         model_endpoint=query_refiner_endpoint,
-        model=str(
-            _search_config_value(
-                search_config,
-                "query_refiner_model",
-                "model",
-                "search-query-refiner",
-            )
-        ),
+        model=str(search_config.get("query_refiner_model", "search-query-refiner")),
         timeout_ms=int(
-            _search_config_value(
-                search_config,
+            search_config.get(
                 "query_refiner_timeout_ms",
-                "planner_timeout_ms",
                 search_config.get("timeout_ms", 7000),
             )
         ),
-        max_context_chars=int(
-            _search_config_value(
-                search_config,
-                "query_refiner_max_context_chars",
-                "planner_max_context_chars",
-                12000,
-            )
-        ),
-        max_output_tokens=int(
-            _search_config_value(
-                search_config,
-                "query_refiner_max_output_tokens",
-                "planner_max_output_tokens",
-                512,
-            )
-        ),
-        max_queries=int(
-            _search_config_value(
-                search_config,
-                "query_refiner_max_queries",
-                "planner_max_queries",
-                1,
-            )
-        ),
+        max_context_chars=int(search_config.get("query_refiner_max_context_chars", 12000)),
+        max_output_tokens=int(search_config.get("query_refiner_max_output_tokens", 512)),
+        max_queries=int(search_config.get("query_refiner_max_queries", 1)),
         headers=dict(query_refiner_headers),
     )
     query_refiner = (
@@ -127,18 +87,6 @@ def build_search_router(
         provider_configs=provider_configs,
         query_refiner=query_refiner,
     )
-
-
-def _search_config_value(
-    search_config: dict[str, Any],
-    new_key: str,
-    old_key: str,
-    default: Any = None,
-) -> Any:
-    if new_key in search_config:
-        return search_config[new_key]
-    return search_config.get(old_key, default)
-
 
 def _build_provider_config(
     provider_id: str, provider_settings: dict[str, Any]

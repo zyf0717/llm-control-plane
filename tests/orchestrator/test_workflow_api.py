@@ -2,7 +2,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from src.orchestrator import proxy as proxy_module
+from src.orchestrator import proxy_services as proxy_module
 from src.orchestrator.proxy import app
 from src.orchestrator.workflow.executor import WorkflowExecutor
 from src.orchestrator.workflow.registry import WorkflowRegistry

@@ -1,14 +1,12 @@
 import json
 import os
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, Optional
+from datetime import datetime
+from typing import Any, Dict, Optional
 
 import shinyswatch
 from dotenv import load_dotenv
 from shiny import reactive, render, ui
-
-from src.search.safety import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER
 
 load_dotenv()
 
@@ -29,8 +27,16 @@ from .prompt_state import (
     first_turn_system_prompt_to_send,
     normalize_system_prompt,
 )
+from .search_flow import (
+    build_query_refiner_context,
+    build_search_failure_state,
+    build_search_preface,
+    build_search_success_state,
+    build_search_turn_messages,
+    merge_run_info,
+)
+from .trace_formatters import format_trace_summary
 from .utils import (
-    HISTORY_DISPLAY_TIMEZONE,
     create_history_select_choices,
     create_endpoint_display_choices,
     fetch_conversation_summaries,
@@ -40,9 +46,16 @@ from .utils import (
     fetch_convo_history,
     fetch_convo_state,
     fetch_search_results,
-    format_search_provider_label,
     find_model_by_endpoint,
     read_trace_events,
+)
+from .workflow_server_helpers import (
+    WORKFLOW_RUN_MAX_STEPS,
+    advance_workflow_to_terminal,
+    build_uploaded_file_context,
+    build_workflow_params_template,
+    merge_uploaded_context,
+    workflow_snapshot_status,
 )
 from .workflow_client import (
     advance_workflow_run,
@@ -60,313 +73,6 @@ from .workflow_formatters import (
     format_workflow_run_choices,
     format_workflow_spec,
 )
-
-TRACE_DISPLAY_TIMEZONE_LABEL = "GMT+8"
-TERMINAL_WORKFLOW_STATUSES = {"completed", "failed", "cancelled"}
-WORKFLOW_RUN_MAX_STEPS = 100
-
-
-def build_search_success_state(search_response: Dict[str, Any]) -> Dict[str, Any]:
-    """Normalize a successful proxy search response for UI and request shaping."""
-    provider_id = str(search_response.get("provider") or "").strip()
-    warnings = [
-        str(warning).strip()
-        for warning in search_response.get("warnings", [])
-        if str(warning).strip()
-    ]
-    results = search_response.get("results", [])
-    if not isinstance(results, list):
-        results = []
-
-    query_refinement = search_response.get("query_refinement")
-    if not isinstance(query_refinement, dict):
-        query_refinement = search_response.get("planner")
-    if not isinstance(query_refinement, dict):
-        query_refinement = {}
-
-    return {
-        "provider": provider_id,
-        "provider_label": format_search_provider_label(provider_id),
-        "query": str(search_response.get("query") or "").strip(),
-        "query_refinement": query_refinement,
-        "degraded": bool(search_response.get("degraded", False)),
-        "warnings": warnings,
-        "results": results,
-        "result_count": len(results),
-        "wrapped_results": (
-            search_response.get("wrapped_results")
-            if isinstance(search_response.get("wrapped_results"), str)
-            else None
-        ),
-        "show_preface": True,
-    }
-
-
-def build_query_refiner_context(
-    *,
-    system_prompt: Optional[str],
-    history: Any,
-    user_input: str,
-) -> str:
-    """Build compact source context for search query refinement."""
-    sections = []
-    prompt = normalize_system_prompt(system_prompt)
-    if prompt:
-        sections.append(f"System prompt:\n{prompt}")
-
-    history_lines = []
-    if isinstance(history, list):
-        for message in history:
-            if not isinstance(message, dict):
-                continue
-            role = str(message.get("role") or "").strip()
-            content = str(message.get("content") or "").strip()
-            if role and content:
-                history_lines.append(f"{role}: {content}")
-    if history_lines:
-        sections.append("Conversation history:\n" + "\n".join(history_lines))
-
-    request = str(user_input or "").strip()
-    if request:
-        sections.append(f"Current user request:\n{request}")
-
-    return "\n\n".join(sections)
-
-
-def build_search_failure_state(provider_id: str, error: Any) -> Dict[str, Any]:
-    """Build a non-blocking search failure state for metadata only."""
-    return {
-        "provider": str(provider_id or "").strip(),
-        "provider_label": format_search_provider_label(provider_id),
-        "degraded": True,
-        "warnings": [f"search request failed: {str(error)}"],
-        "results": [],
-        "result_count": 0,
-        "wrapped_results": None,
-        "show_preface": False,
-    }
-
-
-def _format_search_context(search_state: Dict[str, Any]) -> Optional[str]:
-    """Render turn-local search context for model consumption, not history."""
-    results = search_state.get("results")
-    if not isinstance(results, list) or not results:
-        return None
-
-    wrapped_results = search_state.get("wrapped_results")
-    if not isinstance(wrapped_results, str) or not wrapped_results.strip():
-        return None
-
-    return "\n".join([EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER, wrapped_results.strip()])
-
-
-def build_search_turn_messages(
-    search_state: Optional[Dict[str, Any]],
-) -> list[Dict[str, str]]:
-    """Convert successful search state into turn-local injected messages."""
-    if not isinstance(search_state, dict):
-        return []
-
-    content = _format_search_context(search_state)
-    if not content:
-        return []
-
-    return [{"role": "user", "content": content}]
-
-
-def _query_refinement_queries(
-    query_refinement: Dict[str, Any], fallback_query: str
-) -> list[str]:
-    raw_queries = query_refinement.get("queries")
-    queries = raw_queries if isinstance(raw_queries, list) else []
-    cleaned = []
-    seen = set()
-    for item in [*queries, fallback_query]:
-        query = " ".join(str(item or "").split())
-        key = query.lower()
-        if not query or key in seen:
-            continue
-        seen.add(key)
-        cleaned.append(query)
-    return cleaned
-
-
-def build_search_preface(search_state: Optional[Dict[str, Any]]) -> Optional[str]:
-    """Render a markdown transcript preface for successful search calls."""
-    if not isinstance(search_state, dict) or not search_state.get("show_preface"):
-        return None
-
-    provider_label = str(search_state.get("provider_label") or "Search").strip()
-    query_refinement = (
-        search_state.get("query_refinement")
-        if isinstance(search_state.get("query_refinement"), dict)
-        else {}
-    )
-    query = " ".join(str(search_state.get("query") or "").split())
-    refined_queries = _query_refinement_queries(query_refinement, query)
-    results = search_state.get("results")
-    warnings = search_state.get("warnings") or []
-    degraded = bool(search_state.get("degraded", False))
-    heading = f"**Search candidates** via {provider_label}"
-    if query_refinement.get("used") is True and refined_queries:
-        quoted_queries = "; ".join(f'"{item}"' for item in refined_queries)
-        heading = f"{heading} for {quoted_queries}"
-    lines = [heading]
-
-    if degraded:
-        lines.append("_Search returned degraded results._")
-
-    if isinstance(results, list) and results:
-        for index, result in enumerate(results, start=1):
-            if not isinstance(result, dict):
-                continue
-            title = str(result.get("title") or result.get("url") or f"Result {index}")
-            url = str(result.get("url") or "").strip()
-            snippet = str(result.get("snippet") or "").strip()
-            line = f"{index}. [{title}]({url})" if url else f"{index}. {title}"
-            if snippet:
-                line = f"{line} - {snippet}"
-            lines.append(line)
-    else:
-        lines.append("No candidates found.")
-
-    if warnings:
-        lines.append(f"Warnings: {'; '.join(str(warning) for warning in warnings)}")
-
-    return "\n".join(lines)
-
-
-def merge_run_info(
-    metadata: Optional[Dict[str, Any]], search_state: Optional[Dict[str, Any]]
-) -> Optional[Dict[str, Any]]:
-    """Merge search metadata into the runtime panel payload."""
-    merged = dict(metadata or {})
-
-    if isinstance(search_state, dict):
-        merged["search"] = {
-            "provider": search_state.get("provider_label")
-            or search_state.get("provider")
-            or "Unknown",
-            "provider_id": search_state.get("provider") or "",
-            "result_count": search_state.get("result_count", 0),
-            "degraded": bool(search_state.get("degraded", False)),
-            "warnings": list(search_state.get("warnings") or []),
-        }
-        query_refinement = search_state.get("query_refinement")
-        query = str(search_state.get("query") or "").strip()
-        if (
-            isinstance(query_refinement, dict)
-            and query_refinement.get("used") is True
-            and query
-        ):
-            merged["search"]["query"] = query
-            queries = _query_refinement_queries(query_refinement, query)
-            if len(queries) > 1:
-                merged["search"]["queries"] = queries
-
-    return merged or None
-
-
-def workflow_snapshot_status(snapshot: dict[str, Any] | None) -> str:
-    run = snapshot.get("run") if isinstance(snapshot, dict) else {}
-    if not isinstance(run, dict):
-        return ""
-    return str(run.get("status") or "").strip()
-
-
-def workflow_snapshot_has_running_step(snapshot: dict[str, Any] | None) -> bool:
-    steps = snapshot.get("steps") if isinstance(snapshot, dict) else []
-    if not isinstance(steps, list):
-        return False
-    return any(
-        isinstance(step, dict) and step.get("status") == "running" for step in steps
-    )
-
-
-def build_workflow_params_template(spec: dict[str, Any] | None) -> str:
-    if not isinstance(spec, dict):
-        return "{}"
-    schema = spec.get("params_schema")
-    if not isinstance(schema, dict):
-        return "{}"
-    properties = schema.get("properties")
-    if not isinstance(properties, dict):
-        properties = {}
-    required = schema.get("required")
-    required_names = [str(item) for item in required] if isinstance(required, list) else []
-
-    keys: list[str] = []
-    for key in [*required_names, *properties.keys()]:
-        text = str(key or "").strip()
-        if text and text not in keys:
-            keys.append(text)
-
-    return json.dumps({key: "" for key in keys}, indent=2)
-
-
-async def advance_workflow_to_terminal(
-    run_id: str,
-    advance: Callable[[str], Awaitable[dict[str, Any]]],
-    *,
-    after_step: Callable[[dict[str, Any], int], Awaitable[None]] | None = None,
-    max_steps: int = WORKFLOW_RUN_MAX_STEPS,
-) -> dict[str, Any]:
-    budget = max(1, int(max_steps))
-    snapshot: dict[str, Any] = {}
-    for step_number in range(1, budget + 1):
-        snapshot = await advance(run_id)
-        if after_step is not None:
-            await after_step(snapshot, step_number)
-        if (
-            workflow_snapshot_status(snapshot) in TERMINAL_WORKFLOW_STATUSES
-            or workflow_snapshot_has_running_step(snapshot)
-        ):
-            return snapshot
-    return snapshot
-
-
-def build_uploaded_file_context(uploaded_files: Any) -> str:
-    if not uploaded_files:
-        return ""
-
-    file_contents = []
-    for file_info in uploaded_files:
-        try:
-            datapath = file_info.get("datapath") if isinstance(file_info, dict) else None
-            if not datapath or not os.path.exists(datapath):
-                continue
-            with open(datapath, "r", encoding="utf-8") as handle:
-                content = handle.read()
-            filename = (
-                file_info.get("name", "uploaded")
-                if isinstance(file_info, dict)
-                else "uploaded"
-            )
-            file_contents.append(f"--- File: {filename} ---\n{content}")
-        except Exception as exc:
-            filename = (
-                file_info.get("name", "unknown")
-                if isinstance(file_info, dict)
-                else "unknown"
-            )
-            file_contents.append(f"--- Error reading {filename}: {str(exc)} ---")
-    return "\n\n".join(file_contents)
-
-
-def merge_uploaded_context(
-    params: dict[str, Any], uploaded_context: str
-) -> dict[str, Any]:
-    uploaded_context = str(uploaded_context or "").strip()
-    if not uploaded_context:
-        return params
-
-    merged = dict(params)
-    existing = str(merged.get("uploaded_context") or "").strip()
-    merged["uploaded_context"] = (
-        f"{existing}\n\n{uploaded_context}" if existing else uploaded_context
-    )
-    return merged
-
 
 def resolve_endpoint_display_selection(
     choices: Dict[str, str],
@@ -439,42 +145,6 @@ def build_fork_notice(
         f"Conversation forked from `{old_convo_id}` to `{new_convo_id}` because "
         f"{reason_text} changed. Prior history was copied and the new settings "
         "were applied at the start of the fork."
-    )
-
-
-def _format_trace_summary(event: Dict[str, Any]) -> str:
-    timestamp = _format_trace_timestamp(event.get("timestamp"))
-    trace_id = str(event.get("request_id") or "unknown-trace")
-    endpoint = str(event.get("endpoint") or "unknown-endpoint")
-    phase = str(event.get("phase") or "completed")
-    status = event.get("status_code")
-    convo_id = str(event.get("convo_id") or "no-convo")
-    elapsed = ""
-    timing = event.get("timing")
-    if isinstance(timing, dict) and timing.get("elapsed_ms") is not None:
-        elapsed = f" | {timing['elapsed_ms']}ms"
-    status_label = status if status is not None else "?"
-    return (
-        f"{timestamp} | {phase} | {status_label} | "
-        f"{endpoint} | {convo_id} | {trace_id}{elapsed}"
-    )
-
-
-def _format_trace_timestamp(raw_timestamp: Any) -> str:
-    timestamp = str(raw_timestamp or "").strip()
-    if not timestamp:
-        return f"unknown-time {TRACE_DISPLAY_TIMEZONE_LABEL}"
-
-    try:
-        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-    except ValueError:
-        return timestamp
-
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return (
-        parsed.astimezone(HISTORY_DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
-        + f" {TRACE_DISPLAY_TIMEZONE_LABEL}"
     )
 
 
@@ -1539,7 +1209,7 @@ def server(input, output, session):
 
         panels = [
             ui.accordion_panel(
-                _format_trace_summary(event),
+                format_trace_summary(event),
                 ui.tags.pre(
                     json.dumps(event, indent=2, ensure_ascii=False),
                     class_="dashboard-trace-json",

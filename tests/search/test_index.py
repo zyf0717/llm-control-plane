@@ -28,7 +28,7 @@ def test_build_search_router_does_not_alias_query_refiner_headers():
     assert router.query_refiner.config.headers == {"CF-Access-Client-Id": "id"}
 
 
-def test_build_search_router_accepts_legacy_query_refiner_config_keys():
+def test_build_search_router_ignores_legacy_query_refiner_config_keys():
     router = build_search_router(
         {
             "enabled": True,
@@ -42,32 +42,19 @@ def test_build_search_router_accepts_legacy_query_refiner_config_keys():
         }
     )
 
-    assert router.query_refiner is not None
-    assert router.query_refiner.config.model_endpoint == "https://legacy-query-refiner.local"
-    assert router.query_refiner.config.model == "legacy-model"
-    assert router.query_refiner.config.timeout_ms == 123
-    assert router.query_refiner.config.max_context_chars == 456
-    assert router.query_refiner.config.max_output_tokens == 789
-    assert router.query_refiner.config.max_queries == 2
+    assert router.query_refiner is None
 
 
-def test_build_search_router_new_query_refiner_config_keys_override_legacy():
+def test_build_search_router_uses_query_refiner_config_keys():
     router = build_search_router(
         {
             "enabled": True,
-            "model_endpoint": "https://legacy.local",
             "query_refiner_model_endpoint": "https://new.local",
-            "model": "legacy-model",
             "query_refiner_model": "new-model",
-            "planner_enabled": False,
             "query_refiner_enabled": True,
-            "planner_timeout_ms": 111,
             "query_refiner_timeout_ms": 222,
-            "planner_max_context_chars": 333,
             "query_refiner_max_context_chars": 444,
-            "planner_max_output_tokens": 555,
             "query_refiner_max_output_tokens": 666,
-            "planner_max_queries": 1,
             "query_refiner_max_queries": 3,
         }
     )

@@ -199,10 +199,7 @@ def load_query_refiner_max_context_chars() -> int:
         value = int(
             search_config.get(
                 "query_refiner_max_context_chars",
-                search_config.get(
-                    "planner_max_context_chars",
-                    DEFAULT_QUERY_REFINER_MAX_CONTEXT_CHARS,
-                ),
+                DEFAULT_QUERY_REFINER_MAX_CONTEXT_CHARS,
             )
         )
     except (TypeError, ValueError):

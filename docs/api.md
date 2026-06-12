@@ -222,7 +222,6 @@ Request fields:
 - `count`: optional result count
 - `freshness`: optional freshness hint such as `day`, `week`, or `month`
 - `use_query_refiner` / `useQueryRefiner`: optional boolean; set false to bypass query refinement
-- legacy aliases `use_planner` / `usePlanner` are accepted temporarily
 
 Behavior:
 
@@ -233,7 +232,6 @@ Behavior:
 - never fetches result pages or executes JavaScript
 - returns normalized result candidates plus degradation warnings
 - may include `original_query` and filtered `query_refinement` metadata, including `queries`, when refinement ran
-- temporarily also emits a `planner` metadata alias for compatibility
 - includes `wrapped_results`, a JSON string marked as untrusted for downstream LLM use
 
 Single-Node/ad hoc search may use the query refiner. Workflow search uses workflow LLM query planning and dispatches those queries with the query refiner bypassed.

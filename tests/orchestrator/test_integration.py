@@ -25,7 +25,7 @@ class TestProxyIntegration:
         """Test that root endpoint accepts POST requests."""
         # This test requires proper mocking of the routing system
         with patch(
-            "src.orchestrator.proxy.reachable_endpoints", ["test-endpoint"]
+            "src.orchestrator.proxy_services.reachable_endpoints", ["test-endpoint"]
         ), patch("src.orchestrator.proxy.get_router") as mock_get_router, patch(
             "src.orchestrator.proxy.proxy_request"
         ) as mock_proxy:

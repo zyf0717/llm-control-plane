@@ -1,22 +1,28 @@
 import pytest
 
 from src.dashboard.app_server import (
-    _format_trace_summary,
-    _format_trace_timestamp,
-    advance_workflow_to_terminal,
-    build_workflow_params_template,
-    build_uploaded_file_context,
     build_fork_notice,
-    build_search_failure_state,
-    build_search_preface,
-    build_query_refiner_context,
-    build_search_success_state,
-    build_search_turn_messages,
     conversation_control_change_reasons,
-    merge_run_info,
-    merge_uploaded_context,
     normalize_reasoning_effort,
     resolve_endpoint_display_selection,
+)
+from src.dashboard.search_flow import (
+    build_query_refiner_context,
+    build_search_failure_state,
+    build_search_preface,
+    build_search_success_state,
+    build_search_turn_messages,
+    merge_run_info,
+)
+from src.dashboard.trace_formatters import (
+    format_trace_summary,
+    format_trace_timestamp,
+)
+from src.dashboard.workflow_server_helpers import (
+    advance_workflow_to_terminal,
+    build_uploaded_file_context,
+    build_workflow_params_template,
+    merge_uploaded_context,
 )
 from src.search.safety import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER
 
@@ -161,14 +167,14 @@ async def test_advance_workflow_to_terminal_stops_at_step_budget():
 
 def test_format_trace_timestamp_displays_gmt_plus_8():
     assert (
-        _format_trace_timestamp("2026-06-09T02:16:33.957094+00:00")
+        format_trace_timestamp("2026-06-09T02:16:33.957094+00:00")
         == "2026-06-09 10:16:33 GMT+8"
     )
-    assert _format_trace_timestamp("bad-time") == "bad-time"
+    assert format_trace_timestamp("bad-time") == "bad-time"
 
 
 def test_format_trace_summary_uses_display_timezone():
-    summary = _format_trace_summary(
+    summary = format_trace_summary(
         {
             "timestamp": "2026-06-09T02:16:33.957094+00:00",
             "phase": "started",

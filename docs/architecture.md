@@ -4,7 +4,12 @@
 
 | Component | Path | Responsibility |
 |---|---|---|
-| Proxy | `src/orchestrator/proxy.py` | OpenAI-compatible request handling, SQLite-backed history/state, route/reasoning pinning, RAG injection, best-effort slot affinity, upstream proxying |
+| Proxy app | `src/orchestrator/proxy.py` | FastAPI app composition, public routes, model discovery, router inclusion |
+| Request processing | `src/orchestrator/request_processor.py` | Conversation history/state, reasoning injection, RAG injection, slot affinity |
+| Upstream proxying | `src/orchestrator/upstream_proxy.py` | Streaming/non-streaming upstream calls, response normalization, trace/history finalization |
+| Runtime services | `src/orchestrator/proxy_services.py` | Configured endpoints, search service, history/workflow stores, startup/shutdown state |
+| Search API | `src/orchestrator/search_routes.py` | `/search/web` request parsing and response wrapping |
+| Workflow proxy clients | `src/orchestrator/workflow_clients.py` | Workflow LLM/search adapters backed by the proxy runtime |
 | LLM Router | `src/orchestrator/llm_router.py` | Workload classification and smart endpoint selection |
 | Dashboard | `src/dashboard/` | Shiny UI for chat, endpoint selection, RAG selection, and runtime inspection |
 | Entry point | `llm_control_plane.py` | Runs proxy and dashboard together |

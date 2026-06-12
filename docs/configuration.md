@@ -144,8 +144,6 @@ The `search` block enables the lightweight candidate-discovery module exposed at
 
 When `search.query_refiner_model_endpoint` is configured and query refinement is enabled, ad hoc `/search/web` calls may run a bounded, non-persisted query-refiner call before provider execution. The query refiner returns one or more concise provider-ready queries; the first query becomes the effective search query. If `query_refiner_max_queries` is greater than 1, provider searches run as an async fanout and results are deduped before applying `search_max_total_results`. Query-refiner failure degrades to the original query and adds a warning.
 
-Legacy aliases are still accepted for migration: `model_endpoint`, `model`, `planner_enabled`, `planner_timeout_ms`, `planner_max_context_chars`, `planner_max_output_tokens`, and `planner_max_queries`. New `query_refiner_*` keys win when both forms are present.
-
 Workflow search is different: workflow YAMLs use their workflow LLM steps to decide search queries and then dispatch those queries with the query refiner bypassed. This keeps workflow search planning in the workflow, not in the ad hoc search router.
 
 Supported built-in provider ids:
@@ -165,6 +163,8 @@ Supported environment variables:
 - `API_KEY_SECRET`
 - `PROXY_BASE_URL`
 - `HISTORY_DB_PATH` to override the default local SQLite history path (`var/history.sqlite3`)
+
+Blank `HISTORY_DB_PATH` is treated the same as unset and uses the default SQLite path. In-memory history is available only when explicitly injected by tests or alternate runtime wiring.
 
 ## Operational Notes
 

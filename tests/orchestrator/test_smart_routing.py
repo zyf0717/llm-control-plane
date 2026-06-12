@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from src.orchestrator import proxy as proxy_module
+from src.orchestrator import proxy_services as proxy_module
 from src.orchestrator.history_store import MemoryHistoryStore
 from src.orchestrator.llm_router import RouteDecision, WorkloadType
 from src.orchestrator.proxy import app
@@ -110,7 +110,7 @@ class TestSmartRoutingEndpoint:
         assert response.status_code == 500
         assert "Smart routing error" in response.json()["detail"]
 
-    @patch("src.orchestrator.proxy.reachable_endpoints", ["HRPC-CISR HPC"])
+    @patch("src.orchestrator.proxy_services.reachable_endpoints", ["HRPC-CISR HPC"])
     @patch("src.orchestrator.proxy.proxy_request")
     @patch("src.orchestrator.proxy.get_router")
     def test_smart_route_basic(
@@ -160,7 +160,7 @@ class TestSmartRoutingEndpoint:
         # Should get successful response
         assert response.status_code == 200
 
-    @patch("src.orchestrator.proxy.reachable_endpoints", ["HRPC-CISR HPC"])
+    @patch("src.orchestrator.proxy_services.reachable_endpoints", ["HRPC-CISR HPC"])
     @patch("src.orchestrator.proxy.proxy_request")
     @patch("src.orchestrator.proxy.get_router")
     def test_smart_route_multiple_user_messages(
@@ -194,7 +194,7 @@ class TestSmartRoutingEndpoint:
         assert "Latest user message for routing" in call_args
         assert response.status_code == 200
 
-    @patch("src.orchestrator.proxy.reachable_endpoints", ["Mac Mini", "HRPC-CISR HPC"])
+    @patch("src.orchestrator.proxy_services.reachable_endpoints", ["Mac Mini", "HRPC-CISR HPC"])
     @patch("src.orchestrator.proxy.proxy_request")
     @patch("src.orchestrator.proxy.get_router")
     def test_smart_route_reasoning_detection(self, mock_get_router, mock_proxy, client):
@@ -254,7 +254,7 @@ class TestSmartRoutingEndpoint:
             assert response.status_code == 200
 
 
-    @patch("src.orchestrator.proxy.reachable_endpoints", ["primary", "secondary"])
+    @patch("src.orchestrator.proxy_services.reachable_endpoints", ["primary", "secondary"])
     @patch("src.orchestrator.proxy.get_router")
     def test_smart_route_pins_server_side_and_reuses_without_router(
         self, mock_get_router, client
@@ -274,7 +274,7 @@ class TestSmartRoutingEndpoint:
         mock_router.get_endpoint_by_name = Mock(return_value=None)
         mock_get_router.return_value = mock_router
 
-        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = AsyncMock()
@@ -299,7 +299,7 @@ class TestSmartRoutingEndpoint:
         assert second.headers["x-route-pinned"] == "true"
         assert mock_router.route_request.await_count == 1
 
-    @patch("src.orchestrator.proxy.reachable_endpoints", ["new-endpoint"])
+    @patch("src.orchestrator.proxy_services.reachable_endpoints", ["new-endpoint"])
     @patch("src.orchestrator.proxy.get_router")
     def test_smart_route_stale_pin_is_reported_and_replaced(
         self, mock_get_router, client
@@ -325,7 +325,7 @@ class TestSmartRoutingEndpoint:
         mock_router.get_endpoint_by_name = Mock(return_value=None)
         mock_get_router.return_value = mock_router
 
-        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = AsyncMock()
@@ -347,7 +347,7 @@ class TestSmartRoutingEndpoint:
         assert response.headers["x-route-pin-stale"] == "true"
         assert state["route_endpoint"] == "new-endpoint"
 
-    @patch("src.orchestrator.proxy.reachable_endpoints", ["primary"])
+    @patch("src.orchestrator.proxy_services.reachable_endpoints", ["primary"])
     @patch("src.orchestrator.proxy.get_router")
     def test_smart_route_without_convo_id_remains_stateless(self, mock_get_router, client):
         mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
@@ -362,7 +362,7 @@ class TestSmartRoutingEndpoint:
         mock_router.get_endpoint_by_name = Mock(return_value=None)
         mock_get_router.return_value = mock_router
 
-        with patch("src.orchestrator.proxy.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = AsyncMock()
@@ -387,7 +387,7 @@ class TestSmartRoutingEndpoint:
 class TestSmartRoutingIntegration:
     """Integration tests for smart routing with existing proxy features."""
 
-    @patch("src.orchestrator.proxy.reachable_endpoints", ["HRPC-CISR HPC"])
+    @patch("src.orchestrator.proxy_services.reachable_endpoints", ["HRPC-CISR HPC"])
     @patch("src.orchestrator.proxy.proxy_request")
     @patch("src.orchestrator.proxy.get_router")
     def test_smart_route_logging(

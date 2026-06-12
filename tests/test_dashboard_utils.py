@@ -159,19 +159,6 @@ def test_load_query_refiner_max_context_chars_reads_config(tmp_path, monkeypatch
     assert utils.load_query_refiner_max_context_chars() == 24
 
 
-def test_load_query_refiner_max_context_chars_accepts_legacy_key(
-    tmp_path, monkeypatch
-):
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        "search: {planner_max_context_chars: 24}",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(utils, "CONFIG_PATH", config_path)
-
-    assert utils.load_query_refiner_max_context_chars() == 24
-
-
 def test_trim_search_context_preserves_tail():
     trimmed = utils.trim_search_context("abcdef", 4)
 
