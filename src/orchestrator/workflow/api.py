@@ -39,6 +39,8 @@ def create_workflow_router(
                 convo_id=_optional_str(body.get("convo_id")),
                 endpoint=_optional_str(body.get("endpoint")),
                 reasoning_effort=_optional_str(body.get("reasoning_effort")),
+                rag_endpoint=_optional_str(body.get("rag_endpoint")),
+                search_provider=_optional_str(body.get("search_provider")),
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -56,6 +58,10 @@ def create_workflow_router(
     @router.get("/workflow-runs")
     async def list_runs(limit: int = 50):
         return {"runs": await store_getter().list_runs(limit=limit)}
+
+    @router.delete("/workflow-runs")
+    async def clear_runs():
+        return {"deleted": await store_getter().clear_runs()}
 
     @router.get("/workflow-runs/{run_id}")
     async def get_run(run_id: str):

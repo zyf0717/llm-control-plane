@@ -207,8 +207,7 @@ app_ui = ui.page_fluid(
                         ui.input_select(
                             "workflowEndpoint",
                             "Endpoint",
-                            choices={"smart": "smart"},
-                            selected="smart",
+                            choices={},
                             width="100%",
                         ),
                         ui.input_select(
@@ -231,6 +230,19 @@ app_ui = ui.page_fluid(
                         placeholder="Optional",
                         width="100%",
                     ),
+                    ui.input_select(
+                        "workflowRagEndpoint",
+                        "RAG Endpoint",
+                        choices={},
+                        width="100%",
+                    ),
+                    ui.input_select(
+                        "workflowSearchProvider",
+                        "Search Provider",
+                        choices={},
+                        width="100%",
+                    ),
+                    ui.output_ui("workflow_file_upload_ui"),
                     ui.input_action_button("createWorkflowRun", "Create run"),
                 ),
                 ui.div(
@@ -258,12 +270,11 @@ app_ui = ui.page_fluid(
                                 width="100%",
                             ),
                             "retryWorkflowStep",
-                            "Retry",
+                            "Retry step",
                             col_widths=[7, 5],
                         ),
                         col_widths=[3, 3, 6],
                     ),
-                    ui.output_ui("workflowRunsBox"),
                     ui.output_ui("workflowRunDetails"),
                 ),
                 col_widths=[4, 8],

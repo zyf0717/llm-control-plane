@@ -39,12 +39,15 @@ class SQLiteWorkflowStore:
                 params_json TEXT NOT NULL,
                 endpoint TEXT,
                 reasoning_effort TEXT,
+                rag_endpoint TEXT,
+                search_provider TEXT,
                 current_step_id TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 completed_at TEXT
             )
             """)
+        await self._ensure_workflow_run_columns()
         await self._conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_workflow_runs_status_updated
             ON workflow_runs (status, updated_at DESC)
@@ -96,10 +99,11 @@ class SQLiteWorkflowStore:
                     """
                     INSERT INTO workflow_runs (
                         run_id, workflow_id, workflow_version, status, convo_id,
-                        params_json, endpoint, reasoning_effort, current_step_id,
-                        created_at, updated_at, completed_at
+                        params_json, endpoint, reasoning_effort, rag_endpoint,
+                        search_provider, current_step_id, created_at, updated_at,
+                        completed_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run.run_id,
@@ -110,6 +114,8 @@ class SQLiteWorkflowStore:
                         json.dumps(run.params),
                         run.endpoint,
                         run.reasoning_effort,
+                        run.rag_endpoint,
+                        run.search_provider,
                         run.current_step_id,
                         run.created_at,
                         run.updated_at,
@@ -136,8 +142,9 @@ class SQLiteWorkflowStore:
         cursor = await conn.execute(
             """
             SELECT run_id, workflow_id, workflow_version, status, convo_id,
-                   params_json, endpoint, reasoning_effort, current_step_id,
-                   created_at, updated_at, completed_at
+                   params_json, endpoint, reasoning_effort, rag_endpoint,
+                   search_provider, current_step_id, created_at, updated_at,
+                   completed_at
             FROM workflow_runs
             WHERE run_id = ?
             """,
@@ -152,8 +159,9 @@ class SQLiteWorkflowStore:
         cursor = await conn.execute(
             """
             SELECT run_id, workflow_id, workflow_version, status, convo_id,
-                   params_json, endpoint, reasoning_effort, current_step_id,
-                   created_at, updated_at, completed_at
+                   params_json, endpoint, reasoning_effort, rag_endpoint,
+                   search_provider, current_step_id, created_at, updated_at,
+                   completed_at
             FROM workflow_runs
             ORDER BY updated_at DESC, run_id ASC
             LIMIT ?
@@ -163,6 +171,27 @@ class SQLiteWorkflowStore:
         rows = await cursor.fetchall()
         await cursor.close()
         return [self._row_to_run(row).to_dict() for row in rows]
+
+    async def clear_runs(self) -> dict[str, int]:
+        conn = self._require_connection()
+        async with self._write_lock:
+            await self._begin_immediate(conn)
+            try:
+                artifact_count = await self._table_count(conn, "workflow_artifacts")
+                step_count = await self._table_count(conn, "workflow_step_runs")
+                run_count = await self._table_count(conn, "workflow_runs")
+                await conn.execute("DELETE FROM workflow_artifacts")
+                await conn.execute("DELETE FROM workflow_step_runs")
+                await conn.execute("DELETE FROM workflow_runs")
+                await conn.commit()
+            except BaseException:
+                await conn.rollback()
+                raise
+        return {
+            "workflow_artifacts": artifact_count,
+            "workflow_step_runs": step_count,
+            "workflow_runs": run_count,
+        }
 
     async def get_step_runs(self, run_id: str) -> list[WorkflowStepRun]:
         conn = self._require_connection()
@@ -306,9 +335,12 @@ class SQLiteWorkflowStore:
                 await conn.rollback()
                 raise
 
-    async def retry_step(self, run_id: str, step_id: str) -> None:
+    async def retry_step(
+        self, run_id: str, step_id: str, reset_step_ids: list[str] | None = None
+    ) -> None:
         conn = self._require_connection()
         now = _utc_now()
+        reset_ids = list(dict.fromkeys([*(reset_step_ids or []), step_id]))
         async with self._write_lock:
             await self._begin_immediate(conn)
             try:
@@ -323,17 +355,45 @@ class SQLiteWorkflowStore:
                 await cursor.close()
                 if not row:
                     raise KeyError(f"unknown workflow step run: {run_id}/{step_id}")
-                if row[0] != "failed":
-                    raise ValueError("only failed workflow steps can be retried")
+                if row[0] not in {"failed", "completed"}:
+                    raise ValueError(
+                        "only failed or completed workflow steps can be retried"
+                    )
+
+                placeholders = ", ".join("?" for _ in reset_ids)
+                cursor = await conn.execute(
+                    f"""
+                    SELECT step_id, status FROM workflow_step_runs
+                    WHERE run_id = ? AND step_id IN ({placeholders})
+                    """,
+                    (run_id, *reset_ids),
+                )
+                reset_rows = await cursor.fetchall()
+                await cursor.close()
+                running_steps = [
+                    row[0] for row in reset_rows if row[1] == "running"
+                ]
+                if running_steps:
+                    raise ValueError(
+                        "running workflow steps cannot be reset: "
+                        + ", ".join(str(step_id) for step_id in running_steps)
+                    )
 
                 await conn.execute(
-                    """
+                    f"""
                     UPDATE workflow_step_runs
                     SET status = 'pending', output_json = NULL, error = NULL,
                         started_at = NULL, completed_at = NULL
-                    WHERE run_id = ? AND step_id = ?
+                    WHERE run_id = ? AND step_id IN ({placeholders})
                     """,
-                    (run_id, step_id),
+                    (run_id, *reset_ids),
+                )
+                await conn.execute(
+                    f"""
+                    DELETE FROM workflow_artifacts
+                    WHERE run_id = ? AND step_id IN ({placeholders})
+                    """,
+                    (run_id, *reset_ids),
                 )
                 await conn.execute(
                     """
@@ -423,6 +483,23 @@ class SQLiteWorkflowStore:
             await conn.rollback()
         await conn.execute("BEGIN IMMEDIATE")
 
+    async def _ensure_workflow_run_columns(self) -> None:
+        conn = self._require_connection()
+        cursor = await conn.execute("PRAGMA table_info(workflow_runs)")
+        rows = await cursor.fetchall()
+        await cursor.close()
+        existing = {str(row[1]) for row in rows}
+        for column in ["rag_endpoint", "search_provider"]:
+            if column not in existing:
+                await conn.execute(f"ALTER TABLE workflow_runs ADD COLUMN {column} TEXT")
+
+    @staticmethod
+    async def _table_count(conn: aiosqlite.Connection, table: str) -> int:
+        cursor = await conn.execute(f"SELECT COUNT(*) FROM {table}")
+        row = await cursor.fetchone()
+        await cursor.close()
+        return int(row[0] or 0)
+
     def _require_connection(self) -> aiosqlite.Connection:
         if self._conn is None:
             raise RuntimeError("SQLiteWorkflowStore is not initialized")
@@ -439,10 +516,12 @@ class SQLiteWorkflowStore:
             params=_loads_json(row[5]),
             endpoint=row[6],
             reasoning_effort=row[7],
-            current_step_id=row[8],
-            created_at=row[9],
-            updated_at=row[10],
-            completed_at=row[11],
+            rag_endpoint=row[8],
+            search_provider=row[9],
+            current_step_id=row[10],
+            created_at=row[11],
+            updated_at=row[12],
+            completed_at=row[13],
         )
 
     @staticmethod

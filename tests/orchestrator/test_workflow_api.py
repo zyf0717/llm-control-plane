@@ -23,8 +23,6 @@ version: 0.1.0
 params_schema:
   type: object
   required: [goal]
-defaults:
-  endpoint: smart
 steps:
   - id: first
     kind: llm
@@ -56,10 +54,23 @@ def test_workflow_api_create_advance_and_get(tmp_path):
 
         create_response = client.post(
             "/workflows/sample/runs",
-            json={"params": {"goal": "ship"}, "endpoint": "smart"},
+            json={
+                "params": {"goal": "ship"},
+                "endpoint": "node-a",
+                "rag_endpoint": "http://rag/api/retrieve/context",
+                "search_provider": "duckduckgo_html",
+            },
         )
         assert create_response.status_code == 200
         run_id = create_response.json()["run_id"]
+        assert (
+            create_response.json()["snapshot"]["run"]["rag_endpoint"]
+            == "http://rag/api/retrieve/context"
+        )
+        assert (
+            create_response.json()["snapshot"]["run"]["search_provider"]
+            == "duckduckgo_html"
+        )
 
         advance_response = client.post(f"/workflow-runs/{run_id}/advance")
         assert advance_response.status_code == 200
@@ -88,3 +99,52 @@ def test_workflow_api_validates_required_params(tmp_path):
 
         assert response.status_code == 400
         assert "missing required workflow params" in response.json()["detail"]
+
+
+def test_workflow_api_rejects_smart_endpoint(tmp_path):
+    write_workflow(tmp_path / "sample.yaml")
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+
+    with TestClient(app) as client:
+        client.portal.call(store.initialize)
+        proxy_module.set_workflow_components(
+            registry=registry,
+            store=store,
+            executor=WorkflowExecutor(registry, store, FakeLLMClient()),
+        )
+
+        response = client.post(
+            "/workflows/sample/runs",
+            json={"params": {"goal": "ship"}, "endpoint": "smart"},
+        )
+
+        assert response.status_code == 400
+        assert "concrete endpoint" in response.json()["detail"]
+
+
+def test_workflow_api_delete_runs_clears_history(tmp_path):
+    write_workflow(tmp_path / "sample.yaml")
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+
+    with TestClient(app) as client:
+        client.portal.call(store.initialize)
+        proxy_module.set_workflow_components(
+            registry=registry,
+            store=store,
+            executor=WorkflowExecutor(registry, store, FakeLLMClient()),
+        )
+        create_response = client.post(
+            "/workflows/sample/runs",
+            json={"params": {"goal": "ship"}, "endpoint": "node-a"},
+        )
+        assert create_response.status_code == 200
+
+        delete_response = client.delete("/workflow-runs")
+
+        assert delete_response.status_code == 200
+        assert delete_response.json()["deleted"]["workflow_runs"] == 1
+        assert client.get("/workflow-runs").json()["runs"] == []

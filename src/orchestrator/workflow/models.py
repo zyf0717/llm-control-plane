@@ -11,7 +11,6 @@ WorkflowStepStatus = Literal["pending", "running", "completed", "failed", "skipp
 
 @dataclass(slots=True)
 class WorkflowDefaults:
-    endpoint: str | None = None
     reasoning_effort: str | None = None
     rag_endpoint: str | None = None
     search_provider: str | None = None
@@ -22,7 +21,6 @@ class WorkflowDefaults:
     def from_dict(cls, data: dict[str, Any] | None) -> "WorkflowDefaults":
         data = data if isinstance(data, dict) else {}
         return cls(
-            endpoint=_optional_str(data.get("endpoint")),
             reasoning_effort=_optional_str(data.get("reasoning_effort")),
             rag_endpoint=_optional_str(data.get("rag_endpoint")),
             search_provider=_optional_str(data.get("search_provider")),
@@ -43,7 +41,6 @@ class WorkflowStepSpec:
     depends_on: list[str] | None = None
     output_key: str | None = None
     output_schema: dict[str, Any] | None = None
-    endpoint: str | None = None
     reasoning_effort: str | None = None
     rag_endpoint: str | None = None
     search_provider: str | None = None
@@ -79,7 +76,6 @@ class WorkflowStepSpec:
             depends_on=[str(item).strip() for item in depends_on],
             output_key=_optional_str(data.get("output_key")),
             output_schema=output_schema,
-            endpoint=_optional_str(data.get("endpoint")),
             reasoning_effort=_optional_str(data.get("reasoning_effort")),
             rag_endpoint=_optional_str(data.get("rag_endpoint")),
             search_provider=_optional_str(data.get("search_provider")),
@@ -152,6 +148,8 @@ class WorkflowRun:
     params: dict[str, Any]
     endpoint: str | None
     reasoning_effort: str | None
+    rag_endpoint: str | None
+    search_provider: str | None
     current_step_id: str | None
     created_at: str
     updated_at: str

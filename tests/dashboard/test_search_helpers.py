@@ -1,6 +1,10 @@
+import pytest
+
 from src.dashboard.app_server import (
     _format_trace_summary,
     _format_trace_timestamp,
+    advance_workflow_to_terminal,
+    build_uploaded_file_context,
     build_fork_notice,
     build_search_failure_state,
     build_search_preface,
@@ -9,6 +13,7 @@ from src.dashboard.app_server import (
     build_search_turn_messages,
     conversation_control_change_reasons,
     merge_run_info,
+    merge_uploaded_context,
     normalize_reasoning_effort,
     resolve_endpoint_display_selection,
 )
@@ -30,6 +35,104 @@ def test_build_search_planner_context_includes_prompt_history_and_current_reques
     assert "Conversation history:\nuser: Earlier question" in context
     assert "assistant: Earlier answer" in context
     assert "Current user request:\nCurrent question" in context
+
+
+def test_build_uploaded_file_context_reads_utf8_files(tmp_path):
+    path = tmp_path / "notes.txt"
+    path.write_text("hello workflow", encoding="utf-8")
+
+    context = build_uploaded_file_context(
+        [{"name": "notes.txt", "datapath": str(path)}]
+    )
+
+    assert "--- File: notes.txt ---" in context
+    assert "hello workflow" in context
+
+
+def test_merge_uploaded_context_appends_to_existing_param():
+    merged = merge_uploaded_context(
+        {"goal": "ship", "uploaded_context": "manual upload"},
+        "file upload",
+    )
+
+    assert merged == {
+        "goal": "ship",
+        "uploaded_context": "manual upload\n\nfile upload",
+    }
+
+
+@pytest.mark.asyncio
+async def test_advance_workflow_to_terminal_stops_on_running_step():
+    calls = 0
+
+    async def advance(_run_id):
+        nonlocal calls
+        calls += 1
+        return {
+            "run": {"status": "running"},
+            "steps": [
+                {"step_id": "first", "status": "running"},
+                {"step_id": "second", "status": "pending"},
+            ],
+        }
+
+    snapshot = await advance_workflow_to_terminal("wf_123", advance, max_steps=100)
+
+    assert calls == 1
+    assert snapshot["steps"][0]["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_advance_workflow_to_terminal_stops_on_completed():
+    snapshots = [
+        {"run": {"status": "running"}},
+        {"run": {"status": "completed"}},
+    ]
+    seen = []
+
+    async def advance(run_id):
+        assert run_id == "wf_123"
+        return snapshots.pop(0)
+
+    async def after_step(snapshot, step_number):
+        seen.append((step_number, snapshot["run"]["status"]))
+
+    snapshot = await advance_workflow_to_terminal(
+        "wf_123", advance, after_step=after_step
+    )
+
+    assert snapshot["run"]["status"] == "completed"
+    assert seen == [(1, "running"), (2, "completed")]
+
+
+@pytest.mark.asyncio
+async def test_advance_workflow_to_terminal_stops_on_failed():
+    calls = 0
+
+    async def advance(_run_id):
+        nonlocal calls
+        calls += 1
+        return {"run": {"status": "failed"}}
+
+    snapshot = await advance_workflow_to_terminal("wf_123", advance)
+
+    assert snapshot["run"]["status"] == "failed"
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_advance_workflow_to_terminal_stops_at_step_budget():
+    calls = 0
+
+    async def advance(_run_id):
+        nonlocal calls
+        calls += 1
+        return {"run": {"status": "running", "call": calls}}
+
+    snapshot = await advance_workflow_to_terminal("wf_123", advance, max_steps=3)
+
+    assert calls == 3
+    assert snapshot["run"]["call"] == 3
 
 
 def test_format_trace_timestamp_displays_gmt_plus_8():

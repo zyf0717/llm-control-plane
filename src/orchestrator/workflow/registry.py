@@ -8,7 +8,7 @@ import yaml
 from .models import WorkflowSpec
 
 
-DEFAULT_WORKFLOW_DIR = Path("workflows")
+DEFAULT_WORKFLOW_DIR = Path("workflow_configs")
 
 
 class WorkflowRegistry:
@@ -19,7 +19,9 @@ class WorkflowRegistry:
     def load(self) -> None:
         specs: dict[str, WorkflowSpec] = {}
         if not self.workflow_dir.exists():
-            raise FileNotFoundError(f"workflow directory not found: {self.workflow_dir}")
+            raise FileNotFoundError(
+                f"workflow config directory not found: {self.workflow_dir}"
+            )
 
         for path in sorted(self.workflow_dir.glob("*.yaml")):
             spec = self._load_file(path)

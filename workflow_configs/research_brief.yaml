@@ -1,0 +1,51 @@
+id: research_brief
+name: Research Brief
+version: 0.1.0
+description: Build a concise research brief from web search, optional RAG, and supplied context.
+
+params_schema:
+  type: object
+  required: [question]
+  properties:
+    question:
+      type: string
+    context:
+      type: string
+    uploaded_context:
+      type: string
+
+defaults:
+  reasoning_effort: high
+  stream: false
+
+steps:
+  - id: search_context
+    name: Search context
+    kind: search
+    prompt: |
+      {{ params.question }}
+
+      Additional context:
+      {{ params.context }}
+      {{ params.uploaded_context }}
+    output_key: search_context
+
+  - id: synthesize_brief
+    name: Synthesize brief
+    kind: llm
+    depends_on: [search_context]
+    prompt: |
+      Question:
+      {{ params.question }}
+
+      Manual context:
+      {{ params.context }}
+
+      Uploaded context:
+      {{ params.uploaded_context }}
+
+      Search context:
+      {{ outputs.search_context.text }}
+
+      Produce a concise research brief with key findings, uncertainty, and recommended next steps.
+    output_key: research_brief

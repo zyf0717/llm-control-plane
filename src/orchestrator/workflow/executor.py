@@ -64,10 +64,17 @@ class WorkflowExecutor:
         convo_id: str | None = None,
         endpoint: str | None = None,
         reasoning_effort: str | None = None,
+        rag_endpoint: str | None = None,
+        search_provider: str | None = None,
     ) -> dict[str, Any]:
         spec = self.registry.get(workflow_id)
         cleaned_params = params if isinstance(params, dict) else {}
         self._validate_required_params(spec, cleaned_params)
+        run_endpoint = str(endpoint or "").strip()
+        if not run_endpoint:
+            raise ValueError("workflow run endpoint is required")
+        if run_endpoint.lower() == "smart":
+            raise ValueError("workflow run endpoint must be a concrete endpoint")
 
         run_id = f"wf_{uuid.uuid4().hex[:12]}"
         now = _utc_now()
@@ -78,8 +85,10 @@ class WorkflowExecutor:
             status="pending",
             convo_id=str(convo_id or "").strip() or f"{run_id}_convo",
             params=cleaned_params,
-            endpoint=endpoint or spec.defaults.endpoint,
+            endpoint=run_endpoint,
             reasoning_effort=reasoning_effort or spec.defaults.reasoning_effort,
+            rag_endpoint=_optional_str(rag_endpoint),
+            search_provider=_optional_str(search_provider),
             current_step_id=None,
             created_at=now,
             updated_at=now,
@@ -108,13 +117,15 @@ class WorkflowExecutor:
 
         next_step = self._next_runnable_step(spec, snapshot)
         if next_step is None:
-            await self.store.mark_run_status(
-                run_id, "completed", current_step_id=None, completed=True
-            )
-            completed = await self.store.snapshot(run_id)
-            if completed is None:
-                raise KeyError(f"unknown workflow run: {run_id}")
-            return completed
+            if self._all_steps_completed(snapshot):
+                await self.store.mark_run_status(
+                    run_id, "completed", current_step_id=None, completed=True
+                )
+                completed = await self.store.snapshot(run_id)
+                if completed is None:
+                    raise KeyError(f"unknown workflow run: {run_id}")
+                return completed
+            return snapshot
 
         step_input = self._build_step_input(spec, snapshot, next_step)
         await self.store.mark_step_running(run_id, next_step.id, step_input)
@@ -142,12 +153,13 @@ class WorkflowExecutor:
         if advanced is None:
             raise KeyError(f"unknown workflow run: {run_id}")
         if self._next_runnable_step(spec, advanced) is None:
-            await self.store.mark_run_status(
-                run_id, "completed", current_step_id=None, completed=True
-            )
-            advanced = await self.store.snapshot(run_id)
-            if advanced is None:
-                raise KeyError(f"unknown workflow run: {run_id}")
+            if self._all_steps_completed(advanced):
+                await self.store.mark_run_status(
+                    run_id, "completed", current_step_id=None, completed=True
+                )
+                advanced = await self.store.snapshot(run_id)
+                if advanced is None:
+                    raise KeyError(f"unknown workflow run: {run_id}")
         return advanced
 
     async def run_to_completion(
@@ -167,7 +179,11 @@ class WorkflowExecutor:
         return snapshot
 
     async def retry_step(self, run_id: str, step_id: str) -> dict[str, Any]:
-        await self.store.retry_step(run_id, step_id)
+        run = await self.store.get_run(run_id)
+        if run is None:
+            raise KeyError(f"unknown workflow run: {run_id}")
+        spec = self.registry.get(run.workflow_id)
+        await self.store.retry_step(run_id, step_id, self._retry_step_ids(spec, step_id))
         snapshot = await self.store.snapshot(run_id)
         if snapshot is None:
             raise KeyError(f"unknown workflow run: {run_id}")
@@ -206,6 +222,29 @@ class WorkflowExecutor:
             ):
                 return step
         return None
+
+    @staticmethod
+    def _all_steps_completed(snapshot: dict[str, Any]) -> bool:
+        steps = [step for step in snapshot.get("steps", []) if isinstance(step, dict)]
+        return bool(steps) and all(step.get("status") == "completed" for step in steps)
+
+    @staticmethod
+    def _retry_step_ids(spec: WorkflowSpec, step_id: str) -> list[str]:
+        step_ids = [step.id for step in spec.steps]
+        if step_id not in step_ids:
+            return [step_id]
+
+        affected = {step_id}
+        changed = True
+        while changed:
+            changed = False
+            for step in spec.steps:
+                if step.id in affected:
+                    continue
+                if any(dependency in affected for dependency in step.depends_on or []):
+                    affected.add(step.id)
+                    changed = True
+        return [candidate for candidate in step_ids if candidate in affected]
 
     @staticmethod
     def _build_step_input(
@@ -262,14 +301,20 @@ class WorkflowExecutor:
                 )
             result = await self.search_client.search(
                 query=prompt,
-                provider=step.search_provider or spec.defaults.search_provider,
+                provider=run.search_provider
+                or step.search_provider
+                or spec.defaults.search_provider,
             )
             return WorkflowStepExecution(
                 output={"text": json.dumps(result, indent=2), "json": result, "metadata": {"kind": "search"}},
                 artifact_text=json.dumps(result, indent=2),
             )
 
-        endpoint = step.endpoint or run.endpoint or spec.defaults.endpoint or "smart"
+        endpoint = run.endpoint
+        if not endpoint:
+            raise ValueError("workflow step endpoint is required")
+        if endpoint.lower() == "smart":
+            raise ValueError("workflow step endpoint must be a concrete endpoint")
         reasoning_effort = (
             step.reasoning_effort or run.reasoning_effort or spec.defaults.reasoning_effort
         )
@@ -278,7 +323,7 @@ class WorkflowExecutor:
             prompt=prompt,
             convo_id=run.convo_id,
             reasoning_effort=reasoning_effort,
-            rag_endpoint=step.rag_endpoint or spec.defaults.rag_endpoint,
+            rag_endpoint=run.rag_endpoint or step.rag_endpoint or spec.defaults.rag_endpoint,
             max_tokens=step.max_tokens or spec.defaults.max_tokens,
         )
         text = str(result.get("text") or "")
@@ -321,3 +366,10 @@ def _parse_json_text(text: str) -> Any:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None

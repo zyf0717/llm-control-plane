@@ -1,0 +1,76 @@
+id: implementation_plan
+name: Implementation Plan
+version: 0.2.0
+description: Produce a staged implementation plan from search, optional RAG, and supplied context.
+
+params_schema:
+  type: object
+  required: [goal]
+  properties:
+    goal:
+      type: string
+    context:
+      type: string
+    uploaded_context:
+      type: string
+
+defaults:
+  reasoning_effort: high
+  stream: false
+
+steps:
+  - id: search_context
+    name: Search context
+    kind: search
+    prompt: |
+      {{ params.goal }}
+
+      Additional context:
+      {{ params.context }}
+      {{ params.uploaded_context }}
+    output_key: search_context
+
+  - id: target_assessment
+    name: Target assessment
+    kind: llm
+    depends_on: [search_context]
+    prompt: |
+      Goal:
+      {{ params.goal }}
+
+      Manual context:
+      {{ params.context }}
+
+      Uploaded context:
+      {{ params.uploaded_context }}
+
+      Search context:
+      {{ outputs.search_context.text }}
+
+      Identify the target state, constraints, non-goals, risks, and missing information.
+    output_key: target_assessment
+
+  - id: architecture_plan
+    name: Architecture plan
+    kind: llm
+    depends_on: [target_assessment]
+    prompt: |
+      Goal:
+      {{ params.goal }}
+
+      Target assessment:
+      {{ outputs.target_assessment.text }}
+
+      Produce the implementation architecture, module boundaries, data flow, and failure handling.
+    output_key: architecture_plan
+
+  - id: commit_plan
+    name: Commit and test plan
+    kind: llm
+    depends_on: [architecture_plan]
+    prompt: |
+      Architecture plan:
+      {{ outputs.architecture_plan.text }}
+
+      Produce a sequenced commit plan with tests, acceptance criteria, and rollout notes.
+    output_key: commit_plan

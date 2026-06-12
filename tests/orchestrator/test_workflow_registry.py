@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from src.orchestrator.workflow.registry import WorkflowRegistry
+from src.orchestrator.workflow.registry import DEFAULT_WORKFLOW_DIR, WorkflowRegistry
 
 
 def write_workflow(path: Path, *, body: str) -> None:
@@ -16,8 +16,6 @@ name: Sample
 version: 0.1.0
 params_schema:
   type: object
-defaults:
-  endpoint: smart
 steps:
 {steps}
 """
@@ -44,6 +42,19 @@ def test_registry_loads_valid_specs(tmp_path):
 
     assert [spec.id for spec in registry.list()] == ["sample"]
     assert registry.get("sample").steps[1].depends_on == ["first"]
+
+
+def test_default_workflow_config_directory_loads_shipped_specs():
+    assert DEFAULT_WORKFLOW_DIR.name == "workflow_configs"
+
+    registry = WorkflowRegistry()
+    registry.load()
+
+    assert {spec.id for spec in registry.list()} == {
+        "contextual_search",
+        "implementation_plan",
+        "research_brief",
+    }
 
 
 def test_registry_rejects_duplicate_workflow_ids(tmp_path):

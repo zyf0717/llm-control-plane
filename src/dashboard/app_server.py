@@ -2,7 +2,7 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 import shinyswatch
 from dotenv import load_dotenv
@@ -52,18 +52,18 @@ from .workflow_client import (
     fetch_workflow_runs,
     fetch_workflows,
     retry_workflow_step,
-    run_workflow_to_completion,
 )
 from .workflow_formatters import (
     format_artifacts,
     format_step_timeline,
     format_workflow_choices,
     format_workflow_run_choices,
-    format_workflow_run_table,
     format_workflow_spec,
 )
 
 TRACE_DISPLAY_TIMEZONE_LABEL = "GMT+8"
+TERMINAL_WORKFLOW_STATUSES = {"completed", "failed", "cancelled"}
+WORKFLOW_RUN_MAX_STEPS = 100
 
 
 def build_search_success_state(search_response: Dict[str, Any]) -> Dict[str, Any]:
@@ -259,6 +259,86 @@ def merge_run_info(
     return merged or None
 
 
+def workflow_snapshot_status(snapshot: dict[str, Any] | None) -> str:
+    run = snapshot.get("run") if isinstance(snapshot, dict) else {}
+    if not isinstance(run, dict):
+        return ""
+    return str(run.get("status") or "").strip()
+
+
+def workflow_snapshot_has_running_step(snapshot: dict[str, Any] | None) -> bool:
+    steps = snapshot.get("steps") if isinstance(snapshot, dict) else []
+    if not isinstance(steps, list):
+        return False
+    return any(
+        isinstance(step, dict) and step.get("status") == "running" for step in steps
+    )
+
+
+async def advance_workflow_to_terminal(
+    run_id: str,
+    advance: Callable[[str], Awaitable[dict[str, Any]]],
+    *,
+    after_step: Callable[[dict[str, Any], int], Awaitable[None]] | None = None,
+    max_steps: int = WORKFLOW_RUN_MAX_STEPS,
+) -> dict[str, Any]:
+    budget = max(1, int(max_steps))
+    snapshot: dict[str, Any] = {}
+    for step_number in range(1, budget + 1):
+        snapshot = await advance(run_id)
+        if after_step is not None:
+            await after_step(snapshot, step_number)
+        if (
+            workflow_snapshot_status(snapshot) in TERMINAL_WORKFLOW_STATUSES
+            or workflow_snapshot_has_running_step(snapshot)
+        ):
+            return snapshot
+    return snapshot
+
+
+def build_uploaded_file_context(uploaded_files: Any) -> str:
+    if not uploaded_files:
+        return ""
+
+    file_contents = []
+    for file_info in uploaded_files:
+        try:
+            datapath = file_info.get("datapath") if isinstance(file_info, dict) else None
+            if not datapath or not os.path.exists(datapath):
+                continue
+            with open(datapath, "r", encoding="utf-8") as handle:
+                content = handle.read()
+            filename = (
+                file_info.get("name", "uploaded")
+                if isinstance(file_info, dict)
+                else "uploaded"
+            )
+            file_contents.append(f"--- File: {filename} ---\n{content}")
+        except Exception as exc:
+            filename = (
+                file_info.get("name", "unknown")
+                if isinstance(file_info, dict)
+                else "unknown"
+            )
+            file_contents.append(f"--- Error reading {filename}: {str(exc)} ---")
+    return "\n\n".join(file_contents)
+
+
+def merge_uploaded_context(
+    params: dict[str, Any], uploaded_context: str
+) -> dict[str, Any]:
+    uploaded_context = str(uploaded_context or "").strip()
+    if not uploaded_context:
+        return params
+
+    merged = dict(params)
+    existing = str(merged.get("uploaded_context") or "").strip()
+    merged["uploaded_context"] = (
+        f"{existing}\n\n{uploaded_context}" if existing else uploaded_context
+    )
+    return merged
+
+
 def resolve_endpoint_display_selection(
     choices: Dict[str, str],
     mapping: Dict[str, str],
@@ -380,6 +460,8 @@ def server(input, output, session):
     info_accordion_open = reactive.Value(True)
     file_upload_key = reactive.Value(0)
     current_files = reactive.Value({"key": 0, "files": None})
+    workflow_file_upload_key = reactive.Value(0)
+    current_workflow_files = reactive.Value({"key": 0, "files": None})
     system_prompt_states = reactive.Value({})
     system_prompt_seed = reactive.Value("")
     history_refresh_trigger = reactive.Value(0)
@@ -512,9 +594,9 @@ def server(input, output, session):
             selected=selected,
             session=session,
         )
-        workflow_choices = {"smart": "smart", **choices}
+        workflow_choices = choices
         workflow_selected = (
-            selected if selected in workflow_choices else next(iter(workflow_choices), "smart")
+            selected if selected in workflow_choices else next(iter(workflow_choices), None)
         )
         ui.update_select(
             "workflowEndpoint",
@@ -534,6 +616,17 @@ def server(input, output, session):
             selected=selected,
             session=session,
         )
+        with reactive.isolate():
+            workflow_current = str(input.workflowRagEndpoint() or "")
+        workflow_selected = (
+            workflow_current if workflow_current in rag_choices else default_selection
+        )
+        ui.update_select(
+            "workflowRagEndpoint",
+            choices=rag_choices,
+            selected=workflow_selected,
+            session=session,
+        )
 
     async def update_search_providers(
         current_selection: Optional[str] = None,
@@ -548,6 +641,19 @@ def server(input, output, session):
             "searchProvider",
             choices=search_choices,
             selected=selected,
+            session=session,
+        )
+        with reactive.isolate():
+            workflow_current = str(input.workflowSearchProvider() or "")
+        workflow_selected = (
+            workflow_current
+            if workflow_current in search_choices
+            else default_selection
+        )
+        ui.update_select(
+            "workflowSearchProvider",
+            choices=search_choices,
+            selected=workflow_selected,
             session=session,
         )
 
@@ -675,10 +781,13 @@ def server(input, output, session):
             workflow_status_message.set(f"Failed to load workflow run: {exc}")
 
     def workflow_endpoint_key() -> str:
-        raw = str(input.workflowEndpoint() or "smart").strip() or "smart"
-        if raw == "smart":
-            return "smart"
-        return endpoint_display_mapping.get().get(raw, raw)
+        raw = str(input.workflowEndpoint() or "").strip()
+        endpoint = str(endpoint_display_mapping.get().get(raw, raw) or "").strip()
+        if not endpoint:
+            raise ValueError("select a workflow endpoint")
+        if endpoint.lower() == "smart":
+            raise ValueError("workflow endpoint must be a concrete endpoint")
+        return endpoint
 
     def workflow_params_payload() -> dict[str, Any]:
         raw = str(input.workflowParams() or "").strip()
@@ -702,13 +811,29 @@ def server(input, output, session):
             workflow_status_message.set("Select a workflow first.")
             return
         try:
+            workflow_files_data = current_workflow_files.get()
+            uploaded_files = (
+                workflow_files_data.get("files")
+                if workflow_files_data.get("key") == workflow_file_upload_key.get()
+                else None
+            )
+            params = merge_uploaded_context(
+                workflow_params_payload(),
+                build_uploaded_file_context(uploaded_files),
+            )
             payload = {
-                "params": workflow_params_payload(),
+                "params": params,
                 "endpoint": workflow_endpoint_key(),
             }
             reasoning = str(input.workflowReasoning() or "").strip()
             if reasoning:
                 payload["reasoning_effort"] = reasoning
+            rag_endpoint = str(input.workflowRagEndpoint() or "").strip()
+            if rag_endpoint:
+                payload["rag_endpoint"] = rag_endpoint
+            search_provider = str(input.workflowSearchProvider() or "").strip()
+            if search_provider:
+                payload["search_provider"] = search_provider
             convo_id = str(input.workflowConvoID() or "").strip()
             if convo_id:
                 payload["convo_id"] = convo_id
@@ -743,8 +868,22 @@ def server(input, output, session):
             workflow_status_message.set("Select a run first.")
             return
         try:
-            workflow_run_snapshot.set(await run_workflow_to_completion(run_id))
-            workflow_status_message.set(f"Ran {run_id} to terminal state.")
+            async def after_step(snapshot: dict[str, Any], step_number: int) -> None:
+                workflow_run_snapshot.set(snapshot)
+                status = workflow_snapshot_status(snapshot) or "unknown"
+                workflow_status_message.set(
+                    f"Advanced {run_id}: step {step_number}, status {status}."
+                )
+                await update_workflow_run_selector()
+
+            snapshot = await advance_workflow_to_terminal(
+                run_id,
+                advance_workflow_run,
+                after_step=after_step,
+                max_steps=WORKFLOW_RUN_MAX_STEPS,
+            )
+            status = workflow_snapshot_status(snapshot) or "unknown"
+            workflow_status_message.set(f"Ran {run_id}: status {status}.")
             await update_workflow_run_selector()
         except Exception as exc:
             workflow_status_message.set(f"Run failed: {exc}")
@@ -878,6 +1017,25 @@ def server(input, output, session):
             col_widths=[10, 2],
         )
 
+    @render.ui
+    @reactive.event(workflow_file_upload_key)
+    def workflow_file_upload_ui():
+        return ui.layout_columns(
+            ui.input_file(
+                "workflowUploadFile",
+                "Workflow Files",
+                button_label="Upload (UTF-8)",
+                placeholder="No files uploaded",
+                multiple=True,
+                width="100%",
+            ),
+            ui.div(
+                ui.input_action_button("clearWorkflowUpload", "Clear"),
+                style="display: flex; align-items: flex-end; height: 100%;",
+            ),
+            col_widths=[8, 4],
+        )
+
     @reactive.Effect
     @reactive.event(input.uploadFile)
     def _track_uploaded_files():
@@ -886,10 +1044,27 @@ def server(input, output, session):
             current_files.set({"key": file_upload_key.get(), "files": uploaded})
 
     @reactive.Effect
+    @reactive.event(input.workflowUploadFile)
+    def _track_workflow_uploaded_files():
+        uploaded = input.workflowUploadFile()
+        if uploaded and len(uploaded) > 0:
+            current_workflow_files.set(
+                {"key": workflow_file_upload_key.get(), "files": uploaded}
+            )
+
+    @reactive.Effect
     @reactive.event(input.clearUpload)
     def _clear_upload():
         current_files.set({"key": file_upload_key.get() + 1, "files": None})
         file_upload_key.set(file_upload_key.get() + 1)
+
+    @reactive.Effect
+    @reactive.event(input.clearWorkflowUpload)
+    def _clear_workflow_upload():
+        current_workflow_files.set(
+            {"key": workflow_file_upload_key.get() + 1, "files": None}
+        )
+        workflow_file_upload_key.set(workflow_file_upload_key.get() + 1)
 
     @reactive.Effect
     @reactive.event(input.logout)
@@ -908,10 +1083,6 @@ def server(input, output, session):
         if status:
             details.insert(0, ui.card(ui.markdown(f"**Workflow status**\n\n{status}")))
         return ui.div(*details)
-
-    @render.ui
-    def workflowRunsBox():
-        return format_workflow_run_table(workflow_runs.get())
 
     @render.ui
     def workflowRunDetails():
