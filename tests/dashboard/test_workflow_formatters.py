@@ -105,11 +105,37 @@ def test_format_step_timeline_renders_horizontal_step_boxes():
     assert "wf_123" in rendered
     assert "1 / 2 completed" in rendered
     assert "progressbar" not in rendered
+    assert "dashboard-step-picker" in rendered
+    assert "dashboard-step-button" in rendered
+    assert "--dashboard-step-color: var(--bs-success)" in rendered
+    assert "dashboard-step-panel" in rendered
+    assert "dashboard-step-detail-grid" in rendered
+    assert "dashboard-step-detail-box" in rendered
+    assert "Input" in rendered
+    assert "Output" in rendered
+    assert "accordion-button" not in rendered
     assert "COMPLETED" in rendered
     assert "FAILED" in rendered
     assert "Error: boom" in rendered
     assert "1 artifact" in rendered
     assert "- Done step" not in rendered
+
+
+def test_format_step_timeline_uses_three_columns_for_five_or_six_steps():
+    rendered = str(
+        format_step_timeline(
+            {
+                "run": {"run_id": "wf_456"},
+                "steps": [
+                    {"step_id": f"step_{index}", "status": "pending"}
+                    for index in range(5)
+                ],
+                "artifacts": [],
+            }
+        )
+    )
+
+    assert "dashboard-step-row cols-3" in rendered
 
 
 def test_format_artifacts_groups_panels_by_step():
@@ -127,6 +153,7 @@ def test_format_artifacts_groups_panels_by_step():
 
     assert "first (2)" in rendered
     assert "second (1)" in rendered
+    assert "accordion-button collapsed" in rendered
     assert "first text" in rendered
     assert '"value": 2' in rendered
 

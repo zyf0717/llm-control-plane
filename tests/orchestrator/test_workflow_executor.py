@@ -293,6 +293,35 @@ async def test_search_step_fans_out_workflow_planned_queries_without_planner(tmp
 
 
 @pytest.mark.asyncio
+async def test_llm_json_output_parser_accepts_fenced_json_for_workflow_queries(tmp_path):
+    write_json_queries_workflow(tmp_path / "json_queries_sample.yaml")
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    llm = JsonLLMClient(
+        '```json\n{"queries": ["query one", "query two"]}\n```'
+    )
+    search = CapturingSearchClient()
+    executor = WorkflowExecutor(registry, store, llm, search)
+    try:
+        created = await executor.create_run(
+            "json_queries_sample", params={"goal": "ship"}, endpoint="node-a"
+        )
+        run_id = created["run"]["run_id"]
+
+        await executor.advance(run_id)
+        snapshot = await executor.advance(run_id)
+
+        assert [call["query"] for call in search.calls] == ["query one", "query two"]
+        assert snapshot["steps"][0]["output_json"]["json"] == {
+            "queries": ["query one", "query two"]
+        }
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_search_step_can_dispatch_json_string_query_without_planner(tmp_path):
     write_direct_search_workflow(tmp_path / "direct_search_sample.yaml")
     registry = WorkflowRegistry(tmp_path)

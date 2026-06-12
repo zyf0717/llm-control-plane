@@ -308,6 +308,10 @@ class WorkflowExecutor:
                 or spec.defaults.search_provider
             )
             use_planner = len(queries) == 1 and queries[0] == prompt.strip()
+            if not any(query.strip() for query in queries):
+                raise ValueError(
+                    "workflow search step produced no query; check upstream JSON output"
+                )
             results = await asyncio.gather(
                 *(
                     self.search_client.search(
@@ -380,10 +384,18 @@ def _parse_json_text(text: str) -> Any:
     stripped = str(text or "").strip()
     if not stripped:
         return None
+    fenced = _strip_json_code_fence(stripped)
+    if fenced != stripped:
+        stripped = fenced
     try:
         return json.loads(stripped)
     except json.JSONDecodeError:
         return None
+
+
+def _strip_json_code_fence(text: str) -> str:
+    match = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    return match.group(1).strip() if match else text
 
 
 def _extract_search_queries(prompt: str) -> list[str]:

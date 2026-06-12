@@ -80,12 +80,87 @@ app_ui = ui.page_fluid(
             margin-bottom: 0;
         }
 
+        .dashboard-step-row {
+            display: grid;
+            gap: 0.5rem;
+            align-items: stretch;
+            margin-bottom: 0.75rem;
+        }
+
+        .dashboard-step-row.cols-1 { grid-template-columns: repeat(1, minmax(0, 1fr)); }
+        .dashboard-step-row.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .dashboard-step-row.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .dashboard-step-row.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+        .dashboard-step-button {
+            min-width: 0;
+            border: 0;
+            padding: 0;
+            background: var(--bs-body-bg);
+            color: var(--bs-body-color);
+            text-align: left;
+            appearance: none;
+        }
+
+        .dashboard-step-button:focus {
+            outline: none;
+        }
+
+        .dashboard-step-button:focus-visible {
+            outline: 2px solid var(--bs-primary);
+            outline-offset: 2px;
+        }
+
+        .dashboard-step-button.is-active {
+            outline: 2px solid var(--dashboard-step-color, var(--bs-primary));
+            outline-offset: 2px;
+        }
+
+        .dashboard-step-panel {
+            width: 100%;
+            border: 1px solid var(--bs-border-color);
+            background: var(--bs-body-bg);
+            color: var(--bs-body-color);
+            padding: 0.75rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .dashboard-step-detail-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.75rem;
+        }
+
+        .dashboard-step-detail-box {
+            border: 1px solid var(--bs-border-color);
+            background: var(--bs-body-bg);
+            color: var(--bs-body-color);
+            min-width: 0;
+        }
+
+        .dashboard-step-detail-title {
+            font-weight: 700;
+            padding: 0.5rem 0.75rem;
+            border-bottom: 1px solid var(--bs-border-color);
+        }
+
+        .dashboard-step-detail-body {
+            max-height: 28rem;
+            overflow: auto;
+            padding: 0.75rem;
+            background-color: var(--bs-secondary-bg) !important;
+            color: var(--bs-emphasis-color) !important;
+        }
+
         .dashboard-trace-json {
             max-height: 28rem;
             overflow: auto;
             white-space: pre-wrap;
             overflow-wrap: anywhere;
             margin-bottom: 0;
+            background-color: transparent !important;
+            color: var(--bs-emphasis-color) !important;
+            border: 0 !important;
         }
 
         @media (max-width: 991.98px) {
@@ -97,7 +172,43 @@ app_ui = ui.page_fluid(
             .dashboard-run-info {
                 max-height: 20rem;
             }
+
+            .dashboard-step-row.cols-2,
+            .dashboard-step-row.cols-3,
+            .dashboard-step-row.cols-4,
+            .dashboard-step-detail-grid {
+                grid-template-columns: 1fr;
+            }
         }
+        """),
+    ui.tags.script("""
+        document.addEventListener("click", function(event) {
+            const button = event.target.closest(".dashboard-step-button");
+            if (!button) return;
+            const picker = button.closest(".dashboard-step-picker");
+            if (!picker) return;
+
+            const panelId = button.getAttribute("data-step-panel");
+            const wasOpen = button.getAttribute("aria-expanded") === "true";
+
+            picker.querySelectorAll(".dashboard-step-button").forEach(function(item) {
+                item.classList.remove("is-active");
+                item.setAttribute("aria-expanded", "false");
+            });
+            picker.querySelectorAll(".dashboard-step-panel").forEach(function(panel) {
+                panel.hidden = true;
+            });
+
+            if (wasOpen) return;
+
+            button.classList.add("is-active");
+            button.setAttribute("aria-expanded", "true");
+            picker.querySelectorAll(".dashboard-step-panel").forEach(function(panel) {
+                if (panel.getAttribute("data-step-panel-id") === panelId) {
+                    panel.hidden = false;
+                }
+            });
+        });
         """),
     ui.navset_bar(
         ui.nav_panel(
@@ -293,7 +404,7 @@ app_ui = ui.page_fluid(
                     ),
                     ui.output_ui("workflowRunDetails"),
                 ),
-                col_widths=[4, 8],
+                col_widths=[3, 9],
             ),
         ),
         ui.nav_panel(
