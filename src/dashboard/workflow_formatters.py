@@ -259,7 +259,6 @@ def _progress_bar(percent: int) -> ui.Tag:
 def _format_step_status_row(step: dict[str, Any], artifact_count: int) -> ui.Tag:
     status = str(step.get("status") or "unknown")
     step_id = str(step.get("step_id") or "step")
-    name = _step_name(step)
     started = _compact_value(step.get("started_at"))
     completed = _compact_value(step.get("completed_at"))
     output_flag = "output" if isinstance(step.get("output_json"), dict) else "no output"
@@ -270,13 +269,17 @@ def _format_step_status_row(step: dict[str, Any], artifact_count: int) -> ui.Tag
         ui.tags.div(
             ui.tags.span(
                 status.upper(),
-                class_=f"badge text-bg-{_status_variant(status)}",
-                style="min-width: 5.5rem;",
+                style=(
+                    f"background: {_status_color(status)}; "
+                    f"color: {_status_text_color(status)}; "
+                    "border-radius: 0.25rem; font-size: 0.75rem; "
+                    "font-weight: 700; min-width: 5.5rem; padding: 0.25rem 0.45rem; "
+                    "text-align: center;"
+                ),
             ),
-            ui.tags.strong(step_id),
-            ui.tags.span(
-                f" - {name}" if name and name != step_id else "",
-                style="color: #6c757d;",
+            ui.tags.strong(
+                step_id,
+                style="color: #212529; font-weight: 700;",
             ),
             style="display: flex; gap: 0.5rem; align-items: center;",
         ),
@@ -298,34 +301,15 @@ def _format_step_status_row(step: dict[str, Any], artifact_count: int) -> ui.Tag
         style=(
             f"border-left: 0.25rem solid {_status_color(status)}; "
             "padding: 0.5rem 0.75rem; margin-bottom: 0.5rem; "
-            "background: #f8f9fa;"
+            "background: #ffffff; border-top: 1px solid #dee2e6; "
+            "border-right: 1px solid #dee2e6; border-bottom: 1px solid #dee2e6;"
         ),
     )
-
-
-def _step_name(step: dict[str, Any]) -> str:
-    input_json = step.get("input_json") if isinstance(step.get("input_json"), dict) else {}
-    current_step = (
-        input_json.get("current_step")
-        if isinstance(input_json.get("current_step"), dict)
-        else {}
-    )
-    return str(current_step.get("name") or step.get("step_id") or "step")
 
 
 def _compact_value(value: Any) -> str:
     text = str(value or "").strip()
     return text or "-"
-
-
-def _status_variant(status: str) -> str:
-    return {
-        "completed": "success",
-        "running": "primary",
-        "failed": "danger",
-        "pending": "secondary",
-        "skipped": "warning",
-    }.get(status, "secondary")
 
 
 def _status_color(status: str) -> str:
@@ -336,3 +320,7 @@ def _status_color(status: str) -> str:
         "pending": "#adb5bd",
         "skipped": "#ffc107",
     }.get(status, "#adb5bd")
+
+
+def _status_text_color(status: str) -> str:
+    return "#212529" if status == "skipped" else "#ffffff"

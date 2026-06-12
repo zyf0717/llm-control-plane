@@ -12,6 +12,7 @@ from src.search.safety import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER
 
 load_dotenv()
 
+from .app_ui import input_action_row
 from .chat_client import stream_chat_response
 from .formatters import (
     format_all_available_models,
@@ -875,6 +876,7 @@ def server(input, output, session):
                     f"Advanced {run_id}: step {step_number}, status {status}."
                 )
                 await update_workflow_run_selector()
+                await reactive.flush()
 
             snapshot = await advance_workflow_to_terminal(
                 run_id,
@@ -1020,20 +1022,26 @@ def server(input, output, session):
     @render.ui
     @reactive.event(workflow_file_upload_key)
     def workflow_file_upload_ui():
-        return ui.layout_columns(
-            ui.input_file(
-                "workflowUploadFile",
+        return ui.div(
+            ui.tags.label(
                 "Workflow Files",
-                button_label="Upload (UTF-8)",
-                placeholder="No files uploaded",
-                multiple=True,
-                width="100%",
+                class_="form-label",
+                **{"for": "workflowUploadFile"},
             ),
-            ui.div(
-                ui.input_action_button("clearWorkflowUpload", "Clear"),
-                style="display: flex; align-items: flex-end; height: 100%;",
+            input_action_row(
+                ui.input_file(
+                    "workflowUploadFile",
+                    "",
+                    button_label="Upload (UTF-8)",
+                    placeholder="No files uploaded",
+                    multiple=True,
+                    width="100%",
+                ),
+                "clearWorkflowUpload",
+                "Clear",
+                col_widths=[8, 4],
             ),
-            col_widths=[8, 4],
+            class_="dashboard-form-action",
         )
 
     @reactive.Effect

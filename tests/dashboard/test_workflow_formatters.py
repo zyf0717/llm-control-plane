@@ -108,6 +108,7 @@ def test_format_step_timeline_renders_progress_status_error_and_artifact_counts(
     assert "FAILED" in rendered
     assert "Error: boom" in rendered
     assert "1 artifact" in rendered
+    assert "- Done step" not in rendered
 
 
 def test_format_artifacts_groups_panels_by_step():

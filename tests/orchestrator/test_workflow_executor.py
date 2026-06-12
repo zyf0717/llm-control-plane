@@ -19,6 +19,16 @@ class FakeLLMClient:
         }
 
 
+class JsonLLMClient:
+    def __init__(self, text: str):
+        self.text = text
+        self.prompts = []
+
+    async def complete(self, **kwargs):
+        self.prompts.append(kwargs)
+        return {"text": self.text, "metadata": {"endpoint": kwargs["endpoint"]}}
+
+
 class BlockingLLMClient:
     def __init__(self):
         self.started = False
@@ -95,6 +105,30 @@ steps:
     )
 
 
+def write_json_query_workflow(path: Path) -> None:
+    path.write_text(
+        """
+id: json_query_sample
+name: JSON Query Sample
+version: 0.1.0
+params_schema:
+  type: object
+  required: [goal]
+steps:
+  - id: plan
+    kind: llm
+    prompt: "{{ params.goal }}"
+    output_key: plan
+  - id: search
+    kind: search
+    depends_on: [plan]
+    prompt: "{{ outputs.plan.json.query }}"
+    output_key: search
+""",
+        encoding="utf-8",
+    )
+
+
 @pytest.mark.asyncio
 async def test_executor_advances_steps_with_previous_outputs(tmp_path):
     write_workflow(tmp_path / "sample.yaml")
@@ -146,6 +180,34 @@ async def test_executor_uses_run_search_provider_and_rag_endpoint(tmp_path):
 
         assert search.calls[0]["provider"] == "duckduckgo_html"
         assert llm.prompts[0]["rag_endpoint"] == "http://rag/api/retrieve/context"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_search_step_can_use_json_field_from_previous_llm_output(tmp_path):
+    write_json_query_workflow(tmp_path / "json_query_sample.yaml")
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    llm = JsonLLMClient(
+        '{"query": "site:platform.openai.com/docs Responses API function calling"}'
+    )
+    search = CapturingSearchClient()
+    executor = WorkflowExecutor(registry, store, llm, search)
+    try:
+        created = await executor.create_run(
+            "json_query_sample", params={"goal": "ship"}, endpoint="node-a"
+        )
+        run_id = created["run"]["run_id"]
+
+        await executor.advance(run_id)
+        await executor.advance(run_id)
+
+        assert search.calls[0]["query"] == (
+            "site:platform.openai.com/docs Responses API function calling"
+        )
     finally:
         await store.close()
 
