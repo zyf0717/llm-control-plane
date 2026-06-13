@@ -178,7 +178,7 @@ def test_search_web_endpoint_emits_reranking_metadata():
         provider="none",
         results=[],
         warnings=[],
-        reranking={"used": True, "model": "search-reranker"},
+        reranking={"used": True, "model": "search-reranker", "path": "llm"},
     )
 
     with patch(
@@ -188,4 +188,8 @@ def test_search_web_endpoint_emits_reranking_metadata():
         result = client.post("/search/web", json={"query": "alpha"})
 
     assert result.status_code == 200
-    assert result.json()["reranking"] == {"used": True, "model": "search-reranker"}
+    assert result.json()["reranking"] == {
+        "used": True,
+        "model": "search-reranker",
+        "path": "llm",
+    }

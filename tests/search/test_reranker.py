@@ -77,13 +77,16 @@ async def test_valid_reranker_response_reorders_results_and_attaches_metadata():
     assert ranking.results[0].score == 0.9
     assert ranking.results[0].ranking == {
         "reranker": "search-reranker",
+        "reranker_path": "llm",
         "reason": "most relevant",
     }
+    assert ranking.results[1].ranking["reranker_path"] == "llm"
     assert ranking.to_public_dict() == {
         "used": True,
         "degraded": False,
         "model": "search-reranker",
         "backend": "llm",
+        "path": "llm",
     }
 
 
@@ -263,7 +266,9 @@ async def test_dedicated_reranker_posts_documents_and_reorders_by_index():
         "degraded": False,
         "model": "search-reranker",
         "backend": "dedicated",
+        "path": "dedicated",
     }
+    assert ranking.results[0].ranking["reranker_path"] == "dedicated"
 
 
 @pytest.mark.asyncio
@@ -328,6 +333,7 @@ async def test_dedicated_reranker_falls_back_to_llm_when_configured():
         "degraded": True,
         "model": "search-reranker",
         "backend": "llm",
+        "path": "llm",
         "warning": "dedicated-reranker-failed: TimeoutException",
     }
 
@@ -362,3 +368,4 @@ async def test_dedicated_and_llm_fallback_fail_preserves_provider_order():
         "llm-fallback-failed: ConnectError"
     )
     assert ranking.to_public_dict()["backend"] == "dedicated"
+    assert ranking.to_public_dict()["path"] == "none"

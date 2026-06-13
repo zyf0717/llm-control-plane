@@ -63,7 +63,15 @@ steps:
     name: Search evidence
     kind: search
     use_query_refiner: false
-    use_reranker: true
+    depends_on: [plan_search_queries]
+    prompt: |
+      {{ outputs.search_plan.json.queries }}
+    output_key: search_evidence
+
+  - id: rerank_search_evidence
+    name: Rerank search evidence
+    kind: rerank
+    depends_on: [search_evidence]
     rerank_context: |
       Latest user prompt:
       {{ params.latest_user_prompt }}
@@ -73,16 +81,15 @@ steps:
 
       Search plan:
       {{ outputs.search_plan.text }}
-    depends_on: [plan_search_queries]
     prompt: |
-      {{ outputs.search_plan.json.queries }}
+      {{ params.latest_user_prompt }}
     output_key: search_evidence
 
   - id: consolidate_reply
     name: Consolidate reply
     kind: llm
     chat_visibility: final
-    depends_on: [search_evidence]
+    depends_on: [rerank_search_evidence]
     prompt: |
       Latest user prompt:
       {{ params.latest_user_prompt }}

@@ -162,9 +162,9 @@ The `search` block enables the lightweight candidate-discovery module exposed at
 
 When `search.query_refiner_model_endpoint` is configured and query refinement is enabled, ad hoc `/search/web` calls may run a bounded, non-persisted query-refiner call before provider execution. The query refiner returns one or more concise provider-ready queries; the first query becomes the effective search query. If `query_refiner_max_queries` is greater than 1, provider searches run as an async fanout and results are deduped before applying `search_max_total_results`. Query-refiner failure degrades to the original query and adds a warning.
 
-When `search.reranker_model_endpoint` is configured and reranking is enabled, search runs a bounded, non-persisted reranker call after provider retrieval and dedupe. `reranker_backend: llm` uses `/v1/chat/completions`; `reranker_backend: dedicated` posts `{query, documents, top_k}` to `/rerank`. A dedicated reranker can fall back to `reranker_fallback_model_endpoint`; otherwise reranker failure preserves provider order and adds a warning.
+When `search.reranker_model_endpoint` is configured and reranking is enabled, search runs a bounded, non-persisted reranker call after provider retrieval and dedupe. `reranker_backend: llm` uses `/v1/chat/completions`; `reranker_backend: dedicated` posts `{query, documents, top_k}` to `/rerank`. A dedicated reranker can fall back to `reranker_fallback_model_endpoint`; otherwise reranker failure preserves provider order and adds a warning. Reranking metadata exposes the configured `backend` and the actual `path` used for the returned ranking: `dedicated`, `llm`, or `none`.
 
-Workflow search can use either query-refiner planning or workflow-owned planning. Plain search prompts may use the query refiner. Workflow-planned JSON queries should set `use_query_refiner: false`; they can still use post-retrieval reranking.
+Workflow search can use either query-refiner planning or workflow-owned planning. Plain search prompts may use the query refiner. Workflow-planned JSON queries should set `use_query_refiner: false`. Workflow post-retrieval reranking should be modeled as an explicit `rerank` step that depends on the retrieval step.
 
 Supported built-in provider ids:
 

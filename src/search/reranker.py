@@ -37,6 +37,7 @@ class SearchReranking:
     warning: Optional[str] = None
     model: Optional[str] = None
     backend: Optional[str] = None
+    path: str = "none"
 
     def to_public_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -47,6 +48,7 @@ class SearchReranking:
             payload["model"] = self.model
         if self.backend:
             payload["backend"] = self.backend
+        payload["path"] = self.path
         if self.warning:
             payload["warning"] = self.warning
         return payload
@@ -66,10 +68,10 @@ class SearchReranker:
         context: Optional[str] = None,
     ) -> SearchReranking:
         if not results:
-            return SearchReranking(results=results, used=False)
+            return SearchReranking(results=results, used=False, path="none")
         if not self.config.enabled or not self.config.model_endpoint:
             self._repair_ranks(results)
-            return SearchReranking(results=results, used=False)
+            return SearchReranking(results=results, used=False, path="none")
 
         candidates = results[: self._max_candidates()]
         passthrough = results[len(candidates) :]
@@ -128,17 +130,19 @@ class SearchReranker:
             parsed = self._parse_dedicated_response(
                 response.json(), candidate_count=len(candidates)
             )
-            ordered = self._apply_ranking(candidates, parsed)
+            ordered = self._apply_ranking(candidates, parsed, path="dedicated")
             if not ordered:
                 raise ValueError("empty-ranking")
 
             reranked = [*ordered, *passthrough]
             self._repair_ranks(reranked)
+            self._annotate_reranker_path(reranked, "dedicated")
             return SearchReranking(
                 results=reranked,
                 used=True,
                 model=self.config.model,
                 backend="dedicated",
+                path="dedicated",
             )
         except Exception as exc:
             warning = f"dedicated-reranker-failed: {type(exc).__name__}"
@@ -205,12 +209,13 @@ class SearchReranker:
                 .get("content", "")
             )
             parsed = self._parse_json(content)
-            ordered = self._apply_ranking(candidates, parsed)
+            ordered = self._apply_ranking(candidates, parsed, path=backend)
             if not ordered:
                 return self._fallback(results, "empty-ranking", backend=backend)
 
             reranked = [*ordered, *passthrough]
             self._repair_ranks(reranked)
+            self._annotate_reranker_path(reranked, backend)
             return SearchReranking(
                 results=reranked,
                 used=True,
@@ -218,6 +223,7 @@ class SearchReranker:
                 warning=success_warning,
                 model=self.config.model,
                 backend=backend,
+                path=backend,
             )
         except Exception as exc:
             return self._fallback(
@@ -363,7 +369,11 @@ Rules:
         return {"ranked": ranked}
 
     def _apply_ranking(
-        self, candidates: list[SearchResult], parsed: dict[str, object]
+        self,
+        candidates: list[SearchResult],
+        parsed: dict[str, object],
+        *,
+        path: str,
     ) -> list[SearchResult]:
         by_id = {str(index): result for index, result in enumerate(candidates, start=1)}
         ranked = parsed.get("ranked")
@@ -383,7 +393,10 @@ Rules:
             result = by_id[candidate_id]
             result.score = self._clean_score(item.get("score"))
             reason = self._clean_reason(item.get("reason"))
-            result.ranking = {"reranker": self.config.model}
+            result.ranking = {
+                "reranker": self.config.model,
+                "reranker_path": path,
+            }
             if reason:
                 result.ranking["reason"] = reason
             used_ids.add(candidate_id)
@@ -477,6 +490,16 @@ Rules:
         for index, result in enumerate(results, start=1):
             result.rank = index
 
+    def _annotate_reranker_path(
+        self, results: list[SearchResult], path: str
+    ) -> None:
+        for result in results:
+            result.ranking = {
+                "reranker": self.config.model,
+                **dict(result.ranking or {}),
+                "reranker_path": path,
+            }
+
     def _fallback(
         self,
         results: list[SearchResult],
@@ -492,4 +515,5 @@ Rules:
             warning=warning,
             model=self.config.model if self.config.model_endpoint else None,
             backend=backend,
+            path="none",
         )

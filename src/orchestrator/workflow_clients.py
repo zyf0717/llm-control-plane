@@ -181,7 +181,7 @@ class ProxyWorkflowSearchClient:
         provider: Optional[str] = None,
         count: int = 5,
         use_query_refiner: bool = True,
-        use_reranker: bool = True,
+        use_reranker: bool = False,
         rerank_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         response = await services.search_service.search(

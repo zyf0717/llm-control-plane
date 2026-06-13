@@ -67,7 +67,7 @@ def test_registry_loads_chat_visibility_fields(tmp_path):
     assert step.chat_stream is False
 
 
-def test_registry_loads_search_control_fields(tmp_path):
+def test_registry_loads_rerank_steps(tmp_path):
     write_workflow(
         tmp_path / "sample.yaml",
         body=minimal_workflow(
@@ -76,7 +76,11 @@ def test_registry_loads_search_control_fields(tmp_path):
     name: Search
     kind: search
     use_query_refiner: false
-    use_reranker: true
+    prompt: hello
+  - id: rerank
+    name: Rerank
+    kind: rerank
+    depends_on: [search]
     rerank_context: "Goal: {{ params.goal }}"
     prompt: hello
 """
@@ -86,10 +90,12 @@ def test_registry_loads_search_control_fields(tmp_path):
     registry = WorkflowRegistry(tmp_path)
     registry.load()
 
-    step = registry.get("sample").steps[0]
-    assert step.use_query_refiner is False
-    assert step.use_reranker is True
-    assert step.rerank_context == "Goal: {{ params.goal }}"
+    search_step = registry.get("sample").steps[0]
+    rerank_step = registry.get("sample").steps[1]
+    assert search_step.use_query_refiner is False
+    assert rerank_step.kind == "rerank"
+    assert rerank_step.depends_on == ["search"]
+    assert rerank_step.rerank_context == "Goal: {{ params.goal }}"
 
 
 def test_registry_defaults_chat_visibility_to_hidden(tmp_path):

@@ -47,7 +47,7 @@ class WorkflowSearchClient(Protocol):
         provider: str | None = None,
         count: int = 5,
         use_query_refiner: bool = True,
-        use_reranker: bool = True,
+        use_reranker: bool = False,
         rerank_context: str | None = None,
     ) -> dict[str, Any]:
         ...
@@ -492,7 +492,9 @@ class WorkflowExecutor:
                 if step.use_query_refiner is not None
                 else len(queries) == 1 and queries[0] == prompt.strip()
             )
-            use_reranker = True if step.use_reranker is None else bool(step.use_reranker)
+            use_reranker = (
+                bool(step.use_reranker) if step.use_reranker is not None else False
+            )
             rerank_context = (
                 render_template(step.rerank_context, step_input)
                 if step.rerank_context
@@ -528,21 +530,75 @@ class WorkflowExecutor:
                         results=list(result.get("results") or []),
                         context=rerank_context,
                     )
-                    combined_warnings = [
-                        *list(result.get("warnings") or []),
-                        *list(reranked.get("warnings") or []),
-                    ]
-                    result = reranked | {
-                        key: value
-                        for key, value in result.items()
-                        if key not in {"results", "reranking", "warnings"}
-                    }
-                    result["warnings"] = combined_warnings
+                    result = _merge_reranked_search_result(result, reranked)
             return WorkflowStepExecution(
                 output={
                     "text": json.dumps(result, indent=2),
                     "json": result,
                     "metadata": {"kind": "search"},
+                },
+                artifact_text=json.dumps(result, indent=2),
+            )
+
+        if step.kind == "rerank":
+            source_key, source = _select_rerank_source(spec, step, step_input)
+            source_results = [
+                dict(item)
+                for item in source.get("results") or []
+                if isinstance(item, dict)
+            ]
+            query = prompt.strip() or _search_output_query(source)
+            if source_results and not query:
+                raise ValueError("workflow rerank step produced no query")
+
+            rerank_context = (
+                render_template(step.rerank_context, step_input)
+                if step.rerank_context
+                else None
+            )
+            if not source_results:
+                result = dict(source)
+                result["warnings"] = [
+                    str(item) for item in result.get("warnings") or []
+                ]
+                result["reranking"] = _reranking_metadata(
+                    result, used=False, degraded=False, path="none"
+                )
+            else:
+                rerank_results = (
+                    getattr(self.search_client, "rerank_results", None)
+                    if self.search_client is not None
+                    else None
+                )
+                if rerank_results is None:
+                    result = dict(source)
+                    result["warnings"] = [
+                        *[str(item) for item in result.get("warnings") or []],
+                        "reranker: no-rerank-client",
+                    ]
+                    result["reranking"] = _reranking_metadata(
+                        result, used=False, degraded=True, path="none"
+                    )
+                else:
+                    reranked = await rerank_results(
+                        query=query,
+                        results=source_results,
+                        context=rerank_context,
+                    )
+                    result = _merge_reranked_search_result(source, reranked)
+            result["workflow_rerank"] = {
+                "source_output": source_key,
+                "query": query,
+                "context_provided": bool(rerank_context),
+                "path": _reranking_path(result),
+            }
+            if not source_results:
+                result["workflow_rerank"]["skipped"] = "no-results"
+            return WorkflowStepExecution(
+                output={
+                    "text": json.dumps(result, indent=2),
+                    "json": result,
+                    "metadata": {"kind": "rerank"},
                 },
                 artifact_text=json.dumps(result, indent=2),
             )
@@ -799,6 +855,107 @@ def _merge_search_results(
             "queries": list(queries),
         },
     }
+
+
+def _select_rerank_source(
+    spec: WorkflowSpec, step: WorkflowStepSpec, step_input: dict[str, Any]
+) -> tuple[str, dict[str, Any]]:
+    outputs = step_input.get("previous_outputs")
+    if not isinstance(outputs, dict):
+        outputs = {}
+    step_specs = {candidate.id: candidate for candidate in spec.steps}
+    source_keys = [
+        step_specs[dependency].output_key or dependency
+        for dependency in step.depends_on or []
+        if dependency in step_specs
+    ]
+    if not source_keys:
+        source_keys = list(outputs.keys())
+
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    seen_keys: set[str] = set()
+    for source_key in source_keys:
+        if source_key in seen_keys:
+            continue
+        seen_keys.add(source_key)
+        source = _search_json_from_step_output(outputs.get(source_key))
+        if source is not None:
+            candidates.append((source_key, source))
+
+    if not candidates:
+        raise ValueError(
+            "workflow rerank step found no dependency output with search results"
+        )
+    if len(candidates) > 1:
+        raise ValueError(
+            "workflow rerank step has multiple dependency outputs with search results"
+        )
+    return candidates[0]
+
+
+def _search_json_from_step_output(output: Any) -> dict[str, Any] | None:
+    if not isinstance(output, dict):
+        return None
+    search_json = output.get("json")
+    if not isinstance(search_json, dict):
+        return None
+    if not isinstance(search_json.get("results"), list):
+        return None
+    return dict(search_json)
+
+
+def _search_output_query(output: dict[str, Any]) -> str:
+    query = str(output.get("query") or "").strip()
+    if query:
+        return query
+    queries = output.get("queries")
+    if isinstance(queries, list):
+        for item in queries:
+            query = str(item or "").strip()
+            if query:
+                return query
+    return ""
+
+
+def _merge_reranked_search_result(
+    source: dict[str, Any], reranked: dict[str, Any]
+) -> dict[str, Any]:
+    warnings = [
+        *[str(item) for item in source.get("warnings") or []],
+        *[str(item) for item in reranked.get("warnings") or []],
+    ]
+    merged = dict(reranked) | {
+        key: value
+        for key, value in source.items()
+        if key not in {"results", "reranking", "warnings", "wrapped_results"}
+    }
+    merged["warnings"] = warnings
+    return merged
+
+
+def _reranking_metadata(
+    result: dict[str, Any], *, used: bool, degraded: bool, path: str
+) -> dict[str, Any]:
+    reranking = result.get("reranking")
+    metadata = dict(reranking) if isinstance(reranking, dict) else {}
+    metadata.setdefault("used", used)
+    metadata.setdefault("degraded", degraded)
+    metadata["path"] = path
+    return metadata
+
+
+def _reranking_path(result: dict[str, Any]) -> str:
+    reranking = result.get("reranking")
+    if not isinstance(reranking, dict):
+        return "none"
+    path = str(reranking.get("path") or "").strip().lower()
+    if path:
+        return path
+    if reranking.get("used") is True:
+        backend = str(reranking.get("backend") or "").strip().lower()
+        if backend in {"dedicated", "llm"}:
+            return backend
+    return "none"
 
 
 def _utc_now() -> str:

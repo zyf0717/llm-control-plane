@@ -63,6 +63,7 @@ def test_wrap_search_results_includes_filtered_reranking_metadata():
             "degraded": False,
             "model": "search-reranker",
             "backend": "dedicated",
+            "path": "dedicated",
         },
     )
 
@@ -71,4 +72,5 @@ def test_wrap_search_results_includes_filtered_reranking_metadata():
     assert '"reranking"' in wrapped
     assert '"model": "search-reranker"' in wrapped
     assert '"backend": "dedicated"' in wrapped
+    assert '"path": "dedicated"' in wrapped
     assert "raw" not in wrapped

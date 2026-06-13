@@ -23,7 +23,18 @@ steps:
     name: Search context
     kind: search
     use_query_refiner: true
-    use_reranker: true
+    prompt: |
+      {{ params.goal }}
+
+      Additional context:
+      {{ params.context }}
+      {{ params.uploaded_context }}
+    output_key: search_context
+
+  - id: rerank_search_context
+    name: Rerank search context
+    kind: rerank
+    depends_on: [search_context]
     rerank_context: |
       Goal:
       {{ params.goal }}
@@ -35,17 +46,13 @@ steps:
       {{ params.uploaded_context }}
     prompt: |
       {{ params.goal }}
-
-      Additional context:
-      {{ params.context }}
-      {{ params.uploaded_context }}
     output_key: search_context
 
   - id: target_assessment
     name: Target assessment
     kind: llm
     chat_visibility: intermediate
-    depends_on: [search_context]
+    depends_on: [rerank_search_context]
     prompt: |
       Goal:
       {{ params.goal }}

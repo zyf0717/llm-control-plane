@@ -150,8 +150,8 @@ class StubReranker:
         for index, result in enumerate(reranked, start=1):
             result.rank = index
             result.score = 1.0 / index
-            result.ranking = {"reranker": "stub"}
-        return SearchReranking(results=reranked, used=True, model="stub")
+            result.ranking = {"reranker": "stub", "reranker_path": "llm"}
+        return SearchReranking(results=reranked, used=True, model="stub", path="llm")
 
 
 @pytest.mark.asyncio
@@ -427,7 +427,12 @@ async def test_router_reranks_single_query_after_provider_results():
     assert reranker.last_context == "rerank context"
     assert [result.title for result in response.results] == ["B", "A"]
     assert response.results[0].score == 1.0
-    assert response.reranking == {"used": True, "degraded": False, "model": "stub"}
+    assert response.reranking == {
+        "used": True,
+        "degraded": False,
+        "model": "stub",
+        "path": "llm",
+    }
 
 
 @pytest.mark.asyncio

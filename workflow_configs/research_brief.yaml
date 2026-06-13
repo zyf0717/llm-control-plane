@@ -23,7 +23,18 @@ steps:
     name: Search context
     kind: search
     use_query_refiner: true
-    use_reranker: true
+    prompt: |
+      {{ params.question }}
+
+      Additional context:
+      {{ params.context }}
+      {{ params.uploaded_context }}
+    output_key: search_context
+
+  - id: rerank_search_context
+    name: Rerank search context
+    kind: rerank
+    depends_on: [search_context]
     rerank_context: |
       Question:
       {{ params.question }}
@@ -35,17 +46,13 @@ steps:
       {{ params.uploaded_context }}
     prompt: |
       {{ params.question }}
-
-      Additional context:
-      {{ params.context }}
-      {{ params.uploaded_context }}
     output_key: search_context
 
   - id: synthesize_brief
     name: Synthesize brief
     kind: llm
     chat_visibility: final
-    depends_on: [search_context]
+    depends_on: [rerank_search_context]
     prompt: |
       Question:
       {{ params.question }}

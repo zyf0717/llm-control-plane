@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
 
-WorkflowStepKind = Literal["llm", "search", "manual"]
+WorkflowStepKind = Literal["llm", "search", "rerank", "manual"]
 WorkflowChatVisibility = Literal["hidden", "intermediate", "final"]
 WorkflowRunStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 WorkflowStepStatus = Literal["pending", "running", "completed", "failed", "skipped"]
@@ -59,7 +59,7 @@ class WorkflowStepSpec:
 
         step_id = _required_str(data, "id", "workflow step")
         kind = _required_str(data, "kind", f"workflow step {step_id}")
-        if kind not in {"llm", "search", "manual"}:
+        if kind not in {"llm", "search", "rerank", "manual"}:
             raise ValueError(f"workflow step {step_id} has unsupported kind: {kind}")
 
         depends_on = data.get("depends_on", [])

@@ -93,10 +93,19 @@ class RerankingSearchClient(CapturingSearchClient):
         self.rerank_calls.append(kwargs)
         return {
             "results": list(reversed(kwargs["results"])),
-            "reranking": {"used": True, "model": "stub"},
+            "reranking": {"used": True, "model": "stub", "path": "llm"},
             "warnings": [],
             "wrapped_results": "reranked",
         }
+
+
+class EmptySearchClient(CapturingSearchClient):
+    async def search(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"query": kwargs["query"], "results": [], "warnings": ["empty"]}
+
+    async def rerank_results(self, **kwargs):
+        raise AssertionError("reranker should not run without candidates")
 
 
 def write_workflow(path: Path) -> None:
@@ -237,8 +246,42 @@ steps:
   - id: search
     kind: search
     use_query_refiner: false
-    use_reranker: true
+    prompt: "{{ params.goal }}"
+    output_key: search
+  - id: rerank
+    kind: rerank
+    depends_on: [search]
     rerank_context: "Goal: {{ params.goal }}"
+    prompt: "{{ params.goal }}"
+    output_key: search
+""",
+        encoding="utf-8",
+    )
+
+
+def write_json_queries_rerank_workflow(path: Path) -> None:
+    path.write_text(
+        """
+id: json_queries_rerank_sample
+name: JSON Queries Rerank Sample
+version: 0.1.0
+params_schema:
+  type: object
+  required: [goal]
+steps:
+  - id: plan
+    kind: llm
+    prompt: "{{ params.goal }}"
+    output_key: plan
+  - id: search
+    kind: search
+    depends_on: [plan]
+    use_query_refiner: false
+    prompt: "{{ outputs.plan.json.queries }}"
+    output_key: search
+  - id: rerank
+    kind: rerank
+    depends_on: [search]
     prompt: "{{ params.goal }}"
     output_key: search
 """,
@@ -456,7 +499,7 @@ async def test_search_step_can_dispatch_json_string_query_without_query_refiner(
                 "query": 'best "portable induction" cooktop',
                 "provider": None,
                 "use_query_refiner": False,
-                "use_reranker": True,
+                "use_reranker": False,
                 "rerank_context": None,
             }
         ]
@@ -466,7 +509,7 @@ async def test_search_step_can_dispatch_json_string_query_without_query_refiner(
 
 
 @pytest.mark.asyncio
-async def test_search_step_honors_explicit_controls_and_rerank_context(tmp_path):
+async def test_rerank_step_honors_explicit_context_and_overwrites_output_key(tmp_path):
     write_explicit_search_controls_workflow(
         tmp_path / "explicit_search_controls_sample.yaml"
     )
@@ -474,7 +517,7 @@ async def test_search_step_honors_explicit_controls_and_rerank_context(tmp_path)
     registry.load()
     store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
     await store.initialize()
-    search = CapturingSearchClient()
+    search = RerankingSearchClient()
     executor = WorkflowExecutor(registry, store, FakeLLMClient(), search)
     try:
         created = await executor.create_run(
@@ -485,23 +528,76 @@ async def test_search_step_honors_explicit_controls_and_rerank_context(tmp_path)
         run_id = created["run"]["run_id"]
 
         await executor.advance(run_id)
+        snapshot = await executor.advance(run_id)
 
         assert search.calls == [
             {
                 "query": "ship",
                 "provider": None,
                 "use_query_refiner": False,
-                "use_reranker": True,
-                "rerank_context": "Goal: ship",
+                "use_reranker": False,
+                "rerank_context": None,
             }
         ]
+        assert search.rerank_calls == [
+            {
+                "query": "ship",
+                "results": [
+                    {
+                        "title": "ship",
+                        "url": "https://example.com/1",
+                        "rank": 1,
+                    }
+                ],
+                "context": "Goal: ship",
+            }
+        ]
+        outputs = WorkflowExecutor._previous_outputs(
+            registry.get("explicit_search_controls_sample"),
+            snapshot,
+        )
+        assert outputs["search"]["metadata"]["kind"] == "rerank"
+        assert outputs["search"]["json"]["workflow_rerank"]["source_output"] == "search"
+        assert outputs["search"]["json"]["workflow_rerank"]["path"] == "llm"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_rerank_step_passes_through_empty_search_results(tmp_path):
+    write_explicit_search_controls_workflow(
+        tmp_path / "explicit_search_controls_sample.yaml"
+    )
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    search = EmptySearchClient()
+    executor = WorkflowExecutor(registry, store, FakeLLMClient(), search)
+    try:
+        created = await executor.create_run(
+            "explicit_search_controls_sample",
+            params={"goal": "ship"},
+            endpoint="node-a",
+        )
+        run_id = created["run"]["run_id"]
+
+        await executor.advance(run_id)
+        snapshot = await executor.advance(run_id)
+
+        output = snapshot["steps"][1]["output_json"]["json"]
+        assert output["results"] == []
+        assert output["warnings"] == ["empty"]
+        assert output["reranking"]["path"] == "none"
+        assert output["workflow_rerank"]["skipped"] == "no-results"
+        assert output["workflow_rerank"]["path"] == "none"
     finally:
         await store.close()
 
 
 @pytest.mark.asyncio
 async def test_multi_query_workflow_reranks_merged_results_when_available(tmp_path):
-    write_json_queries_workflow(tmp_path / "json_queries_sample.yaml")
+    write_json_queries_rerank_workflow(tmp_path / "json_queries_rerank_sample.yaml")
     registry = WorkflowRegistry(tmp_path)
     registry.load()
     store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
@@ -511,17 +607,24 @@ async def test_multi_query_workflow_reranks_merged_results_when_available(tmp_pa
     executor = WorkflowExecutor(registry, store, llm, search)
     try:
         created = await executor.create_run(
-            "json_queries_sample", params={"goal": "ship"}, endpoint="node-a"
+            "json_queries_rerank_sample", params={"goal": "ship"}, endpoint="node-a"
         )
         run_id = created["run"]["run_id"]
 
         await executor.advance(run_id)
+        await executor.advance(run_id)
         snapshot = await executor.advance(run_id)
 
         assert [call["use_reranker"] for call in search.calls] == [False, False]
-        assert search.rerank_calls[0]["query"] == "query one"
-        search_output = snapshot["steps"][1]["output_json"]["json"]
-        assert search_output["reranking"] == {"used": True, "model": "stub"}
+        assert search.rerank_calls[0]["query"] == "ship"
+        search_output = snapshot["steps"][2]["output_json"]["json"]
+        assert search_output["reranking"] == {
+            "used": True,
+            "model": "stub",
+            "path": "llm",
+        }
+        assert search_output["workflow_rerank"]["source_output"] == "search"
+        assert search_output["workflow_rerank"]["path"] == "llm"
         assert [item["title"] for item in search_output["results"]] == [
             "query two",
             "query one",
