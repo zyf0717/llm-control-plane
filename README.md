@@ -48,4 +48,4 @@ pytest
 
 Project dependencies now live in `pyproject.toml`; the conda file is only a thin wrapper for local env creation.
 
-Ad hoc Single-Node search may use the query refiner to produce provider-ready search query/queries. Workflow search keeps query planning inside workflow LLM steps and bypasses the query refiner during dispatch.
+Ad hoc Single-Node search may use the query refiner to produce provider-ready search query/queries and may rerank inline. Workflow search can either use the query refiner or workflow-planned queries; workflow reranking is always an explicit workflow step.

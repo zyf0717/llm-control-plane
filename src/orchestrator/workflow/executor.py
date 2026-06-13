@@ -47,8 +47,6 @@ class WorkflowSearchClient(Protocol):
         provider: str | None = None,
         count: int = 5,
         use_query_refiner: bool = True,
-        use_reranker: bool = False,
-        rerank_context: str | None = None,
     ) -> dict[str, Any]:
         ...
 
@@ -492,27 +490,16 @@ class WorkflowExecutor:
                 if step.use_query_refiner is not None
                 else len(queries) == 1 and queries[0] == prompt.strip()
             )
-            use_reranker = (
-                bool(step.use_reranker) if step.use_reranker is not None else False
-            )
-            rerank_context = (
-                render_template(step.rerank_context, step_input)
-                if step.rerank_context
-                else None
-            )
             if not any(query.strip() for query in queries):
                 raise ValueError(
                     "workflow search step produced no query; check upstream JSON output"
                 )
-            per_query_use_reranker = use_reranker and len(queries) == 1
             results = await asyncio.gather(
                 *(
                     self.search_client.search(
                         query=query,
                         provider=provider,
                         use_query_refiner=use_query_refiner,
-                        use_reranker=per_query_use_reranker,
-                        rerank_context=rerank_context,
                     )
                     for query in queries
                 )
@@ -522,15 +509,6 @@ class WorkflowExecutor:
                 results,
                 use_query_refiner=use_query_refiner,
             )
-            if use_reranker and len(queries) > 1:
-                rerank_results = getattr(self.search_client, "rerank_results", None)
-                if rerank_results is not None:
-                    reranked = await rerank_results(
-                        query=queries[0],
-                        results=list(result.get("results") or []),
-                        context=rerank_context,
-                    )
-                    result = _merge_reranked_search_result(result, reranked)
             return WorkflowStepExecution(
                 output={
                     "text": json.dumps(result, indent=2),

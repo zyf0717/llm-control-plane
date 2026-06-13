@@ -135,6 +135,40 @@ def test_registry_rejects_invalid_chat_visibility(tmp_path):
         WorkflowRegistry(tmp_path).load()
 
 
+def test_registry_rejects_inline_workflow_reranker_flag(tmp_path):
+    write_workflow(
+        tmp_path / "sample.yaml",
+        body=minimal_workflow(
+            steps="""
+  - id: search
+    kind: search
+    use_reranker: true
+    prompt: hello
+"""
+        ),
+    )
+
+    with pytest.raises(ValueError, match="use_reranker"):
+        WorkflowRegistry(tmp_path).load()
+
+
+def test_registry_rejects_rerank_context_on_search_step(tmp_path):
+    write_workflow(
+        tmp_path / "sample.yaml",
+        body=minimal_workflow(
+            steps="""
+  - id: search
+    kind: search
+    rerank_context: hello
+    prompt: hello
+"""
+        ),
+    )
+
+    with pytest.raises(ValueError, match="rerank_context"):
+        WorkflowRegistry(tmp_path).load()
+
+
 def test_default_workflow_config_directory_loads_shipped_specs():
     assert DEFAULT_WORKFLOW_DIR.name == "workflow_configs"
 

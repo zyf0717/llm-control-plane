@@ -433,7 +433,6 @@ async def test_search_step_fans_out_workflow_planned_queries_without_query_refin
 
         assert [call["query"] for call in search.calls] == ["query one", "query two"]
         assert [call["use_query_refiner"] for call in search.calls] == [False, False]
-        assert [call["use_reranker"] for call in search.calls] == [False, False]
         search_output = snapshot["steps"][1]["output_json"]["json"]
         assert search_output["queries"] == ["query one", "query two"]
         assert search_output["workflow_search"]["planned_by_workflow"] is True
@@ -499,8 +498,6 @@ async def test_search_step_can_dispatch_json_string_query_without_query_refiner(
                 "query": 'best "portable induction" cooktop',
                 "provider": None,
                 "use_query_refiner": False,
-                "use_reranker": False,
-                "rerank_context": None,
             }
         ]
         assert llm.prompts == []
@@ -535,8 +532,6 @@ async def test_rerank_step_honors_explicit_context_and_overwrites_output_key(tmp
                 "query": "ship",
                 "provider": None,
                 "use_query_refiner": False,
-                "use_reranker": False,
-                "rerank_context": None,
             }
         ]
         assert search.rerank_calls == [
@@ -615,7 +610,6 @@ async def test_multi_query_workflow_reranks_merged_results_when_available(tmp_pa
         await executor.advance(run_id)
         snapshot = await executor.advance(run_id)
 
-        assert [call["use_reranker"] for call in search.calls] == [False, False]
         assert search.rerank_calls[0]["query"] == "ship"
         search_output = snapshot["steps"][2]["output_json"]["json"]
         assert search_output["reranking"] == {

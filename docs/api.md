@@ -238,6 +238,6 @@ Behavior:
 - may include filtered `reranking` metadata when reranking ran, including configured `backend` and actual `path` (`dedicated`, `llm`, or `none`)
 - includes `wrapped_results`, a JSON string marked as untrusted for downstream LLM use
 
-Single-Node/ad hoc search may use the query refiner and post-retrieval reranker inline. Workflow search may either use the query refiner for plain search prompts or bypass it for workflow-planned JSON queries; workflow reranking is represented as an explicit `rerank` workflow step.
+Single-Node/ad hoc search may use the query refiner and post-retrieval reranker inline. Workflow search may either use the query refiner for plain search prompts or bypass it for workflow-planned JSON queries; workflow reranking must be represented as an explicit `rerank` workflow step, not as fields on a search step.
 
 TL;DR: the proxy API is OpenAI-compatible plus control headers for smart routing, conversation history, reasoning, RAG retrieval, and an optional lightweight search-discovery endpoint.

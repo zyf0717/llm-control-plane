@@ -164,7 +164,7 @@ When `search.query_refiner_model_endpoint` is configured and query refinement is
 
 When `search.reranker_model_endpoint` is configured and reranking is enabled, search runs a bounded, non-persisted reranker call after provider retrieval and dedupe. `reranker_backend: llm` uses `/v1/chat/completions`; `reranker_backend: dedicated` posts `{query, documents, top_k}` to `/rerank`. A dedicated reranker can fall back to `reranker_fallback_model_endpoint`; otherwise reranker failure preserves provider order and adds a warning. Reranking metadata exposes the configured `backend` and the actual `path` used for the returned ranking: `dedicated`, `llm`, or `none`.
 
-Workflow search can use either query-refiner planning or workflow-owned planning. Plain search prompts may use the query refiner. Workflow-planned JSON queries should set `use_query_refiner: false`. Workflow post-retrieval reranking should be modeled as an explicit `rerank` step that depends on the retrieval step.
+Workflow search can use either query-refiner planning or workflow-owned planning. Plain search prompts may use the query refiner. Workflow-planned JSON queries should set `use_query_refiner: false`. Workflow search steps never rerank inline; `use_reranker` and `rerank_context` on search steps are invalid. Post-retrieval reranking must be modeled as an explicit `rerank` step that depends on the retrieval step.
 
 Supported built-in provider ids:
 

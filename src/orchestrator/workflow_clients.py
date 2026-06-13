@@ -181,8 +181,6 @@ class ProxyWorkflowSearchClient:
         provider: Optional[str] = None,
         count: int = 5,
         use_query_refiner: bool = True,
-        use_reranker: bool = False,
-        rerank_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         response = await services.search_service.search(
             SearchArgs(
@@ -190,8 +188,7 @@ class ProxyWorkflowSearchClient:
                 provider=provider or "auto",
                 count=count,
                 use_query_refiner=use_query_refiner,
-                use_reranker=use_reranker,
-                rerank_context=rerank_context,
+                use_reranker=False,
             )
         )
         payload = response.to_dict()

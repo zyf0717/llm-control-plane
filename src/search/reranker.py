@@ -130,7 +130,7 @@ class SearchReranker:
             parsed = self._parse_dedicated_response(
                 response.json(), candidate_count=len(candidates)
             )
-            ordered = self._apply_ranking(candidates, parsed, path="dedicated")
+            ordered = self._apply_ranking(candidates, parsed)
             if not ordered:
                 raise ValueError("empty-ranking")
 
@@ -209,7 +209,7 @@ class SearchReranker:
                 .get("content", "")
             )
             parsed = self._parse_json(content)
-            ordered = self._apply_ranking(candidates, parsed, path=backend)
+            ordered = self._apply_ranking(candidates, parsed)
             if not ordered:
                 return self._fallback(results, "empty-ranking", backend=backend)
 
@@ -369,11 +369,7 @@ Rules:
         return {"ranked": ranked}
 
     def _apply_ranking(
-        self,
-        candidates: list[SearchResult],
-        parsed: dict[str, object],
-        *,
-        path: str,
+        self, candidates: list[SearchResult], parsed: dict[str, object]
     ) -> list[SearchResult]:
         by_id = {str(index): result for index, result in enumerate(candidates, start=1)}
         ranked = parsed.get("ranked")
@@ -393,10 +389,7 @@ Rules:
             result = by_id[candidate_id]
             result.score = self._clean_score(item.get("score"))
             reason = self._clean_reason(item.get("reason"))
-            result.ranking = {
-                "reranker": self.config.model,
-                "reranker_path": path,
-            }
+            result.ranking = {"reranker": self.config.model}
             if reason:
                 result.ranking["reason"] = reason
             used_ids.add(candidate_id)

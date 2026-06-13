@@ -59,19 +59,19 @@ steps:
       - Do not include markdown, bullets, or explanatory prose outside the JSON object.
     output_key: search_plan
 
-  - id: search_evidence
-    name: Search evidence
+  - id: search_results
+    name: Search results
     kind: search
     use_query_refiner: false
     depends_on: [plan_search_queries]
     prompt: |
       {{ outputs.search_plan.json.queries }}
-    output_key: search_evidence
+    output_key: search_results
 
-  - id: rerank_search_evidence
-    name: Rerank search evidence
+  - id: rerank_results
+    name: Rerank results
     kind: rerank
-    depends_on: [search_evidence]
+    depends_on: [search_results]
     rerank_context: |
       Latest user prompt:
       {{ params.latest_user_prompt }}
@@ -83,13 +83,13 @@ steps:
       {{ outputs.search_plan.text }}
     prompt: |
       {{ params.latest_user_prompt }}
-    output_key: search_evidence
+    output_key: search_results
 
   - id: consolidate_reply
     name: Consolidate reply
     kind: llm
     chat_visibility: final
-    depends_on: [rerank_search_evidence]
+    depends_on: [rerank_results]
     prompt: |
       Latest user prompt:
       {{ params.latest_user_prompt }}
@@ -104,10 +104,10 @@ steps:
       Search plan:
       {{ outputs.search_plan.text }}
 
-      Search evidence:
-      {{ outputs.search_evidence.text }}
+      Search results:
+      {{ outputs.search_results.text }}
 
       Answer the latest user prompt directly. Use the conversation context to
-      preserve intent and constraints, and use the search evidence for factual
+      preserve intent and constraints, and use the search results for factual
       grounding. Surface material uncertainty or missing evidence clearly.
     output_key: reply

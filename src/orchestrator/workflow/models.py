@@ -46,7 +46,6 @@ class WorkflowStepSpec:
     rag_endpoint: str | None = None
     search_provider: str | None = None
     use_query_refiner: bool | None = None
-    use_reranker: bool | None = None
     rerank_context: str | None = None
     max_tokens: int | None = None
     chat_visibility: WorkflowChatVisibility = "hidden"
@@ -61,6 +60,15 @@ class WorkflowStepSpec:
         kind = _required_str(data, "kind", f"workflow step {step_id}")
         if kind not in {"llm", "search", "rerank", "manual"}:
             raise ValueError(f"workflow step {step_id} has unsupported kind: {kind}")
+        if "use_reranker" in data:
+            raise ValueError(
+                f"workflow step {step_id} use_reranker is no longer supported; "
+                "add an explicit rerank step"
+            )
+        if "rerank_context" in data and kind != "rerank":
+            raise ValueError(
+                f"workflow step {step_id} rerank_context is only supported on rerank steps"
+            )
 
         depends_on = data.get("depends_on", [])
         if depends_on is None:
@@ -92,7 +100,6 @@ class WorkflowStepSpec:
             rag_endpoint=_optional_str(data.get("rag_endpoint")),
             search_provider=_optional_str(data.get("search_provider")),
             use_query_refiner=_optional_bool(data.get("use_query_refiner")),
-            use_reranker=_optional_bool(data.get("use_reranker")),
             rerank_context=_optional_str(data.get("rerank_context")),
             max_tokens=_optional_int(data.get("max_tokens")),
             chat_visibility=chat_visibility,  # type: ignore[arg-type]
