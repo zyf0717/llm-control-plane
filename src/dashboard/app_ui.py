@@ -159,6 +159,8 @@ app_ui = ui.page_fluid(
             background: transparent !important;
             color: inherit !important;
             padding: 0;
+            max-height: none;
+            overflow: visible;
         }
 
         .dashboard-step-empty {

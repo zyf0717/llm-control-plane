@@ -1,6 +1,7 @@
 import json
 import time
 import uuid
+from copy import deepcopy
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -120,6 +121,30 @@ def resolve_workflow_routing_selection(
 
 def build_workflow_routing_choices(choices: Dict[str, str]) -> Dict[str, str]:
     return {"": WORKFLOW_ROUTING_NONE_LABEL, **choices}
+
+
+def workflow_snapshot_with_next_pending_running(
+    snapshot: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(snapshot, dict):
+        return None
+    updated = deepcopy(snapshot)
+    steps = updated.get("steps")
+    if not isinstance(steps, list):
+        return updated
+    if any(isinstance(step, dict) and step.get("status") == "running" for step in steps):
+        return updated
+
+    for step in steps:
+        if not isinstance(step, dict) or step.get("status") != "pending":
+            continue
+        step["status"] = "running"
+        run = updated.get("run")
+        if isinstance(run, dict):
+            run["status"] = "running"
+            run["current_step_id"] = step.get("step_id")
+        return updated
+    return updated
 
 
 def _input_value(input_obj: Any, name: str, default: Any = None) -> Any:
@@ -637,6 +662,13 @@ def server(input, output, session):
             workflow_status_message.set("Select a run first.")
             return
         try:
+            optimistic = workflow_snapshot_with_next_pending_running(
+                workflow_run_snapshot.get()
+            )
+            if optimistic is not None:
+                workflow_run_snapshot.set(optimistic)
+                workflow_status_message.set(f"Advancing run {run_id}.")
+                await reactive.flush()
             workflow_run_snapshot.set(await advance_workflow_run(run_id))
             workflow_status_message.set(f"Advanced run {run_id}.")
             await update_workflow_run_selector()
@@ -651,6 +683,16 @@ def server(input, output, session):
             workflow_status_message.set("Select a run first.")
             return
         try:
+            async def advance_with_running_snapshot(run_id: str) -> dict[str, Any]:
+                optimistic = workflow_snapshot_with_next_pending_running(
+                    workflow_run_snapshot.get()
+                )
+                if optimistic is not None:
+                    workflow_run_snapshot.set(optimistic)
+                    workflow_status_message.set(f"Advancing run {run_id}.")
+                    await reactive.flush()
+                return await advance_workflow_run(run_id)
+
             async def after_step(snapshot: dict[str, Any], step_number: int) -> None:
                 workflow_run_snapshot.set(snapshot)
                 status = workflow_snapshot_status(snapshot) or "unknown"
@@ -662,7 +704,7 @@ def server(input, output, session):
 
             snapshot = await advance_workflow_to_terminal(
                 run_id,
-                advance_workflow_run,
+                advance_with_running_snapshot,
                 after_step=after_step,
                 max_steps=WORKFLOW_RUN_MAX_STEPS,
             )

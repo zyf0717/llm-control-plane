@@ -7,6 +7,7 @@ from src.dashboard.app_server import (
     normalize_reasoning_effort,
     resolve_endpoint_display_selection,
     resolve_workflow_routing_selection,
+    workflow_snapshot_with_next_pending_running,
 )
 from src.dashboard.search_flow import (
     build_query_refiner_context,
@@ -355,6 +356,45 @@ def test_resolve_workflow_routing_selection_handles_empty_choices():
     selected = resolve_workflow_routing_selection({}, current_selection="missing")
 
     assert selected is None
+
+
+def test_workflow_snapshot_with_next_pending_running_marks_first_pending_step():
+    snapshot = {
+        "run": {"status": "pending", "current_step_id": None},
+        "steps": [
+            {"step_id": "first", "status": "completed"},
+            {"step_id": "second", "status": "pending"},
+            {"step_id": "third", "status": "pending"},
+        ],
+    }
+
+    updated = workflow_snapshot_with_next_pending_running(snapshot)
+
+    assert updated is not None
+    assert updated["run"]["status"] == "running"
+    assert updated["run"]["current_step_id"] == "second"
+    assert [step["status"] for step in updated["steps"]] == [
+        "completed",
+        "running",
+        "pending",
+    ]
+    assert snapshot["steps"][1]["status"] == "pending"
+
+
+def test_workflow_snapshot_with_next_pending_running_preserves_running_step():
+    snapshot = {
+        "run": {"status": "running", "current_step_id": "first"},
+        "steps": [
+            {"step_id": "first", "status": "running"},
+            {"step_id": "second", "status": "pending"},
+        ],
+    }
+
+    updated = workflow_snapshot_with_next_pending_running(snapshot)
+
+    assert updated is not None
+    assert [step["status"] for step in updated["steps"]] == ["running", "pending"]
+    assert updated["run"]["current_step_id"] == "first"
 
 
 @pytest.mark.asyncio

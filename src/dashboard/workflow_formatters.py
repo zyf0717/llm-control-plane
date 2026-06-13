@@ -1,5 +1,6 @@
 import json
 import re
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 from shiny import ui
@@ -19,8 +20,9 @@ def format_workflow_choices(workflows: list[dict[str, Any]]) -> dict[str, str]:
 def format_workflow_run_choices(runs: list[dict[str, Any]]) -> dict[str, str]:
     return {
         str(run.get("run_id")): (
-            f"{run.get('updated_at') or 'unknown'} | "
-            f"{run.get('status') or 'unknown'} | {run.get('workflow_id') or ''}"
+            f"{_format_gmt8_seconds(run.get('updated_at'))} | "
+            f"{run.get('run_id')} | "
+            f"{run.get('workflow_id') or ''} | {run.get('status') or 'unknown'}"
         )
         for run in runs
         if str(run.get("run_id") or "").strip()
@@ -154,6 +156,21 @@ def _cell(value: Any) -> str:
     return str(value or "").replace("|", "\\|")
 
 
+def _format_gmt8_seconds(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "unknown"
+    normalized = text.replace("Z", "+00:00")
+    try:
+        timestamp = datetime.fromisoformat(normalized)
+    except ValueError:
+        return text.split(".")[0] if "." in text else text
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    gmt8 = timestamp.astimezone(timezone(timedelta(hours=8)))
+    return gmt8.strftime("%Y-%m-%d %H:%M:%S GMT+8")
+
+
 def _format_run_header(run: dict[str, Any]) -> ui.Tag:
     return ui.tags.div(
         _metadata_row(
@@ -218,7 +235,7 @@ def _format_step_picker(
                 _format_step_status_box(step, artifact_count),
                 type="button",
                 class_="dashboard-step-button",
-                style=f"--dashboard-step-color: {_status_color(str(step.get('status') or 'unknown'))};",
+                style=f"--dashboard-step-color: {_step_indicator_color(step)};",
                 **{
                     "data-step-panel": panel_id,
                     "aria-controls": panel_id,
@@ -245,6 +262,7 @@ def _format_step_picker(
 
 def _format_step_status_box(step: dict[str, Any], artifact_count: int) -> ui.Tag:
     status = str(step.get("status") or "unknown")
+    indicator_color = _step_indicator_color(step)
     step_id = str(step.get("step_id") or "step")
     started = _compact_value(step.get("started_at"))
     completed = _compact_value(step.get("completed_at"))
@@ -257,8 +275,8 @@ def _format_step_status_box(step: dict[str, Any], artifact_count: int) -> ui.Tag
             ui.tags.span(
                 status.upper(),
                 style=(
-                    f"background: {_status_color(status)}; "
-                    f"color: {_status_text_color(status)}; "
+                    f"background: {indicator_color}; "
+                    f"color: {_step_indicator_text_color(step)}; "
                     "border-radius: 0.25rem; font-size: 0.75rem; "
                     "font-weight: 700; min-width: 5.5rem; padding: 0.25rem 0.45rem; "
                     "text-align: center;"
@@ -304,7 +322,7 @@ def _format_step_status_box(step: dict[str, Any], artifact_count: int) -> ui.Tag
         *blocks,
         class_="dashboard-step-box",
         style=(
-            f"border-left: 0.25rem solid {_status_color(status)}; "
+            f"border-left: 0.25rem solid {indicator_color}; "
             "padding: 0.5rem 0.75rem; "
             "background: var(--bs-body-bg); "
             "width: 100%;"
@@ -375,9 +393,35 @@ def _status_color(status: str) -> str:
         "running": "var(--bs-primary)",
         "failed": "var(--bs-danger)",
         "pending": "var(--bs-secondary)",
-        "skipped": "var(--bs-warning)",
+        "skipped": "var(--bs-orange)",
     }.get(status, "var(--bs-secondary)")
 
 
-def _status_text_color(status: str) -> str:
-    return "var(--bs-dark)" if status == "skipped" else "var(--bs-white)"
+def _step_indicator_color(step: dict[str, Any]) -> str:
+    status = str(step.get("status") or "unknown")
+    if status in {"failed", "skipped"}:
+        return _status_color(status)
+    if _step_used_fallback(step):
+        return "var(--bs-warning)"
+    return _status_color(status)
+
+
+def _step_indicator_text_color(step: dict[str, Any]) -> str:
+    status = str(step.get("status") or "unknown")
+    if status == "skipped" or (status != "failed" and _step_used_fallback(step)):
+        return "var(--bs-dark)"
+    return "var(--bs-white)"
+
+
+def _step_used_fallback(step: dict[str, Any]) -> bool:
+    return _contains_degraded_true(step.get("output_json"))
+
+
+def _contains_degraded_true(value: Any) -> bool:
+    if isinstance(value, dict):
+        if value.get("degraded") is True:
+            return True
+        return any(_contains_degraded_true(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_degraded_true(item) for item in value)
+    return False

@@ -23,12 +23,15 @@ def test_format_workflow_run_choices_uses_run_id_keys():
                 "run_id": "wf_123",
                 "workflow_id": "implementation_plan",
                 "status": "completed",
-                "updated_at": "2026-01-01T00:00:00+00:00",
+                "updated_at": "2026-01-01T00:00:00.123456+00:00",
             }
         ]
     )
 
-    assert choices["wf_123"].endswith("| completed | implementation_plan")
+    assert (
+        choices["wf_123"]
+        == "2026-01-01 08:00:00 GMT+8 | wf_123 | implementation_plan | completed"
+    )
 
 
 def test_workflow_progress_summary_counts_statuses_and_percent():
@@ -119,6 +122,67 @@ def test_format_step_timeline_renders_horizontal_step_boxes():
     assert "Error: boom" in rendered
     assert "1 artifact" in rendered
     assert "- Done step" not in rendered
+
+
+def test_format_step_timeline_uses_warning_color_for_fallback_steps():
+    rendered = str(
+        format_step_timeline(
+            {
+                "run": {"run_id": "wf_fallback", "workflow_id": "contextual_search"},
+                "steps": [
+                    {
+                        "step_id": "rerank_results",
+                        "status": "completed",
+                        "output_json": {
+                            "json": {
+                                "reranking": {
+                                    "degraded": True,
+                                    "path": "llm",
+                                    "warning": "dedicated-reranker-failed: ReadTimeout",
+                                }
+                            }
+                        },
+                    }
+                ],
+                "artifacts": [],
+            }
+        )
+    )
+
+    assert "--dashboard-step-color: var(--bs-warning)" in rendered
+    assert "background: var(--bs-warning)" in rendered
+    assert "color: var(--bs-dark)" in rendered
+
+
+def test_format_step_timeline_uses_orange_for_skipped_steps():
+    rendered = str(
+        format_step_timeline(
+            {
+                "run": {"run_id": "wf_skipped"},
+                "steps": [{"step_id": "optional", "status": "skipped"}],
+                "artifacts": [],
+            }
+        )
+    )
+
+    assert "--dashboard-step-color: var(--bs-orange)" in rendered
+    assert "background: var(--bs-orange)" in rendered
+    assert "color: var(--bs-dark)" in rendered
+
+
+def test_format_step_timeline_uses_blue_for_running_steps():
+    rendered = str(
+        format_step_timeline(
+            {
+                "run": {"run_id": "wf_running"},
+                "steps": [{"step_id": "active", "status": "running"}],
+                "artifacts": [],
+            }
+        )
+    )
+
+    assert "--dashboard-step-color: var(--bs-primary)" in rendered
+    assert "background: var(--bs-primary)" in rendered
 
 
 def test_format_step_timeline_uses_three_columns_for_five_or_six_steps():
