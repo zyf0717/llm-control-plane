@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import uuid
 from dataclasses import dataclass
@@ -11,6 +12,8 @@ from typing import Any, AsyncIterator, Protocol
 from .models import WorkflowRun, WorkflowSpec, WorkflowStepSpec
 from .registry import WorkflowRegistry
 from .store import SQLiteWorkflowStore
+
+logger = logging.getLogger(__name__)
 
 
 class WorkflowLLMClient(Protocol):
@@ -119,6 +122,14 @@ class WorkflowExecutor:
             completed_at=None,
         )
         await self.store.create_run(run, [step.id for step in spec.steps])
+        logger.info(
+            "workflow run created: run_id=%s workflow_id=%s version=%s steps=%d endpoint=%s",
+            run.run_id,
+            run.workflow_id,
+            run.workflow_version,
+            len(spec.steps),
+            run.endpoint,
+        )
         snapshot = await self.store.snapshot(run_id)
         if snapshot is None:
             raise RuntimeError(f"created workflow run not found: {run_id}")
@@ -145,6 +156,11 @@ class WorkflowExecutor:
                 await self.store.mark_run_status(
                     run_id, "completed", current_step_id=None, completed=True
                 )
+                logger.info(
+                    "workflow run completed: run_id=%s workflow_id=%s",
+                    run_id,
+                    run.workflow_id,
+                )
                 completed = await self.store.snapshot(run_id)
                 if completed is None:
                     raise KeyError(f"unknown workflow run: {run_id}")
@@ -153,16 +169,25 @@ class WorkflowExecutor:
 
         step_input = self._build_step_input(spec, snapshot, next_step)
         await self.store.mark_step_running(run_id, next_step.id, step_input)
+        self._log_step_started(run, next_step)
         try:
             execution = await self._execute_step(run, spec, next_step, step_input)
         except Exception as exc:
             await self.store.mark_step_failed(run_id, next_step.id, str(exc))
+            logger.exception(
+                "workflow step failed: run_id=%s workflow_id=%s step_id=%s kind=%s",
+                run_id,
+                run.workflow_id,
+                next_step.id,
+                next_step.kind,
+            )
             failed = await self.store.snapshot(run_id)
             if failed is None:
                 raise KeyError(f"unknown workflow run: {run_id}")
             return failed
 
         await self.store.mark_step_completed(run_id, next_step.id, execution.output)
+        self._log_step_completed(run, next_step, execution)
         if execution.artifact_text:
             await self.store.create_artifact(
                 artifact_id=f"wfa_{uuid.uuid4().hex[:12]}",
@@ -180,6 +205,11 @@ class WorkflowExecutor:
             if self._all_steps_completed(advanced):
                 await self.store.mark_run_status(
                     run_id, "completed", current_step_id=None, completed=True
+                )
+                logger.info(
+                    "workflow run completed: run_id=%s workflow_id=%s",
+                    run_id,
+                    run.workflow_id,
                 )
                 advanced = await self.store.snapshot(run_id)
                 if advanced is None:
@@ -289,6 +319,11 @@ class WorkflowExecutor:
                 await self.store.mark_run_status(
                     run_id, "completed", current_step_id=None, completed=True
                 )
+                logger.info(
+                    "workflow run completed: run_id=%s workflow_id=%s",
+                    run_id,
+                    run.workflow_id,
+                )
                 completed = await self.store.snapshot(run_id)
                 if completed is not None:
                     yield {"type": "snapshot", "run_id": run_id, "snapshot": completed}
@@ -298,6 +333,7 @@ class WorkflowExecutor:
 
         step_input = self._build_step_input(spec, snapshot, next_step)
         await self.store.mark_step_running(run_id, next_step.id, step_input)
+        self._log_step_started(run, next_step)
         yield self._step_event(run, next_step, "step_started")
         running_snapshot = await self.store.snapshot(run_id)
         if running_snapshot is not None:
@@ -316,6 +352,13 @@ class WorkflowExecutor:
                 raise RuntimeError("workflow step produced no execution result")
         except Exception as exc:
             await self.store.mark_step_failed(run_id, next_step.id, str(exc))
+            logger.exception(
+                "workflow step failed: run_id=%s workflow_id=%s step_id=%s kind=%s",
+                run_id,
+                run.workflow_id,
+                next_step.id,
+                next_step.kind,
+            )
             failed = await self.store.snapshot(run_id)
             yield self._step_event(
                 run,
@@ -329,6 +372,7 @@ class WorkflowExecutor:
             return
 
         await self.store.mark_step_completed(run_id, next_step.id, execution.output)
+        self._log_step_completed(run, next_step, execution)
         if execution.artifact_text:
             await self.store.create_artifact(
                 artifact_id=f"wfa_{uuid.uuid4().hex[:12]}",
@@ -344,6 +388,11 @@ class WorkflowExecutor:
             if self._all_steps_completed(advanced):
                 await self.store.mark_run_status(
                     run_id, "completed", current_step_id=None, completed=True
+                )
+                logger.info(
+                    "workflow run completed: run_id=%s workflow_id=%s",
+                    run_id,
+                    run.workflow_id,
                 )
                 advanced = await self.store.snapshot(run_id)
 
@@ -535,6 +584,14 @@ class WorkflowExecutor:
                 else None
             )
             if not source_results:
+                logger.info(
+                    "workflow rerank skipped: run_id=%s workflow_id=%s step_id=%s "
+                    "source_output=%s reason=no-results",
+                    run.run_id,
+                    run.workflow_id,
+                    step.id,
+                    source_key,
+                )
                 result = dict(source)
                 result["warnings"] = [
                     str(item) for item in result.get("warnings") or []
@@ -549,6 +606,14 @@ class WorkflowExecutor:
                     else None
                 )
                 if rerank_results is None:
+                    logger.warning(
+                        "workflow rerank fallback: run_id=%s workflow_id=%s step_id=%s "
+                        "source_output=%s reason=no-rerank-client",
+                        run.run_id,
+                        run.workflow_id,
+                        step.id,
+                        source_key,
+                    )
                     result = dict(source)
                     result["warnings"] = [
                         *[str(item) for item in result.get("warnings") or []],
@@ -558,12 +623,34 @@ class WorkflowExecutor:
                         result, used=False, degraded=True, path="none"
                     )
                 else:
+                    logger.info(
+                        "workflow rerank requested: run_id=%s workflow_id=%s step_id=%s "
+                        "source_output=%s results=%d context=%s",
+                        run.run_id,
+                        run.workflow_id,
+                        step.id,
+                        source_key,
+                        len(source_results),
+                        bool(rerank_context),
+                    )
                     reranked = await rerank_results(
                         query=query,
                         results=source_results,
                         context=rerank_context,
                     )
                     result = _merge_reranked_search_result(source, reranked)
+                    logger.info(
+                        "workflow rerank completed: run_id=%s workflow_id=%s step_id=%s "
+                        "source_output=%s path=%s degraded=%s",
+                        run.run_id,
+                        run.workflow_id,
+                        step.id,
+                        source_key,
+                        _reranking_path(result),
+                        (result.get("reranking") or {}).get("degraded")
+                        if isinstance(result.get("reranking"), dict)
+                        else None,
+                    )
             result["workflow_rerank"] = {
                 "source_output": source_key,
                 "query": query,
@@ -685,6 +772,56 @@ class WorkflowExecutor:
             bool(stream_llm)
             and step.chat_visibility != "hidden"
             and step.chat_stream is not False
+        )
+
+    @staticmethod
+    def _log_step_started(run: WorkflowRun, step: WorkflowStepSpec) -> None:
+        logger.info(
+            "workflow step started: run_id=%s workflow_id=%s step_id=%s kind=%s "
+            "depends_on=%d",
+            run.run_id,
+            run.workflow_id,
+            step.id,
+            step.kind,
+            len(step.depends_on or []),
+        )
+
+    @staticmethod
+    def _log_step_completed(
+        run: WorkflowRun,
+        step: WorkflowStepSpec,
+        execution: WorkflowStepExecution,
+    ) -> None:
+        output = execution.output if isinstance(execution.output, dict) else {}
+        output_json = output.get("json")
+        result_count = None
+        reranker_path = None
+        endpoint = None
+
+        if isinstance(output_json, dict):
+            raw_results = output_json.get("results")
+            if isinstance(raw_results, list):
+                result_count = len(raw_results)
+            reranker_path = _reranking_path(output_json)
+
+        metadata = output.get("metadata")
+        if isinstance(metadata, dict):
+            endpoint = metadata.get("endpoint")
+
+        logger.info(
+            "workflow step completed: run_id=%s workflow_id=%s step_id=%s kind=%s "
+            "streamed=%s artifact=%s output_json=%s results=%s reranker_path=%s "
+            "endpoint=%s",
+            run.run_id,
+            run.workflow_id,
+            step.id,
+            step.kind,
+            execution.streamed,
+            bool(execution.artifact_text),
+            output_json is not None,
+            result_count,
+            reranker_path,
+            endpoint,
         )
 
     @staticmethod

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass, field, replace
 from typing import Optional
@@ -13,6 +14,8 @@ from .query_refiner import SearchQueryRefiner
 from .reranker import SearchReranker
 from .search_cache import SearchCache
 from .types import SearchArgs, SearchProvider, SearchResponse
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -84,6 +87,13 @@ class SearchRouter:
         self._validate_args(args)
         if not self.config.enabled:
             raise RuntimeError("Search module is disabled")
+        logger.info(
+            "search started: provider=%s count=%s query_refiner=%s reranker=%s",
+            args.provider,
+            args.count,
+            args.use_query_refiner,
+            args.use_reranker,
+        )
 
         warnings: list[str] = []
         original_query = args.query
@@ -95,6 +105,14 @@ class SearchRouter:
             query_refinement_metadata = refinement.to_public_dict()
             if refinement.warning:
                 warnings.append(f"query_refiner: {refinement.warning}")
+            logger.info(
+                "search query refinement applied: used=%s degraded=%s queries=%d "
+                "effective_changed=%s",
+                refinement.used,
+                refinement.degraded,
+                len(refinement.queries),
+                refinement.effective_query != args.query,
+            )
 
             updates: dict[str, object] = {}
             if refinement.effective_query and refinement.effective_query != args.query:
@@ -180,8 +198,23 @@ class SearchRouter:
 
         for provider in self._select_providers(args):
             provider_config = self.provider_configs[provider.id]
+            provider_is_fallback = bool(
+                provider_config.fallback_only or provider.fallback_only
+            )
+            if provider_is_fallback and warnings:
+                logger.warning(
+                    "search provider fallback activated: provider=%s prior_warnings=%d",
+                    provider.id,
+                    len(warnings),
+                )
             await self._rate_limit(provider.id, provider_config)
             try:
+                logger.info(
+                    "search provider request: provider=%s fallback_only=%s explicit=%s",
+                    provider.id,
+                    provider_is_fallback,
+                    explicit_provider,
+                )
                 response = await provider.search(
                     args,
                     client=self.http_client,
@@ -191,6 +224,12 @@ class SearchRouter:
                 )
             except Exception as exc:
                 warnings.append(f"{provider.id}: {exc}")
+                logger.warning(
+                    "search provider failed: provider=%s explicit=%s",
+                    provider.id,
+                    explicit_provider,
+                    exc_info=True,
+                )
                 if explicit_provider:
                     raise
                 continue
@@ -198,10 +237,26 @@ class SearchRouter:
             if response.results:
                 if warnings:
                     response.warnings = [*warnings, *response.warnings]
+                logger.info(
+                    "search provider completed: provider=%s results=%d degraded=%s",
+                    response.provider,
+                    len(response.results),
+                    bool(response.warnings),
+                )
                 return response
 
             warnings.append(f"{provider.id}: empty results")
+            logger.warning(
+                "search provider returned empty results: provider=%s explicit=%s",
+                provider.id,
+                explicit_provider,
+            )
 
+        logger.warning(
+            "search exhausted providers: explicit=%s warnings=%d",
+            explicit_provider,
+            len(warnings),
+        )
         return SearchResponse(
             query=args.query,
             provider="none",
@@ -239,6 +294,13 @@ class SearchRouter:
         self, response: SearchResponse, args: SearchArgs
     ) -> None:
         if self.reranker is None or not args.use_reranker or not response.results:
+            logger.info(
+                "search reranking skipped by router: reranker_configured=%s use_reranker=%s "
+                "results=%d",
+                self.reranker is not None,
+                args.use_reranker,
+                len(response.results),
+            )
             return
 
         reranking = await self.reranker.rerank(
@@ -250,6 +312,13 @@ class SearchRouter:
         response.reranking = reranking.to_public_dict()
         if reranking.warning:
             response.warnings.append(f"reranker: {reranking.warning}")
+        logger.info(
+            "search reranking attached: used=%s degraded=%s path=%s warning=%s",
+            reranking.used,
+            reranking.degraded,
+            reranking.path,
+            reranking.warning,
+        )
 
     def _select_providers(self, args: SearchArgs) -> list[SearchProvider]:
         explicit_provider = args.provider not in {None, "", "auto"}

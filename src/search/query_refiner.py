@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -11,6 +12,7 @@ import httpx
 from .types import SearchArgs
 
 _ALLOWED_FRESHNESS = {"day", "week", "month", "none"}
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -69,6 +71,11 @@ class SearchQueryRefiner:
 
     async def refine(self, args: SearchArgs) -> SearchQueryRefinement:
         if not self.config.enabled or not self.config.model_endpoint:
+            logger.info(
+                "search query refiner skipped: enabled=%s endpoint_configured=%s",
+                self.config.enabled,
+                bool(self.config.model_endpoint),
+            )
             return SearchQueryRefinement(
                 effective_query=args.query, queries=[args.query], used=False
             )
@@ -76,6 +83,12 @@ class SearchQueryRefiner:
         try:
             payload = self._build_payload(args)
             endpoint = self.config.model_endpoint.rstrip("/") + "/v1/chat/completions"
+            logger.info(
+                "search query refiner request: endpoint=%s max_queries=%d context=%s",
+                endpoint,
+                self._max_queries(),
+                bool(args.context),
+            )
 
             async with httpx.AsyncClient(
                 timeout=self.config.timeout_ms / 1000
@@ -96,9 +109,17 @@ class SearchQueryRefiner:
             parsed = self._parse_json(content)
             refined_queries = self._clean_queries(parsed, args.query)
             if not refined_queries:
+                logger.warning("search query refiner failed: warning=empty-query")
                 return self._fallback(args, "empty-query")
 
             freshness = self._clean_freshness(parsed.get("freshness"))
+            logger.info(
+                "search query refiner completed: used=%s queries=%d freshness=%s",
+                refined_queries != [args.query]
+                or (freshness is not None and freshness != args.freshness),
+                len(refined_queries),
+                freshness,
+            )
             return SearchQueryRefinement(
                 effective_query=refined_queries[0],
                 needs_search=bool(parsed.get("needs_search", True)),
@@ -114,6 +135,11 @@ class SearchQueryRefiner:
                 ),
             )
         except Exception as exc:
+            logger.warning(
+                "search query refiner fallback activated: warning=%s",
+                f"query_refiner-failed: {type(exc).__name__}",
+                exc_info=True,
+            )
             return self._fallback(args, f"query_refiner-failed: {type(exc).__name__}")
 
     def _build_payload(self, args: SearchArgs) -> dict[str, object]:
@@ -228,6 +254,10 @@ Rules:
         return cleaned[:8]
 
     def _fallback(self, args: SearchArgs, warning: str) -> SearchQueryRefinement:
+        logger.warning(
+            "search query refiner degraded to original query: warning=%s",
+            warning,
+        )
         return SearchQueryRefinement(
             effective_query=args.query,
             queries=[args.query],

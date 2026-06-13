@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
 import httpx
 
 from .types import SearchResult
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -68,14 +71,28 @@ class SearchReranker:
         context: Optional[str] = None,
     ) -> SearchReranking:
         if not results:
+            logger.info("search reranker skipped: no results")
             return SearchReranking(results=results, used=False, path="none")
         if not self.config.enabled or not self.config.model_endpoint:
             self._repair_ranks(results)
+            logger.info(
+                "search reranker skipped: enabled=%s endpoint_configured=%s results=%d",
+                self.config.enabled,
+                bool(self.config.model_endpoint),
+                len(results),
+            )
             return SearchReranking(results=results, used=False, path="none")
 
         candidates = results[: self._max_candidates()]
         passthrough = results[len(candidates) :]
         backend = self._backend()
+        logger.info(
+            "search reranker selected: backend=%s candidates=%d passthrough=%d context=%s",
+            backend,
+            len(candidates),
+            len(passthrough),
+            bool(context),
+        )
         if backend == "dedicated":
             return await self._rerank_dedicated(
                 query=query,
@@ -85,6 +102,11 @@ class SearchReranker:
                 context=context,
             )
         if backend != "llm":
+            logger.warning(
+                "search reranker invalid backend: backend=%s configured=%s",
+                backend,
+                self.config.backend,
+            )
             return self._fallback(
                 results,
                 f"invalid-reranker-backend: {self.config.backend}",
@@ -116,6 +138,11 @@ class SearchReranker:
                 query=query, results=candidates, context=context
             )
             endpoint = self.config.model_endpoint.rstrip("/") + "/rerank"
+            logger.info(
+                "search reranker request: path=dedicated endpoint=%s candidates=%d",
+                endpoint,
+                len(candidates),
+            )
 
             async with httpx.AsyncClient(
                 timeout=self.config.timeout_ms / 1000
@@ -137,6 +164,10 @@ class SearchReranker:
             reranked = [*ordered, *passthrough]
             self._repair_ranks(reranked)
             self._annotate_reranker_path(reranked, "dedicated")
+            logger.info(
+                "search reranker completed: path=dedicated results=%d",
+                len(reranked),
+            )
             return SearchReranking(
                 results=reranked,
                 used=True,
@@ -147,8 +178,21 @@ class SearchReranker:
         except Exception as exc:
             warning = f"dedicated-reranker-failed: {type(exc).__name__}"
             if not self.config.fallback_model_endpoint:
+                logger.warning(
+                    "search reranker failed: path=dedicated fallback=none warning=%s",
+                    warning,
+                    exc_info=True,
+                )
                 return self._fallback(results, warning, backend="dedicated")
 
+            logger.warning(
+                "search reranker fallback activated: from=dedicated to=llm "
+                "dedicated_endpoint=%s fallback_endpoint=%s warning=%s",
+                self.config.model_endpoint,
+                self.config.fallback_model_endpoint,
+                warning,
+                exc_info=True,
+            )
             fallback = await self._rerank_llm(
                 endpoint_base=self.config.fallback_model_endpoint,
                 query=query,
@@ -183,6 +227,11 @@ class SearchReranker:
         degraded_on_success: bool = False,
     ) -> SearchReranking:
         if not endpoint_base:
+            logger.warning(
+                "search reranker failed: path=%s warning=%s",
+                backend,
+                f"{failure_prefix}: missing-endpoint",
+            )
             return self._fallback(
                 results, f"{failure_prefix}: missing-endpoint", backend=backend
             )
@@ -191,6 +240,12 @@ class SearchReranker:
                 query=query, results=candidates, context=context
             )
             endpoint = endpoint_base.rstrip("/") + "/v1/chat/completions"
+            logger.info(
+                "search reranker request: path=%s endpoint=%s candidates=%d",
+                backend,
+                endpoint,
+                len(candidates),
+            )
 
             async with httpx.AsyncClient(
                 timeout=self.config.timeout_ms / 1000
@@ -211,11 +266,22 @@ class SearchReranker:
             parsed = self._parse_json(content)
             ordered = self._apply_ranking(candidates, parsed)
             if not ordered:
+                logger.warning(
+                    "search reranker failed: path=%s warning=empty-ranking",
+                    backend,
+                )
                 return self._fallback(results, "empty-ranking", backend=backend)
 
             reranked = [*ordered, *passthrough]
             self._repair_ranks(reranked)
             self._annotate_reranker_path(reranked, backend)
+            logger.info(
+                "search reranker completed: path=%s results=%d degraded=%s warning=%s",
+                backend,
+                len(reranked),
+                degraded_on_success,
+                success_warning,
+            )
             return SearchReranking(
                 results=reranked,
                 used=True,
@@ -226,6 +292,12 @@ class SearchReranker:
                 path=backend,
             )
         except Exception as exc:
+            logger.warning(
+                "search reranker failed: path=%s warning=%s",
+                backend,
+                f"{failure_prefix}: {type(exc).__name__}",
+                exc_info=True,
+            )
             return self._fallback(
                 results,
                 f"{failure_prefix}: {type(exc).__name__}",
@@ -501,6 +573,12 @@ Rules:
         backend: Optional[str],
     ) -> SearchReranking:
         self._repair_ranks(results)
+        logger.warning(
+            "search reranker degraded to provider order: backend=%s warning=%s results=%d",
+            backend,
+            warning,
+            len(results),
+        )
         return SearchReranking(
             results=results,
             used=False,
