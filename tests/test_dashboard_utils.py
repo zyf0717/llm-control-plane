@@ -207,6 +207,7 @@ async def test_fetch_search_results_posts_to_proxy(monkeypatch):
             "query": "Ada Lovelace",
             "provider": "duckduckgo_html",
             "count": 5,
+            "use_reranker": False,
         },
     )
 

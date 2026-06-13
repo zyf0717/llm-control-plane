@@ -94,11 +94,14 @@ class SearchReranker:
         query: str,
         results: list[SearchResult],
         context: Optional[str] = None,
+        top_k: Optional[int] = None,
     ) -> SearchReranking:
         if not results:
             logger.info("search reranker skipped: no results")
             return SearchReranking(results=results, used=False, path="none")
+        result_limit = self._result_limit(top_k, len(results))
         if not self.config.enabled or not self.config.model_endpoint:
+            results = results[:result_limit]
             self._repair_ranks(results)
             logger.info(
                 "search reranker skipped: enabled=%s endpoint_configured=%s results=%d",
@@ -125,6 +128,7 @@ class SearchReranker:
                 passthrough=passthrough,
                 results=results,
                 context=context,
+                top_k=result_limit,
             )
         if backend != "llm":
             logger.warning(
@@ -133,7 +137,7 @@ class SearchReranker:
                 self.config.backend,
             )
             return self._fallback(
-                results,
+                results[:result_limit],
                 f"invalid-reranker-backend: {self.config.backend}",
                 backend=None,
             )
@@ -145,6 +149,7 @@ class SearchReranker:
             passthrough=passthrough,
             results=results,
             context=context,
+            top_k=result_limit,
             failure_prefix="reranker-failed",
             backend="llm",
         )
@@ -157,10 +162,11 @@ class SearchReranker:
         passthrough: list[SearchResult],
         results: list[SearchResult],
         context: Optional[str],
+        top_k: int,
     ) -> SearchReranking:
         try:
             payload = self._build_dedicated_payload(
-                query=query, results=candidates, context=context
+                query=query, results=candidates, context=context, top_k=top_k
             )
             endpoint = self.config.model_endpoint.rstrip("/") + "/rerank"
             logger.info(
@@ -186,7 +192,7 @@ class SearchReranker:
             if not ordered:
                 raise ValueError("empty-ranking")
 
-            reranked = [*ordered, *passthrough]
+            reranked = [*ordered, *passthrough][:top_k]
             self._repair_ranks(reranked)
             self._annotate_reranker_path(reranked, "dedicated")
             logger.info(
@@ -208,7 +214,7 @@ class SearchReranker:
                     warning,
                     exc_info=True,
                 )
-                return self._fallback(results, warning, backend="dedicated")
+                return self._fallback(results[:top_k], warning, backend="dedicated")
 
             logger.warning(
                 "search reranker fallback activated: from=dedicated to=llm "
@@ -225,6 +231,7 @@ class SearchReranker:
                 passthrough=passthrough,
                 results=results,
                 context=context,
+                top_k=top_k,
                 failure_prefix="llm-fallback-failed",
                 success_warning=warning,
                 degraded_on_success=True,
@@ -235,7 +242,9 @@ class SearchReranker:
             combined_warning = warning
             if fallback.warning:
                 combined_warning = f"{warning}; {fallback.warning}"
-            return self._fallback(results, combined_warning, backend="dedicated")
+            return self._fallback(
+                results[:top_k], combined_warning, backend="dedicated"
+            )
 
     async def _rerank_llm(
         self,
@@ -246,6 +255,7 @@ class SearchReranker:
         passthrough: list[SearchResult],
         results: list[SearchResult],
         context: Optional[str],
+        top_k: int,
         failure_prefix: str,
         backend: str,
         success_warning: Optional[str] = None,
@@ -258,11 +268,13 @@ class SearchReranker:
                 f"{failure_prefix}: missing-endpoint",
             )
             return self._fallback(
-                results, f"{failure_prefix}: missing-endpoint", backend=backend
+                results[:top_k],
+                f"{failure_prefix}: missing-endpoint",
+                backend=backend,
             )
         try:
             payload = self._build_llm_payload(
-                query=query, results=candidates, context=context
+                query=query, results=candidates, context=context, top_k=top_k
             )
             endpoint = endpoint_base.rstrip("/") + "/v1/chat/completions"
             logger.info(
@@ -295,9 +307,9 @@ class SearchReranker:
                     "search reranker failed: path=%s warning=empty-ranking",
                     backend,
                 )
-                return self._fallback(results, "empty-ranking", backend=backend)
+                return self._fallback(results[:top_k], "empty-ranking", backend=backend)
 
-            reranked = [*ordered, *passthrough]
+            reranked = [*ordered, *passthrough][:top_k]
             self._repair_ranks(reranked)
             self._annotate_reranker_path(reranked, backend)
             logger.info(
@@ -324,7 +336,7 @@ class SearchReranker:
                 exc_info=True,
             )
             return self._fallback(
-                results,
+                results[:top_k],
                 f"{failure_prefix}: {type(exc).__name__}",
                 backend=backend,
             )
@@ -335,6 +347,7 @@ class SearchReranker:
         query: str,
         results: list[SearchResult],
         context: Optional[str],
+        top_k: int,
     ) -> dict[str, object]:
         bounded_context = str(context or "")[: self.config.max_context_chars]
         candidates = [
@@ -367,6 +380,7 @@ Rules:
         user_payload = {
             "query": query,
             "context": bounded_context,
+            "top_k": top_k,
             "candidates": candidates,
         }
         return {
@@ -389,6 +403,7 @@ Rules:
         query: str,
         results: list[SearchResult],
         context: Optional[str],
+        top_k: int,
     ) -> dict[str, object]:
         bounded_context = str(context or "")[: self.config.max_context_chars]
         query_text = query
@@ -397,7 +412,7 @@ Rules:
         return {
             "query": query_text,
             "documents": [self._document_text(result) for result in results],
-            "top_k": len(results),
+            "top_k": min(top_k, len(results)),
         }
 
     def _parse_json(self, content: str) -> dict[str, object]:
@@ -504,6 +519,15 @@ Rules:
             return max(1, int(self.config.max_candidates))
         except (TypeError, ValueError):
             return 20
+
+    @staticmethod
+    def _result_limit(top_k: Optional[int], result_count: int) -> int:
+        if top_k is None:
+            return max(1, int(result_count))
+        try:
+            return max(1, min(int(top_k), int(result_count)))
+        except (TypeError, ValueError):
+            return max(1, int(result_count))
 
     def _backend(self) -> str:
         return str(self.config.backend or "llm").strip().lower()

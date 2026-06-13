@@ -289,6 +289,7 @@ async def fetch_search_results(
         "query": str(query or "").strip(),
         "provider": str(provider or "").strip(),
         "count": int(count),
+        "use_reranker": False,
     }
     trimmed_context = trim_search_context(
         context,

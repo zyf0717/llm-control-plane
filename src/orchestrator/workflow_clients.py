@@ -201,11 +201,18 @@ class ProxyWorkflowSearchClient:
         query: str,
         results: list[dict[str, Any]],
         context: Optional[str] = None,
+        top_k: Optional[int] = None,
     ) -> Dict[str, Any]:
         reranker = getattr(services.search_service, "reranker", None)
         search_results = [_search_result_from_dict(item) for item in results]
         if reranker is None or not search_results:
-            response = SearchResponse(query=query, provider="fanout", results=search_results)
+            if top_k is not None:
+                search_results = search_results[: max(1, int(top_k))]
+            response = SearchResponse(
+                query=query,
+                provider="fanout",
+                results=search_results,
+            )
             payload = response.to_dict()
             payload["wrapped_results"] = wrap_search_results(response)
             return payload
@@ -214,6 +221,7 @@ class ProxyWorkflowSearchClient:
             query=query,
             results=search_results,
             context=context,
+            top_k=top_k,
         )
         response = SearchResponse(
             query=query,

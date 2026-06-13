@@ -281,11 +281,13 @@ params_schema:
 steps:
   - id: search
     kind: search
+    search_count: 20
     use_query_refiner: false
     prompt: "{{ params.goal }}"
     output_key: search
   - id: rerank
     kind: rerank
+    rerank_top_k: 10
     depends_on: [search]
     rerank_context: "Goal: {{ params.goal }}"
     prompt: "{{ params.goal }}"
@@ -369,11 +371,13 @@ steps:
   - id: search
     kind: search
     depends_on: [plan]
+    search_count: 20
     use_query_refiner: false
     prompt: "{{ outputs.plan.json.queries }}"
     output_key: search
   - id: rerank
     kind: rerank
+    rerank_top_k: 10
     depends_on: [search]
     prompt: "{{ params.goal }}"
     output_key: search
@@ -733,6 +737,7 @@ async def test_search_step_can_dispatch_json_string_query_without_query_refiner(
             {
                 "query": 'best "portable induction" cooktop',
                 "provider": None,
+                "count": 5,
                 "use_query_refiner": False,
             }
         ]
@@ -767,6 +772,7 @@ async def test_rerank_step_honors_explicit_context_and_overwrites_output_key(tmp
             {
                 "query": "ship",
                 "provider": None,
+                "count": 20,
                 "use_query_refiner": False,
             }
         ]
@@ -781,6 +787,7 @@ async def test_rerank_step_honors_explicit_context_and_overwrites_output_key(tmp
                     }
                 ],
                 "context": "Goal: ship",
+                "top_k": 10,
             }
         ]
         outputs = WorkflowExecutor._previous_outputs(
@@ -846,7 +853,9 @@ async def test_multi_query_workflow_reranks_merged_results_when_available(tmp_pa
         await executor.advance(run_id)
         snapshot = await executor.advance(run_id)
 
+        assert [call["count"] for call in search.calls] == [20, 20]
         assert search.rerank_calls[0]["query"] == "ship"
+        assert search.rerank_calls[0]["top_k"] == 10
         search_output = snapshot["steps"][2]["output_json"]["json"]
         assert search_output["reranking"] == {
             "used": True,

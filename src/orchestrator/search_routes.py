@@ -65,7 +65,7 @@ async def search_web(request: Request):
                 body,
                 snake_key="use_reranker",
                 camel_key="useReranker",
-                default=True,
+                default=False,
             ),
             rerank_context=body.get("rerank_context") or body.get("rerankContext"),
         )

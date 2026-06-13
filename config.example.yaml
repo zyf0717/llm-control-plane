@@ -45,7 +45,7 @@ search:
   search_max_total_results: 10
   default_provider: "duckduckgo_html"
   timeout_ms: 7000
-  max_results: 10
+  max_results: 20
   cache_ttl_seconds: 900
   max_body_bytes: 2500000
   max_retries: 1

@@ -27,7 +27,10 @@ def test_search_web_endpoint_returns_results():
         warnings=[],
     )
 
-    with patch("src.orchestrator.proxy_services.search_service.search", AsyncMock(return_value=response)):
+    with patch(
+        "src.orchestrator.proxy_services.search_service.search",
+        AsyncMock(return_value=response),
+    ) as search:
         result = client.post("/search/web", json={"query": "alpha", "count": 5})
 
     assert result.status_code == 200
@@ -35,6 +38,7 @@ def test_search_web_endpoint_returns_results():
     assert body["query"] == "alpha"
     assert body["provider"] == "duckduckgo_html"
     assert body["results"][0]["title"] == "Alpha"
+    assert search.await_args.args[0].use_reranker is False
 
 
 def test_search_web_endpoint_rejects_missing_query():

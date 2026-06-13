@@ -67,6 +67,7 @@ class WorkflowSearchClient(Protocol):
         query: str,
         results: list[dict[str, Any]],
         context: str | None = None,
+        top_k: int | None = None,
     ) -> dict[str, Any]:
         ...
 
@@ -556,6 +557,7 @@ class WorkflowExecutor:
                     self.search_client.search(
                         query=query,
                         provider=provider,
+                        count=step.search_count or 5,
                         use_query_refiner=use_query_refiner,
                     )
                     for query in queries
@@ -645,6 +647,7 @@ class WorkflowExecutor:
                         query=query,
                         results=source_results,
                         context=rerank_context,
+                        top_k=step.rerank_top_k,
                     )
                     result = _merge_reranked_search_result(source, reranked)
                     logger.info(

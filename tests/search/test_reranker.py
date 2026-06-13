@@ -47,6 +47,19 @@ async def test_reranker_disabled_returns_original_order():
 
 
 @pytest.mark.asyncio
+async def test_reranker_disabled_honors_top_k_limit():
+    reranker = SearchReranker(SearchRerankerConfig(enabled=False))
+    results = [_result("A", 1), _result("B", 2)]
+
+    ranking = await reranker.rerank(query="q", results=results, top_k=1)
+
+    assert [result.title for result in ranking.results] == ["A"]
+    assert [result.rank for result in ranking.results] == [1]
+    assert ranking.used is False
+    assert ranking.degraded is False
+
+
+@pytest.mark.asyncio
 async def test_valid_reranker_response_reorders_results_and_attaches_metadata():
     payload = json.dumps(
         {
@@ -309,6 +322,36 @@ async def test_dedicated_reranker_posts_documents_and_reorders_by_index():
         "path": "dedicated",
     }
     assert ranking.results[0].ranking["reranker_path"] == "dedicated"
+
+
+@pytest.mark.asyncio
+async def test_dedicated_reranker_top_k_caps_returned_results():
+    reranker = SearchReranker(
+        SearchRerankerConfig(
+            enabled=True,
+            model_endpoint="https://reranker.local",
+            backend="dedicated",
+            max_candidates=3,
+        )
+    )
+    results = [_result("A", 1), _result("B", 2), _result("C", 3)]
+    response = {
+        "results": [
+            {"index": 2, "relevance_score": 0.9},
+            {"index": 1, "relevance_score": 0.8},
+            {"index": 0, "relevance_score": 0.7},
+        ]
+    }
+
+    with patch(
+        "httpx.AsyncClient.post",
+        AsyncMock(return_value=FakeRerankerResponse(payload=response)),
+    ) as post:
+        ranking = await reranker.rerank(query="q", results=results, top_k=2)
+
+    assert post.await_args.kwargs["json"]["top_k"] == 2
+    assert [result.title for result in ranking.results] == ["C", "B"]
+    assert [result.rank for result in ranking.results] == [1, 2]
 
 
 @pytest.mark.asyncio
