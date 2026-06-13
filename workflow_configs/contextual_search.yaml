@@ -58,6 +58,34 @@ steps:
       - Prefer primary sources and exact named entities from the prompt/context.
       - Do not include markdown, bullets, or explanatory prose outside the JSON object.
     output_key: search_plan
+    output_contract:
+      format: json
+      required: true
+      schema:
+        type: object
+        additionalProperties: false
+        required: [queries, reason, source_preferences]
+        properties:
+          queries:
+            type: array
+            minItems: 1
+            maxItems: 3
+            items:
+              type: string
+              minLength: 3
+              maxLength: 100
+          reason:
+            type: string
+            minLength: 1
+          source_preferences:
+            type: array
+            items:
+              type: string
+              minLength: 1
+      on_invalid:
+        action: retry
+        max_attempts: 2
+        repair: true
 
   - id: search_results
     name: Search results

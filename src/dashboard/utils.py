@@ -5,6 +5,7 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 import yaml
@@ -22,7 +23,7 @@ NONE_RAG_OPTION_VALUE = ""
 NONE_SEARCH_PROVIDER_LABEL = "None"
 NONE_SEARCH_PROVIDER_VALUE = ""
 DEFAULT_QUERY_REFINER_MAX_CONTEXT_CHARS = 12000
-HISTORY_DISPLAY_TIMEZONE = timezone(timedelta(hours=8))
+DEFAULT_DISPLAY_TIMEZONE_NAME = "Asia/Singapore"
 SEARCH_PROVIDER_DISPLAY_NAMES = {
     "duckduckgo_html": "DuckDuckGo",
     "marginalia_html": "Marginalia",
@@ -30,6 +31,65 @@ SEARCH_PROVIDER_DISPLAY_NAMES = {
     "searxng_html": "SearXNG",
     "wikipedia_opensearch": "Wikipedia",
 }
+
+
+def load_dashboard_display_timezone() -> timezone | ZoneInfo:
+    """Load the dashboard-only display timezone without changing stored data."""
+    try:
+        config = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
+    except (FileNotFoundError, yaml.YAMLError) as exc:
+        logger.warning("Failed to load dashboard display timezone: %s", exc)
+        return ZoneInfo(DEFAULT_DISPLAY_TIMEZONE_NAME)
+
+    if not isinstance(config, dict):
+        return ZoneInfo(DEFAULT_DISPLAY_TIMEZONE_NAME)
+    dashboard = config.get("dashboard", {})
+    if not isinstance(dashboard, dict):
+        return ZoneInfo(DEFAULT_DISPLAY_TIMEZONE_NAME)
+
+    raw_timezone = str(
+        dashboard.get("display_timezone") or DEFAULT_DISPLAY_TIMEZONE_NAME
+    ).strip()
+    if not raw_timezone:
+        return ZoneInfo(DEFAULT_DISPLAY_TIMEZONE_NAME)
+    try:
+        return ZoneInfo(raw_timezone)
+    except ZoneInfoNotFoundError:
+        offset = _parse_timezone_offset(raw_timezone)
+        if offset is not None:
+            return offset
+        logger.warning(
+            "Unknown dashboard display timezone %r; using %s",
+            raw_timezone,
+            DEFAULT_DISPLAY_TIMEZONE_NAME,
+        )
+        return ZoneInfo(DEFAULT_DISPLAY_TIMEZONE_NAME)
+
+
+def _parse_timezone_offset(value: str) -> timezone | None:
+    normalized = value.strip().upper().removeprefix("UTC").removeprefix("GMT")
+    if normalized in {"", "Z"}:
+        return timezone.utc
+    sign = 1
+    if normalized.startswith("+"):
+        normalized = normalized[1:]
+    elif normalized.startswith("-"):
+        sign = -1
+        normalized = normalized[1:]
+    else:
+        return None
+    parts = normalized.split(":", maxsplit=1)
+    try:
+        hours = int(parts[0])
+        minutes = int(parts[1]) if len(parts) == 2 else 0
+    except ValueError:
+        return None
+    if hours > 23 or minutes > 59:
+        return None
+    return timezone(sign * timedelta(hours=hours, minutes=minutes))
+
+
+HISTORY_DISPLAY_TIMEZONE = load_dashboard_display_timezone()
 
 
 async def fetch_models_data():

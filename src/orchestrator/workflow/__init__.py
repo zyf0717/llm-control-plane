@@ -8,6 +8,7 @@ from .executor import (
 )
 from .models import (
     WorkflowDefaults,
+    WorkflowOutputContract,
     WorkflowRun,
     WorkflowRunStatus,
     WorkflowSpec,
@@ -25,6 +26,7 @@ __all__ = [
     "WorkflowDefaults",
     "WorkflowExecutor",
     "WorkflowLLMClient",
+    "WorkflowOutputContract",
     "WorkflowRegistry",
     "WorkflowRun",
     "WorkflowRunStatus",

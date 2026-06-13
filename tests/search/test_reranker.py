@@ -135,6 +135,46 @@ async def test_invalid_json_falls_back_to_original_order():
 
 
 @pytest.mark.asyncio
+async def test_mixed_prose_json_reranker_response_is_rejected():
+    reranker = SearchReranker(
+        SearchRerankerConfig(enabled=True, model_endpoint="https://reranker.local")
+    )
+    results = [_result("A", 1), _result("B", 2)]
+
+    with patch(
+        "httpx.AsyncClient.post",
+        AsyncMock(
+            return_value=FakeRerankerResponse(
+                'Here is JSON:\n{"ranked": [{"id": "2"}]}'
+            )
+        ),
+    ):
+        ranking = await reranker.rerank(query="q", results=results)
+
+    assert [result.title for result in ranking.results] == ["A", "B"]
+    assert ranking.degraded is True
+    assert ranking.warning == "reranker-failed: JSONDecodeError"
+
+
+@pytest.mark.asyncio
+async def test_schema_invalid_reranker_response_falls_back_to_original_order():
+    reranker = SearchReranker(
+        SearchRerankerConfig(enabled=True, model_endpoint="https://reranker.local")
+    )
+    results = [_result("A", 1), _result("B", 2)]
+
+    with patch(
+        "httpx.AsyncClient.post",
+        AsyncMock(return_value=FakeRerankerResponse('{"ranked": [{"score": 0.9}]}')),
+    ):
+        ranking = await reranker.rerank(query="q", results=results)
+
+    assert [result.title for result in ranking.results] == ["A", "B"]
+    assert ranking.degraded is True
+    assert ranking.warning == "reranker-failed: ValueError"
+
+
+@pytest.mark.asyncio
 async def test_empty_ranking_falls_back_to_original_order():
     reranker = SearchReranker(
         SearchRerankerConfig(enabled=True, model_endpoint="https://reranker.local")

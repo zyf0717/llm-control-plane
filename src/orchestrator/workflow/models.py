@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 WorkflowStepKind = Literal["llm", "search", "rerank", "manual"]
 WorkflowChatVisibility = Literal["hidden", "intermediate", "final"]
+WorkflowOutputFormat = Literal["json", "yaml", "text"]
 WorkflowRunStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 WorkflowStepStatus = Literal["pending", "running", "completed", "failed", "skipped"]
 
@@ -34,6 +35,48 @@ class WorkflowDefaults:
 
 
 @dataclass(slots=True)
+class WorkflowOutputContract:
+    format: WorkflowOutputFormat = "text"
+    required: bool = False
+    schema: dict[str, Any] | None = None
+    on_invalid: dict[str, Any] | None = None
+    raw_text: bool = True
+
+    @classmethod
+    def from_dict(
+        cls, data: dict[str, Any], *, step_id: str
+    ) -> "WorkflowOutputContract":
+        if not isinstance(data, dict):
+            raise ValueError(f"workflow step {step_id} output_contract must be an object")
+
+        output_format = _optional_str(data.get("format")) or "text"
+        if output_format not in {"json", "yaml", "text"}:
+            raise ValueError(
+                f"workflow step {step_id} output_contract.format is unsupported: "
+                f"{output_format}"
+            )
+
+        schema = data.get("schema")
+        if schema is not None and not isinstance(schema, dict):
+            raise ValueError(
+                f"workflow step {step_id} output_contract.schema must be an object"
+            )
+
+        on_invalid = data.get("on_invalid")
+        if on_invalid is not None and not isinstance(on_invalid, dict):
+            raise ValueError(
+                f"workflow step {step_id} output_contract.on_invalid must be an object"
+            )
+
+        return cls(
+            format=output_format,  # type: ignore[arg-type]
+            required=bool(data.get("required", False)),
+            schema=schema,
+            on_invalid=on_invalid,
+            raw_text=bool(data.get("raw_text", True)),
+        )
+
+@dataclass(slots=True)
 class WorkflowStepSpec:
     id: str
     name: str
@@ -41,7 +84,7 @@ class WorkflowStepSpec:
     prompt: str | None = None
     depends_on: list[str] | None = None
     output_key: str | None = None
-    output_schema: dict[str, Any] | None = None
+    output_contract: WorkflowOutputContract | None = None
     reasoning_effort: str | None = None
     rag_endpoint: str | None = None
     search_provider: str | None = None
@@ -78,9 +121,19 @@ class WorkflowStepSpec:
         ):
             raise ValueError(f"workflow step {step_id} depends_on must be a string list")
 
-        output_schema = data.get("output_schema")
-        if output_schema is not None and not isinstance(output_schema, dict):
-            raise ValueError(f"workflow step {step_id} output_schema must be an object")
+        if "output_schema" in data:
+            raise ValueError(
+                f"workflow step {step_id} output_schema is no longer supported; "
+                "use output_contract"
+            )
+        output_contract_data = data.get("output_contract")
+        output_contract = None
+        if output_contract_data is not None:
+            output_contract = WorkflowOutputContract.from_dict(
+                output_contract_data,
+                step_id=step_id,
+            )
+
         chat_visibility = _optional_str(data.get("chat_visibility")) or "hidden"
         if chat_visibility not in {"hidden", "intermediate", "final"}:
             raise ValueError(
@@ -95,7 +148,7 @@ class WorkflowStepSpec:
             prompt=_optional_str(data.get("prompt")),
             depends_on=[str(item).strip() for item in depends_on],
             output_key=_optional_str(data.get("output_key")),
-            output_schema=output_schema,
+            output_contract=output_contract,
             reasoning_effort=_optional_str(data.get("reasoning_effort")),
             rag_endpoint=_optional_str(data.get("rag_endpoint")),
             search_provider=_optional_str(data.get("search_provider")),

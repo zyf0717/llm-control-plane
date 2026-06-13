@@ -13,6 +13,9 @@ endpoints:
     soc: "Apple Silicon"
     ram: "16GB"
 
+dashboard:
+  display_timezone: "Asia/Singapore"
+
 rag:
   default_endpoint: "http://localhost:8100/api/retrieve/context"
   endpoints:

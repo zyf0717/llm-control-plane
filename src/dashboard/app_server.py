@@ -84,6 +84,8 @@ from .workflow_formatters import (
 
 DEFAULT_WORKFLOW_ROUTING_ID = ""
 WORKFLOW_ROUTING_NONE_LABEL = "None"
+CONTEXTUAL_SEARCH_WORKFLOW_ID = "contextual_search"
+ENDED_WORKFLOW_RUN_STATUSES = {"completed", "failed", "cancelled"}
 
 
 def resolve_endpoint_display_selection(
@@ -121,6 +123,91 @@ def resolve_workflow_routing_selection(
 
 def build_workflow_routing_choices(choices: Dict[str, str]) -> Dict[str, str]:
     return {"": WORKFLOW_ROUTING_NONE_LABEL, **choices}
+
+
+def resolve_first_search_provider_selection(choices: Dict[str, str]) -> str:
+    for provider_id in choices:
+        provider = str(provider_id or "").strip()
+        if provider:
+            return provider
+    return ""
+
+
+def workflow_run_in_progress(snapshot: dict[str, Any] | None) -> bool:
+    if not isinstance(snapshot, dict):
+        return False
+    run = snapshot.get("run") if isinstance(snapshot.get("run"), dict) else {}
+    if str(run.get("status") or "").strip().lower() == "running":
+        return True
+    return any(
+        isinstance(step, dict)
+        and str(step.get("status") or "").strip().lower() == "running"
+        for step in snapshot.get("steps", [])
+        if isinstance(step, dict)
+    )
+
+
+def workflow_run_ended(snapshot: dict[str, Any] | None) -> bool:
+    if workflow_run_in_progress(snapshot):
+        return False
+    if not isinstance(snapshot, dict):
+        return False
+    run = snapshot.get("run") if isinstance(snapshot.get("run"), dict) else {}
+    return str(run.get("status") or "").strip().lower() in ENDED_WORKFLOW_RUN_STATUSES
+
+
+def build_workflow_retry_step_choices(
+    snapshot: dict[str, Any] | None,
+) -> Dict[str, str]:
+    choices: Dict[str, str] = {"": "Select step"}
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("steps"), list):
+        return choices
+    for step in snapshot["steps"]:
+        if not isinstance(step, dict):
+            continue
+        step_id = str(step.get("step_id") or "").strip()
+        if not step_id:
+            continue
+        status = str(step.get("status") or "unknown").strip() or "unknown"
+        name = _workflow_step_display_name(step)
+        label = f"{name} ({status})" if name != step_id else f"{step_id} ({status})"
+        choices[step_id] = label
+    return choices
+
+
+def resolve_workflow_retry_step_selection(
+    snapshot: dict[str, Any] | None,
+    *,
+    current_selection: Optional[str],
+) -> str:
+    choices = build_workflow_retry_step_choices(snapshot)
+    current = str(current_selection or "").strip()
+    if current and current in choices:
+        return current
+    if not workflow_run_ended(snapshot):
+        return ""
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("steps"), list):
+        return ""
+    for step in snapshot["steps"]:
+        if not isinstance(step, dict):
+            continue
+        step_id = str(step.get("step_id") or "").strip()
+        status = str(step.get("status") or "").strip().lower()
+        if step_id and status and status != "completed":
+            return step_id
+    return ""
+
+
+def _workflow_step_display_name(step: dict[str, Any]) -> str:
+    step_id = str(step.get("step_id") or "").strip()
+    input_json = step.get("input_json")
+    current_step = (
+        input_json.get("current_step")
+        if isinstance(input_json, dict)
+        and isinstance(input_json.get("current_step"), dict)
+        else {}
+    )
+    return str(current_step.get("name") or step_id or "step").strip()
 
 
 def workflow_snapshot_with_next_pending_running(
@@ -562,6 +649,15 @@ def server(input, output, session):
                 session=session,
             )
             workflow_status_message.set("")
+            if workflow_id == CONTEXTUAL_SEARCH_WORKFLOW_ID:
+                search_choices, _ = fetch_available_search_providers()
+                search_selected = resolve_first_search_provider_selection(search_choices)
+                ui.update_select(
+                    "workflowSearchProvider",
+                    choices=search_choices,
+                    selected=search_selected,
+                    session=session,
+                )
         except Exception as exc:
             workflow_status_message.set(f"Failed to load workflow: {exc}")
 
@@ -570,6 +666,15 @@ def server(input, output, session):
     async def _sync_selected_workflow_routing():
         workflow_routing_id = str(input.workflowRouting() or "").strip()
         selected_workflow_routing_id.set(workflow_routing_id)
+        if workflow_routing_id == CONTEXTUAL_SEARCH_WORKFLOW_ID:
+            search_choices, _ = fetch_available_search_providers()
+            search_selected = resolve_first_search_provider_selection(search_choices)
+            ui.update_select(
+                "searchProvider",
+                choices=search_choices,
+                selected=search_selected,
+                session=session,
+            )
         await session.send_custom_message(
             "workflowRoutingState", {"active": bool(workflow_routing_id)}
         )
@@ -587,6 +692,28 @@ def server(input, output, session):
             workflow_status_message.set("")
         except Exception as exc:
             workflow_status_message.set(f"Failed to load workflow run: {exc}")
+
+    @reactive.Effect
+    async def _sync_workflow_run_controls():
+        snapshot = workflow_run_snapshot.get()
+        in_progress = workflow_run_in_progress(snapshot)
+        await session.send_custom_message(
+            "workflowRunControlState",
+            {"disabled": in_progress},
+        )
+        if in_progress:
+            return
+        with reactive.isolate():
+            current_retry_step = str(input.workflowRetryStepID() or "").strip()
+        ui.update_select(
+            "workflowRetryStepID",
+            choices=build_workflow_retry_step_choices(snapshot),
+            selected=resolve_workflow_retry_step_selection(
+                snapshot,
+                current_selection=current_retry_step,
+            ),
+            session=session,
+        )
 
     def workflow_endpoint_key() -> str:
         raw = str(input.workflowEndpoint() or "").strip()
@@ -661,6 +788,9 @@ def server(input, output, session):
         if not run_id:
             workflow_status_message.set("Select a run first.")
             return
+        if workflow_run_in_progress(workflow_run_snapshot.get()):
+            workflow_status_message.set(f"Run {run_id} is already in progress.")
+            return
         try:
             optimistic = workflow_snapshot_with_next_pending_running(
                 workflow_run_snapshot.get()
@@ -681,6 +811,9 @@ def server(input, output, session):
         run_id = str(selected_workflow_run_id.get() or input.workflowRunSelector() or "").strip()
         if not run_id:
             workflow_status_message.set("Select a run first.")
+            return
+        if workflow_run_in_progress(workflow_run_snapshot.get()):
+            workflow_status_message.set(f"Run {run_id} is already in progress.")
             return
         try:
             async def advance_with_running_snapshot(run_id: str) -> dict[str, Any]:
@@ -720,7 +853,10 @@ def server(input, output, session):
         run_id = str(selected_workflow_run_id.get() or input.workflowRunSelector() or "").strip()
         step_id = str(input.workflowRetryStepID() or "").strip()
         if not run_id or not step_id:
-            workflow_status_message.set("Select a run and enter a failed step id.")
+            workflow_status_message.set("Select a run and retry step.")
+            return
+        if workflow_run_in_progress(workflow_run_snapshot.get()):
+            workflow_status_message.set(f"Run {run_id} is already in progress.")
             return
         try:
             workflow_run_snapshot.set(await retry_workflow_step(run_id, step_id))
@@ -1197,6 +1333,11 @@ def server(input, output, session):
                     endpoint=endpoint_for_workflow,
                     reasoning_effort=current_reasoning,
                     convo_id=convo_id or "",
+                    search_provider=(
+                        str(_input_value(input, "searchProvider") or "").strip()
+                        if workflow_routing_id == CONTEXTUAL_SEARCH_WORKFLOW_ID
+                        else ""
+                    ),
                 )
                 created = await create_workflow_run(workflow_routing_id, payload)
                 run_id = str(created.get("run_id") or "").strip()

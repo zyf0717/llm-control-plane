@@ -29,6 +29,17 @@ class JsonLLMClient:
         return {"text": self.text, "metadata": {"endpoint": kwargs["endpoint"]}}
 
 
+class SequenceLLMClient:
+    def __init__(self, texts: list[str]):
+        self.texts = list(texts)
+        self.prompts = []
+
+    async def complete(self, **kwargs):
+        self.prompts.append(kwargs)
+        text = self.texts.pop(0) if self.texts else ""
+        return {"text": text, "metadata": {"endpoint": kwargs["endpoint"]}}
+
+
 class StreamingLLMClient:
     def __init__(self, chunks=None):
         self.chunks = chunks or [
@@ -175,6 +186,17 @@ steps:
     kind: llm
     prompt: "{{ params.goal }}"
     output_key: plan
+    output_contract:
+      format: json
+      required: true
+      schema:
+        type: object
+        additionalProperties: false
+        required: [query]
+        properties:
+          query:
+            type: string
+            minLength: 1
   - id: search
     kind: search
     depends_on: [plan]
@@ -199,6 +221,20 @@ steps:
     kind: llm
     prompt: "{{ params.goal }}"
     output_key: plan
+    output_contract:
+      format: json
+      required: true
+      schema:
+        type: object
+        additionalProperties: false
+        required: [queries]
+        properties:
+          queries:
+            type: array
+            minItems: 1
+            items:
+              type: string
+              minLength: 1
   - id: search
     kind: search
     depends_on: [plan]
@@ -259,6 +295,49 @@ steps:
     )
 
 
+def write_structured_plan_workflow(
+    path: Path,
+    *,
+    on_invalid: str = "retry",
+    max_attempts: int = 2,
+    repair: bool = True,
+) -> None:
+    path.write_text(
+        f"""
+id: structured_plan_sample
+name: Structured Plan Sample
+version: 0.1.0
+params_schema:
+  type: object
+  required: [goal]
+steps:
+  - id: plan
+    kind: llm
+    prompt: "{{{{ params.goal }}}}"
+    output_key: plan
+    output_contract:
+      format: json
+      required: true
+      schema:
+        type: object
+        additionalProperties: false
+        required: [queries]
+        properties:
+          queries:
+            type: array
+            minItems: 1
+            items:
+              type: string
+              minLength: 1
+      on_invalid:
+        action: {on_invalid}
+        max_attempts: {max_attempts}
+        repair: {str(repair).lower()}
+""",
+        encoding="utf-8",
+    )
+
+
 def write_json_queries_rerank_workflow(path: Path) -> None:
     path.write_text(
         """
@@ -273,6 +352,20 @@ steps:
     kind: llm
     prompt: "{{ params.goal }}"
     output_key: plan
+    output_contract:
+      format: json
+      required: true
+      schema:
+        type: object
+        additionalProperties: false
+        required: [queries]
+        properties:
+          queries:
+            type: array
+            minItems: 1
+            items:
+              type: string
+              minLength: 1
   - id: search
     kind: search
     depends_on: [plan]
@@ -469,6 +562,149 @@ async def test_llm_json_output_parser_accepts_fenced_json_for_workflow_queries(t
         assert snapshot["steps"][0]["output_json"]["json"] == {
             "queries": ["query one", "query two"]
         }
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_llm_structured_output_contract_passes_and_persists_metadata(tmp_path):
+    write_structured_plan_workflow(tmp_path / "structured.yaml")
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    llm = JsonLLMClient('{"queries": ["query one"]}')
+    executor = WorkflowExecutor(registry, store, llm)
+    try:
+        created = await executor.create_run(
+            "structured_plan_sample", params={"goal": "ship"}, endpoint="node-a"
+        )
+        snapshot = await executor.advance(created["run"]["run_id"])
+
+        output = snapshot["steps"][0]["output_json"]
+        assert output["json"] == {"queries": ["query one"]}
+        assert output["metadata"]["structured_output"] == {
+            "format": "json",
+            "valid": True,
+            "schema_enforced": True,
+            "attempts": 1,
+            "repair_used": False,
+            "errors": [],
+        }
+        assert "You must return only valid JSON" in llm.prompts[0]["prompt"]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_llm_structured_output_contract_fails_without_repair_budget(tmp_path):
+    write_structured_plan_workflow(
+        tmp_path / "structured.yaml",
+        on_invalid="fail",
+        max_attempts=0,
+        repair=False,
+    )
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    llm = JsonLLMClient('{"queries": "query one"}')
+    executor = WorkflowExecutor(registry, store, llm)
+    try:
+        created = await executor.create_run(
+            "structured_plan_sample", params={"goal": "ship"}, endpoint="node-a"
+        )
+        snapshot = await executor.advance(created["run"]["run_id"])
+
+        assert snapshot["run"]["status"] == "failed"
+        assert snapshot["steps"][0]["status"] == "failed"
+        assert "structured_output_invalid" in snapshot["steps"][0]["error"]
+        assert len(llm.prompts) == 1
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_llm_structured_output_repairs_then_retries_within_budget(tmp_path):
+    write_structured_plan_workflow(tmp_path / "structured.yaml")
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    llm = SequenceLLMClient(
+        [
+            '{"queries": "query one"}',
+            '{"queries": "still wrong"}',
+            '{"queries": ["query one"]}',
+        ]
+    )
+    executor = WorkflowExecutor(registry, store, llm)
+    try:
+        created = await executor.create_run(
+            "structured_plan_sample", params={"goal": "ship"}, endpoint="node-a"
+        )
+        snapshot = await executor.advance(created["run"]["run_id"])
+
+        output = snapshot["steps"][0]["output_json"]
+        assert snapshot["run"]["status"] == "completed"
+        assert output["json"] == {"queries": ["query one"]}
+        assert output["metadata"]["structured_output"]["attempts"] == 3
+        assert output["metadata"]["structured_output"]["repair_used"] is True
+        assert "Previous output:" in llm.prompts[1]["prompt"]
+        assert "previous response was invalid" in llm.prompts[2]["prompt"]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_llm_structured_output_defaults_to_repair_then_retry(tmp_path):
+    path = tmp_path / "structured_default.yaml"
+    path.write_text(
+        """
+id: structured_default_sample
+name: Structured Default Sample
+version: 0.1.0
+params_schema:
+  type: object
+  required: [goal]
+steps:
+  - id: plan
+    kind: llm
+    prompt: "{{ params.goal }}"
+    output_key: plan
+    output_contract:
+      format: json
+      required: true
+      schema:
+        type: object
+        required: [queries]
+        properties:
+          queries:
+            type: array
+""",
+        encoding="utf-8",
+    )
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    llm = SequenceLLMClient(
+        [
+            '{"queries": "query one"}',
+            '{"queries": "still wrong"}',
+            '{"queries": ["query one"]}',
+        ]
+    )
+    executor = WorkflowExecutor(registry, store, llm)
+    try:
+        created = await executor.create_run(
+            "structured_default_sample", params={"goal": "ship"}, endpoint="node-a"
+        )
+        snapshot = await executor.advance(created["run"]["run_id"])
+
+        assert snapshot["run"]["status"] == "completed"
+        assert "Previous output:" in llm.prompts[1]["prompt"]
+        assert "previous response was invalid" in llm.prompts[2]["prompt"]
     finally:
         await store.close()
 
