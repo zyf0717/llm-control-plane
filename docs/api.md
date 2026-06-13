@@ -235,7 +235,7 @@ Behavior:
 - never fetches result pages or executes JavaScript
 - returns normalized result candidates plus degradation warnings
 - may include `original_query` and filtered `query_refinement` metadata, including `queries`, when refinement ran
-- may include filtered `reranking` metadata when reranking ran
+- may include filtered `reranking` metadata when reranking ran, including `backend` (`llm` or `dedicated`)
 - includes `wrapped_results`, a JSON string marked as untrusted for downstream LLM use
 
 Single-Node/ad hoc search may use the query refiner. Workflow search may either use the query refiner for plain search prompts or bypass it for workflow-planned JSON queries. Both paths may use post-retrieval reranking.

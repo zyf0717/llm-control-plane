@@ -85,6 +85,8 @@ def build_search_router(
     reranker_config = SearchRerankerConfig(
         enabled=bool(search_config.get("reranker_enabled", bool(reranker_endpoint))),
         model_endpoint=reranker_endpoint,
+        fallback_model_endpoint=search_config.get("reranker_fallback_model_endpoint"),
+        backend=str(search_config.get("reranker_backend", "llm")),
         model=str(search_config.get("reranker_model", "search-reranker")),
         timeout_ms=int(
             search_config.get(

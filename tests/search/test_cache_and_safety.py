@@ -58,11 +58,17 @@ def test_wrap_search_results_includes_filtered_reranking_metadata():
         query="q",
         provider="duckduckgo_html",
         results=[_result("https://example.com/a")],
-        reranking={"used": True, "degraded": False, "model": "search-reranker"},
+        reranking={
+            "used": True,
+            "degraded": False,
+            "model": "search-reranker",
+            "backend": "dedicated",
+        },
     )
 
     wrapped = wrap_search_results(response)
 
     assert '"reranking"' in wrapped
     assert '"model": "search-reranker"' in wrapped
+    assert '"backend": "dedicated"' in wrapped
     assert "raw" not in wrapped

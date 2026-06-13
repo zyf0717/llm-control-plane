@@ -46,5 +46,6 @@ def wrap_search_results(response: SearchResponse) -> str:
             "used": response.reranking.get("used"),
             "degraded": response.reranking.get("degraded"),
             "model": response.reranking.get("model"),
+            "backend": response.reranking.get("backend"),
         }
     return json.dumps(payload, ensure_ascii=True)

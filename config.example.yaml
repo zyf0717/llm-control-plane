@@ -31,6 +31,8 @@ search:
   query_refiner_max_output_tokens: 512
   query_refiner_max_queries: 1
   reranker_model_endpoint: ""
+  reranker_fallback_model_endpoint: ""
+  reranker_backend: "llm"
   reranker_model: "search-reranker"
   reranker_enabled: false
   reranker_timeout_ms: 7000

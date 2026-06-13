@@ -73,6 +73,8 @@ def test_build_search_router_uses_reranker_config_keys():
         {
             "enabled": True,
             "reranker_model_endpoint": "https://reranker.local",
+            "reranker_fallback_model_endpoint": "https://llm-reranker.local",
+            "reranker_backend": "dedicated",
             "reranker_model": "reranker-model",
             "reranker_enabled": True,
             "reranker_timeout_ms": 333,
@@ -85,6 +87,8 @@ def test_build_search_router_uses_reranker_config_keys():
 
     assert router.reranker is not None
     assert router.reranker.config.model_endpoint == "https://reranker.local"
+    assert router.reranker.config.fallback_model_endpoint == "https://llm-reranker.local"
+    assert router.reranker.config.backend == "dedicated"
     assert router.reranker.config.model == "reranker-model"
     assert router.reranker.config.timeout_ms == 333
     assert router.reranker.config.max_context_chars == 555
@@ -104,3 +108,12 @@ def test_build_search_router_does_not_alias_reranker_headers():
 
     assert router.reranker is not None
     assert router.reranker.config.headers == {"CF-Access-Client-Id": "id"}
+
+
+def test_build_search_router_defaults_reranker_backend_to_llm():
+    router = build_search_router(
+        {"enabled": True, "reranker_model_endpoint": "https://reranker.local"}
+    )
+
+    assert router.reranker is not None
+    assert router.reranker.config.backend == "llm"
