@@ -263,8 +263,14 @@ app_ui = ui.page_fluid(
 
         Shiny.addCustomMessageHandler("workflowRoutingState", function(message) {
             const active = Boolean(message && message.active);
+            const searchProviderEnabled = Boolean(
+                message && message.searchProviderEnabled
+            );
             setDashboardSelectDisabled("ragEndpoint", active);
-            setDashboardSelectDisabled("searchProvider", active);
+            setDashboardSelectDisabled(
+                "searchProvider",
+                active && !searchProviderEnabled
+            );
         });
 
         Shiny.addCustomMessageHandler("workflowRunControlState", function(message) {
@@ -468,7 +474,7 @@ app_ui = ui.page_fluid(
                     ui.input_action_button(
                         "createWorkflowRun",
                         "Create run",
-                        class_="btn-primary dashboard-full-width-action",
+                        class_="dashboard-full-width-action",
                     ),
                 ),
                 ui.div(
@@ -491,7 +497,7 @@ app_ui = ui.page_fluid(
                         input_action_row(
                             ui.input_select(
                                 "workflowRetryStepID",
-                                "Retry Step",
+                                "",
                                 choices={"": "Select step"},
                                 selected="",
                                 width="100%",

@@ -133,6 +133,57 @@ def resolve_first_search_provider_selection(choices: Dict[str, str]) -> str:
     return ""
 
 
+def workflow_requires_search_provider(workflow_id: Optional[str]) -> bool:
+    return str(workflow_id or "").strip() == CONTEXTUAL_SEARCH_WORKFLOW_ID
+
+
+def build_search_provider_choices(
+    choices: Dict[str, str],
+    *,
+    require_provider: bool,
+) -> Dict[str, str]:
+    if require_provider:
+        required_choices = {
+            provider_id: label
+            for provider_id, label in choices.items()
+            if str(provider_id or "").strip()
+        }
+        return required_choices or choices
+    return choices
+
+
+def resolve_search_provider_selection(
+    choices: Dict[str, str],
+    *,
+    current_selection: Optional[str] = None,
+    default_selection: str = "",
+    require_provider: bool = False,
+    force_default: bool = False,
+) -> str:
+    current = str(current_selection or "").strip()
+    default = str(default_selection or "")
+
+    if require_provider:
+        if current and current in choices:
+            return current
+        return resolve_first_search_provider_selection(choices) or default
+
+    if force_default:
+        if default in choices:
+            return default
+        if "" in choices:
+            return ""
+        return next(iter(choices), "")
+
+    if current and current in choices:
+        return current
+    if default in choices:
+        return default
+    if "" in choices:
+        return ""
+    return next(iter(choices), "")
+
+
 def workflow_run_in_progress(snapshot: dict[str, Any] | None) -> bool:
     if not isinstance(snapshot, dict):
         return False
@@ -479,33 +530,74 @@ def server(input, output, session):
             session=session,
         )
 
-    async def update_search_providers(
+    def update_single_node_search_provider_select(
+        workflow_routing_id: str,
+        *,
         current_selection: Optional[str] = None,
     ) -> None:
         search_choices, default_selection = fetch_available_search_providers()
-        selected = (
-            current_selection
-            if current_selection in search_choices
-            else default_selection
+        requires_provider = workflow_requires_search_provider(workflow_routing_id)
+        choices = build_search_provider_choices(
+            search_choices,
+            require_provider=requires_provider,
+        )
+        selected = resolve_search_provider_selection(
+            choices,
+            current_selection=current_selection,
+            default_selection=default_selection,
+            require_provider=requires_provider,
+            force_default=bool(workflow_routing_id) and not requires_provider,
         )
         ui.update_select(
             "searchProvider",
-            choices=search_choices,
+            choices=choices,
             selected=selected,
             session=session,
         )
-        with reactive.isolate():
-            workflow_current = str(input.workflowSearchProvider() or "")
-        workflow_selected = (
-            workflow_current
-            if workflow_current in search_choices
-            else default_selection
+
+    def update_workflow_search_provider_select(
+        workflow_id: str,
+        *,
+        current_selection: Optional[str] = None,
+    ) -> None:
+        search_choices, default_selection = fetch_available_search_providers()
+        requires_provider = workflow_requires_search_provider(workflow_id)
+        choices = build_search_provider_choices(
+            search_choices,
+            require_provider=requires_provider,
+        )
+        selected = resolve_search_provider_selection(
+            choices,
+            current_selection=current_selection,
+            default_selection=default_selection,
+            require_provider=requires_provider,
+            force_default=not requires_provider,
         )
         ui.update_select(
             "workflowSearchProvider",
-            choices=search_choices,
-            selected=workflow_selected,
+            choices=choices,
+            selected=selected,
             session=session,
+        )
+
+    async def update_search_providers(
+        current_selection: Optional[str] = None,
+    ) -> None:
+        with reactive.isolate():
+            workflow_routing_id = str(
+                input.workflowRouting() or selected_workflow_routing_id.get() or ""
+            ).strip()
+            workflow_current = str(input.workflowSearchProvider() or "")
+            workflow_id = str(
+                input.workflowSelector() or selected_workflow_id.get() or ""
+            )
+        update_single_node_search_provider_select(
+            workflow_routing_id,
+            current_selection=current_selection,
+        )
+        update_workflow_search_provider_select(
+            workflow_id,
+            current_selection=workflow_current,
         )
 
     async def update_history_selector() -> None:
@@ -532,6 +624,7 @@ def server(input, output, session):
                 if workflow_routing_input is not None
                 else selected_workflow_routing_id.get()
             ).strip()
+            current_search_provider = str(input.searchProvider() or "")
         workflows = await fetch_workflows()
         workflow_specs.set(workflows)
         choices = format_workflow_choices(workflows)
@@ -549,7 +642,16 @@ def server(input, output, session):
         )
         selected_workflow_routing_id.set(routing_selected or "")
         await session.send_custom_message(
-            "workflowRoutingState", {"active": bool(routing_selected)}
+            "workflowRoutingState",
+            {
+                "active": bool(routing_selected),
+                "searchProviderEnabled": routing_selected
+                == CONTEXTUAL_SEARCH_WORKFLOW_ID,
+            },
+        )
+        update_single_node_search_provider_select(
+            routing_selected or "",
+            current_selection=current_search_provider,
         )
 
         selected = current_selection if current_selection in choices else None
@@ -570,6 +672,12 @@ def server(input, output, session):
                     "workflowParams",
                     value=build_workflow_params_template(spec),
                     session=session,
+                )
+                with reactive.isolate():
+                    workflow_search_current = str(input.workflowSearchProvider() or "")
+                update_workflow_search_provider_select(
+                    selected,
+                    current_selection=workflow_search_current,
                 )
             except Exception as exc:
                 workflow_status_message.set(f"Failed to load workflow: {exc}")
@@ -649,15 +757,10 @@ def server(input, output, session):
                 session=session,
             )
             workflow_status_message.set("")
-            if workflow_id == CONTEXTUAL_SEARCH_WORKFLOW_ID:
-                search_choices, _ = fetch_available_search_providers()
-                search_selected = resolve_first_search_provider_selection(search_choices)
-                ui.update_select(
-                    "workflowSearchProvider",
-                    choices=search_choices,
-                    selected=search_selected,
-                    session=session,
-                )
+            update_workflow_search_provider_select(
+                workflow_id,
+                current_selection=input.workflowSearchProvider(),
+            )
         except Exception as exc:
             workflow_status_message.set(f"Failed to load workflow: {exc}")
 
@@ -666,17 +769,17 @@ def server(input, output, session):
     async def _sync_selected_workflow_routing():
         workflow_routing_id = str(input.workflowRouting() or "").strip()
         selected_workflow_routing_id.set(workflow_routing_id)
-        if workflow_routing_id == CONTEXTUAL_SEARCH_WORKFLOW_ID:
-            search_choices, _ = fetch_available_search_providers()
-            search_selected = resolve_first_search_provider_selection(search_choices)
-            ui.update_select(
-                "searchProvider",
-                choices=search_choices,
-                selected=search_selected,
-                session=session,
-            )
+        update_single_node_search_provider_select(
+            workflow_routing_id,
+            current_selection=input.searchProvider(),
+        )
         await session.send_custom_message(
-            "workflowRoutingState", {"active": bool(workflow_routing_id)}
+            "workflowRoutingState",
+            {
+                "active": bool(workflow_routing_id),
+                "searchProviderEnabled": workflow_routing_id
+                == CONTEXTUAL_SEARCH_WORKFLOW_ID,
+            },
         )
 
     @reactive.Effect

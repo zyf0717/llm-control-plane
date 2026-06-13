@@ -1,6 +1,7 @@
 import pytest
 
 from src.dashboard.app_server import (
+    build_search_provider_choices,
     build_workflow_routing_choices,
     build_workflow_retry_step_choices,
     build_fork_notice,
@@ -8,6 +9,7 @@ from src.dashboard.app_server import (
     normalize_reasoning_effort,
     resolve_endpoint_display_selection,
     resolve_first_search_provider_selection,
+    resolve_search_provider_selection,
     resolve_workflow_retry_step_selection,
     resolve_workflow_routing_selection,
     workflow_run_ended,
@@ -393,6 +395,83 @@ def test_resolve_first_search_provider_selection_skips_none_option():
 
 def test_resolve_first_search_provider_selection_returns_empty_without_provider():
     assert resolve_first_search_provider_selection({"": "None"}) == ""
+
+
+def test_build_search_provider_choices_removes_none_when_required():
+    choices = build_search_provider_choices(
+        {
+            "": "None",
+            "duckduckgo_html": "DuckDuckGo",
+            "wikipedia_opensearch": "Wikipedia",
+        },
+        require_provider=True,
+    )
+
+    assert choices == {
+        "duckduckgo_html": "DuckDuckGo",
+        "wikipedia_opensearch": "Wikipedia",
+    }
+
+
+def test_build_search_provider_choices_keeps_none_without_provider():
+    assert build_search_provider_choices(
+        {"": "None"},
+        require_provider=True,
+    ) == {"": "None"}
+
+
+def test_resolve_search_provider_selection_requires_first_real_provider():
+    choices = build_search_provider_choices(
+        {
+            "": "None",
+            "duckduckgo_html": "DuckDuckGo",
+            "wikipedia_opensearch": "Wikipedia",
+        },
+        require_provider=True,
+    )
+
+    assert (
+        resolve_search_provider_selection(
+            choices,
+            current_selection="",
+            default_selection="",
+            require_provider=True,
+        )
+        == "duckduckgo_html"
+    )
+
+
+def test_resolve_search_provider_selection_force_default_overrides_current_provider():
+    choices = build_search_provider_choices(
+        {
+            "": "None",
+            "duckduckgo_html": "DuckDuckGo",
+        },
+        require_provider=False,
+    )
+
+    assert (
+        resolve_search_provider_selection(
+            choices,
+            current_selection="duckduckgo_html",
+            default_selection="",
+            force_default=True,
+        )
+        == ""
+    )
+
+
+def test_resolve_search_provider_selection_preserves_current_when_not_forced():
+    selected = resolve_search_provider_selection(
+        {
+            "": "None",
+            "duckduckgo_html": "DuckDuckGo",
+        },
+        current_selection="duckduckgo_html",
+        default_selection="",
+    )
+
+    assert selected == "duckduckgo_html"
 
 
 def test_build_workflow_retry_step_choices_uses_snapshot_steps():

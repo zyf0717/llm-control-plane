@@ -13,7 +13,7 @@ def run_proxy():
 def run_dashboard():
     from src.dashboard.app import app
 
-    app.run(host="0.0.0.0", port=12341)
+    app.run(host="127.0.0.1", port=12341)
 
 
 def main() -> int:
