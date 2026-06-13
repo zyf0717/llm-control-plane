@@ -9,6 +9,9 @@
 | Upstream proxying | `src/orchestrator/upstream_proxy.py` | Streaming/non-streaming upstream calls, response normalization, trace/history finalization |
 | Runtime services | `src/orchestrator/proxy_services.py` | Configured endpoints, search service, history/workflow stores, startup/shutdown state |
 | Search API | `src/orchestrator/search_routes.py` | `/search/web` request parsing and response wrapping |
+| Search core | `src/search/` | Provider selection, query refinement, result normalization, dedupe, optional reranking |
+| Workflow API | `src/orchestrator/workflow/api.py` | Workflow catalog and run lifecycle routes |
+| Workflow executor | `src/orchestrator/workflow/` | YAML workflow model validation, DAG execution, output contracts |
 | Workflow proxy clients | `src/orchestrator/workflow_clients.py` | Workflow LLM/search adapters backed by the proxy runtime |
 | LLM Router | `src/orchestrator/llm_router.py` | Workload classification and smart endpoint selection |
 | Dashboard | `src/dashboard/` | Shiny UI for chat, endpoint selection, RAG selection, and runtime inspection |
@@ -19,11 +22,13 @@
 ```mermaid
 flowchart TD
     U[User or Client] -->|HTTP chat request| P[Proxy :12340]
-    U -->|Browser UI| D[Dashboard :12341]
+    U -->|Browser UI| D[Dashboard :12341 localhost]
 
     D -->|GET /models| P
     D -->|GET health_url| RH[RAG health endpoints]
     D -->|POST /smart or /{endpoint}<br/>X-Convo-ID<br/>X-Reasoning-Effort<br/>X-Allow-*-Switch<br/>X-RAG-Endpoint| P
+    D -->|POST /search/web| P
+    D -->|Workflow API| P
 
     P -->|GET /v1/models| M[Configured LLM endpoints]
     M -->|Model metadata| P
@@ -33,6 +38,11 @@ flowchart TD
 
     P -->|POST retrieve_url| RR[Selected RAG endpoint]
     RR -->|Retrieved chunks| P
+    P -->|Search route| S[Search service]
+    S -->|Provider queries| SP[Search providers]
+    S -->|Optional explicit rerank| RK[Reranker]
+    P -->|Workflow routes| W[Workflow executor]
+    W -->|LLM/search/rerank steps| P
 
     P -->|Forward final messages| LLM[Upstream LLM endpoint]
     LLM -->|SSE or JSON response| P
@@ -54,6 +64,18 @@ The proxy processes chat requests in this order:
 7. Apply best-effort llama.cpp slot affinity for endpoints with `slot_affinity: true`.
 8. Forward the final request to the selected upstream model endpoint.
 9. Normalize streaming/non-streaming reasoning content, persist assistant text when present, and attach response metadata headers, including `X-Trace-ID`. Streaming uses a proxy-owned upstream producer and a downstream client consumer, so assistant accumulation and history finalization can continue after client disconnect. Pending producer/finalization tasks are drained on shutdown.
+
+## Search Model
+
+`POST /search/web` is a lightweight candidate-discovery API. Query refinement is enabled by default when configured; reranking is disabled by default and requires `use_reranker: true`. The dashboard Single-Node ad hoc path keeps this lightweight by sending `count: 5` and `use_reranker: false`.
+
+Workflow search is different: a `search` step can dispatch one or more planned queries and a later `rerank` step can rank the merged candidates. The built-in `contextual_search` workflow plans up to five provider queries, asks for up to twenty results per query, and reranks to ten final candidates.
+
+## Workflow Model
+
+Workflows are validated YAML DAGs loaded from `workflow_configs/`. Runs are persisted by the proxy runtime and can be advanced step-by-step, run to completion, streamed, retried, or cleared through the workflow API. Step kinds are `llm`, `search`, `rerank`, and `manual`.
+
+Workflow LLM calls use the same upstream proxy machinery as direct chat requests. Workflow search/rerank calls use proxy-backed clients, so provider config, query-refiner config, reranker config, and result metadata stay centralized.
 
 ## Smart Routing Logic
 
@@ -99,4 +121,4 @@ That preserves:
 
 The RAG service owns retrieval, ranking, thresholding, and prompt assembly. The proxy reports endpoint, hit count, injection status, backend mode, truncation, and skip reason headers when available.
 
-TL;DR: the proxy is the integration point; the dashboard selects endpoints and shows metadata, but the proxy owns history, routing, reasoning, and RAG injection.
+TL;DR: the proxy is the integration point; the dashboard selects endpoints and shows metadata, but the proxy owns history, routing, reasoning, RAG injection, search, and workflow execution.

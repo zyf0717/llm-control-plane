@@ -42,8 +42,8 @@ python llm_control_plane.py
 
 Runtime endpoints:
 
-- Proxy: `http://localhost:12340`
-- Dashboard: `http://localhost:12341`
+- Proxy: `http://localhost:12340` (binds `0.0.0.0`)
+- Dashboard: `http://localhost:12341` (binds `127.0.0.1`)
 
 ## Test
 
@@ -57,5 +57,7 @@ pytest
 - [Configuration](configuration.md)
 - [API Guide](api.md)
 - [Dashboard Guide](dashboard.md)
+- [Search Guide](search.md)
+- [Workflow Guide](workflows.md)
 
 TL;DR: create the conda env, set the Cloudflare and proxy env vars, run `python llm_control_plane.py`, then use the focused docs for the operational details.

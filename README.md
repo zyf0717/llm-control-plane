@@ -12,6 +12,8 @@ The repo is intentionally pragmatic rather than framework-heavy: it keeps routin
 - [Configuration](docs/configuration.md)
 - [API Guide](docs/api.md)
 - [Dashboard Guide](docs/dashboard.md)
+- [Search Guide](docs/search.md)
+- [Workflow Guide](docs/workflows.md)
 
 ## Quick Start
 
@@ -23,8 +25,8 @@ python llm_control_plane.py
 
 `environment.yml` bootstraps the editable local package from `pyproject.toml`.
 
-- Proxy: `http://localhost:12340`
-- Dashboard: `http://localhost:12341`
+- Proxy: `http://localhost:12340` (binds `0.0.0.0`)
+- Dashboard: `http://localhost:12341` (binds `127.0.0.1`)
 
 ## Repo Layout
 
@@ -32,7 +34,7 @@ python llm_control_plane.py
 |---|---|
 | `src/orchestrator/` | FastAPI app composition, request processing, upstream proxying, smart routing, workflow APIs |
 | `src/dashboard/` | Shiny UI plus extracted search/workflow/trace server helpers |
-| `src/search/` | Provider routing plus optional ad hoc query refinement |
+| `src/search/` | Provider routing, query refinement, and optional explicit reranking |
 | `workflow_configs/` | Context-driven workflow definitions |
 | `config.yaml` | Local endpoint, routing, RAG, and search configuration |
 | `config.example.yaml` | Checked-in configuration template |
@@ -48,4 +50,4 @@ pytest
 
 Project dependencies now live in `pyproject.toml`; the conda file is only a thin wrapper for local env creation.
 
-Ad hoc Single-Node search may use the query refiner to produce provider-ready search query/queries and may rerank inline. Workflow search can either use the query refiner or workflow-planned queries; workflow reranking is always an explicit workflow step.
+Ad hoc Single-Node search may use the query refiner but intentionally disables inline reranking. Direct `/search/web` callers can opt into reranking with `use_reranker: true`. Workflow search can either use the query refiner or workflow-planned queries; workflow reranking is always an explicit workflow step.

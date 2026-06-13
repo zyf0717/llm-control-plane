@@ -1,6 +1,6 @@
 # Dashboard Guide
 
-The dashboard runs on `http://localhost:12341` and communicates only with the proxy.
+The dashboard runs on `http://localhost:12341`, binds `127.0.0.1`, and communicates only with the proxy.
 
 ## Features
 
@@ -13,6 +13,8 @@ The dashboard runs on `http://localhost:12341` and communicates only with the pr
 - Streaming and non-streaming chat
 - Reasoning effort selector
 - File upload for inline prompt augmentation
+- Single-Node workflow routing
+- Workflow run creation, stepping, streaming, retry, clearing, and artifact inspection
 - Conversation history viewer
 - Runtime metadata panel
 
@@ -39,6 +41,12 @@ The dashboard runs on `http://localhost:12341` and communicates only with the pr
 - Refreshes whenever the RAG selector is refreshed
 - Does not health-check providers; availability is config-driven
 
+Workflow routing can change selector defaults:
+
+- Single-Node `contextual_search`: enables the selector and defaults to the first configured non-`None` provider; `None` is removed when a real provider exists.
+- Single-Node non-search workflows: resets to `None` and disables the selector.
+- Workflows tab: selector remains enabled; `contextual_search` requires a real provider, while non-search workflows default to `None`.
+
 ## Request Behavior
 
 The dashboard sends concrete machine endpoint requests to `/{endpoint}`. Smart routing is a proxy API feature exposed at `/smart`; the dashboard does not maintain a separate local route pin.
@@ -54,9 +62,11 @@ When the user submits a message, the dashboard sends:
 
 The dashboard does not inject retrieved context itself. It only selects the RAG endpoint; the proxy performs retrieval and request-body augmentation.
 
-When a search provider is selected, the dashboard first calls the proxy `POST /search/web`, renders an inline search-candidate preface in the transcript, and adds one turn-local synthetic `user` message whose content is the ephemeral marker plus the proxy-provided `wrapped_results` JSON string. The proxy merges that ephemeral search message into the next real user turn before forwarding upstream and excludes it from durable history.
+When a search provider is selected outside workflow routing, the dashboard first calls the proxy `POST /search/web` with `count: 5` and `use_reranker: false`, renders an inline search-candidate preface in the transcript, and adds one turn-local synthetic `user` message whose content is the ephemeral marker plus the proxy-provided `wrapped_results` JSON string. The proxy merges that ephemeral search message into the next real user turn before forwarding upstream and excludes it from durable history.
 
 For Single-Node/ad hoc search, the proxy may use the configured query refiner to turn the latest request plus compact dashboard context into provider-ready query text or fanout queries. Workflow search can either use that query refiner for plain search prompts or let workflow LLM steps inspect the larger workflow context and dispatch planned queries directly through the selected provider. Workflow reranking is surfaced as its own workflow step.
+
+When Single-Node workflow routing is enabled, the dashboard creates and runs a workflow for the submitted turn instead of sending a direct chat completion. The selected endpoint, reasoning effort, RAG endpoint, and search provider are copied into that workflow run.
 
 System prompt and reasoning are first-turn conversation controls. If either changes after a conversation has started, the dashboard automatically forks to a new `convo_id`, copies prior durable user/assistant history behind the new system prompt, prints an explicit fork notice in the chat, and sends the next turn under the forked id.
 
@@ -83,9 +93,15 @@ The runtime panel may show:
 - search provider, result count, degraded state, and warnings
 - RAG endpoint, hit count, injection result, and skip reason
 
+## Workflow Tab
+
+The Workflows tab exposes the proxy workflow API. It can create a run from workflow params, selected endpoint, optional RAG endpoint, optional search provider, and optional uploaded UTF-8 context files. It can then advance one step, run to completion, stream run events, retry a step and its dependents, clear stored runs, and inspect step artifacts.
+
+Search and rerank behavior follows workflow YAML, not the Single-Node ad hoc search path. For the built-in `contextual_search` workflow, the planner produces up to five provider queries and a separate context-resolved rerank query; the search step requests up to twenty results per query and the rerank step caps output at ten.
+
 ## Logout and Themes
 
 - theme switching is handled through `shinyswatch`
 - logout redirects to the configured Cloudflare Access logout URL
 
-TL;DR: the dashboard is a thin operational UI over the proxy; the proxy owns search execution, retrieval, routing, history, and final request shaping.
+TL;DR: the dashboard is a thin operational UI over the proxy; the proxy owns search execution, workflow execution, retrieval, routing, history, and final request shaping.

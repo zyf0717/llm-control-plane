@@ -211,7 +211,7 @@ curl -X POST http://localhost:12340/search/web \
     "count": 5,
     "freshness": "week",
     "use_query_refiner": true,
-    "use_reranker": true
+    "use_reranker": false
   }'
 ```
 
@@ -223,7 +223,7 @@ Request fields:
 - `count`: optional result count
 - `freshness`: optional freshness hint such as `day`, `week`, or `month`
 - `use_query_refiner` / `useQueryRefiner`: optional boolean; set false to bypass query refinement
-- `use_reranker` / `useReranker`: optional boolean; set false to bypass post-retrieval reranking
+- `use_reranker` / `useReranker`: optional boolean; defaults to false; set true to enable post-retrieval reranking
 
 Behavior:
 
@@ -231,13 +231,49 @@ Behavior:
 - may run async provider fanout when the query refiner returns multiple queries
 - sends one HTTP request to each selected search provider in priority order per refined query
 - parses only the returned SERP payload
-- may rerank deduped result candidates through a bounded reranker when configured
+- may rerank deduped result candidates through a bounded reranker when configured and explicitly requested
 - never fetches result pages or executes JavaScript
 - returns normalized result candidates plus degradation warnings
 - may include `original_query` and filtered `query_refinement` metadata, including `queries`, when refinement ran
 - may include filtered `reranking` metadata when reranking ran, including configured `backend` and actual `path` (`dedicated`, `llm`, or `none`)
 - includes `wrapped_results`, a JSON string marked as untrusted for downstream LLM use
 
-Single-Node/ad hoc search may use the query refiner and post-retrieval reranker inline. Workflow search may either use the query refiner for plain search prompts or bypass it for workflow-planned JSON queries; workflow reranking must be represented as an explicit `rerank` workflow step, not as fields on a search step.
+Single-Node dashboard search sends `count: 5` and `use_reranker: false`. Direct API callers can opt into inline reranking. Workflow search may either use the query refiner for plain search prompts or bypass it for workflow-planned JSON queries; workflow reranking must be represented as an explicit `rerank` workflow step, not as fields on a search step.
+
+See [Search Guide](search.md) for provider, query-refiner, and reranker details.
+
+## Workflow Runs
+
+Workflow execution is available when workflow configs are loaded from `workflow_configs/`.
+
+Core endpoints:
+
+- `GET /workflows`
+- `GET /workflows/{workflow_id}`
+- `POST /workflows/{workflow_id}/runs`
+- `GET /workflow-runs?limit=50`
+- `GET /workflow-runs/{run_id}`
+- `POST /workflow-runs/{run_id}/advance`
+- `POST /workflow-runs/{run_id}/run`
+- `POST /workflow-runs/{run_id}/run-stream`
+- `POST /workflow-runs/{run_id}/steps/{step_id}/retry`
+- `DELETE /workflow-runs`
+
+Create-run body:
+
+```json
+{
+  "params": {"latest_user_prompt": "what changed?"},
+  "endpoint": "primary",
+  "convo_id": "optional-session",
+  "reasoning_effort": "high",
+  "rag_endpoint": "http://localhost:8100/api/retrieve/context",
+  "search_provider": "duckduckgo_html"
+}
+```
+
+`endpoint` must be a concrete configured endpoint, not `smart`. Search-capable workflows such as `contextual_search` require a concrete search provider; non-search workflows can leave it `null`.
+
+See [Workflow Guide](workflows.md) for YAML schema, step semantics, dashboard integration, and the current contextual-search pattern.
 
 TL;DR: the proxy API is OpenAI-compatible plus control headers for smart routing, conversation history, reasoning, RAG retrieval, and an optional lightweight search-discovery endpoint.
