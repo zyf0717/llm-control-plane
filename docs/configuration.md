@@ -166,6 +166,28 @@ When `search.reranker_model_endpoint` is configured and reranking is enabled, se
 
 Workflow search can use either query-refiner planning or workflow-owned planning. Plain search prompts may use the query refiner. Workflow-planned JSON queries should set `use_query_refiner: false`. Workflow search steps never rerank inline; `use_reranker` and `rerank_context` on search steps are invalid. Post-retrieval reranking must be modeled as an explicit `rerank` step that depends on the retrieval step.
 
+LLM workflow steps can declare machine-readable output boundaries with `output_contract`. Supported formats are `json`, `yaml`, and `text`; `json` and `yaml` contracts parse the whole model response, validate it with JSON Schema, preserve raw text in `output_json.text`, and persist the parsed value in `output_json.json`. New contracts default to bounded correction when `on_invalid` is omitted: one repair attempt followed by one retry. The former `output_schema` shorthand is not supported; use `output_contract.schema`.
+
+```yaml
+output_contract:
+  format: json
+  required: true
+  schema:
+    type: object
+    additionalProperties: false
+    required: [queries]
+    properties:
+      queries:
+        type: array
+        minItems: 1
+        items:
+          type: string
+  on_invalid:
+    action: retry
+    max_attempts: 2
+    repair: true
+```
+
 Supported built-in provider ids:
 
 - `duckduckgo_html`

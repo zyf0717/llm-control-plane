@@ -243,10 +243,35 @@ app_ui = ui.page_fluid(
             }
         }
 
+        function setDashboardControlDisabled(id, disabled) {
+            const input = document.getElementById(id);
+            if (!input) return;
+            const container = dashboardInputContainer(input);
+            input.disabled = disabled;
+            input.setAttribute("aria-disabled", disabled ? "true" : "false");
+            if (container) {
+                container.classList.toggle("dashboard-workflow-disabled", disabled);
+            }
+            if (input.selectize) {
+                if (disabled) {
+                    input.selectize.disable();
+                } else {
+                    input.selectize.enable();
+                }
+            }
+        }
+
         Shiny.addCustomMessageHandler("workflowRoutingState", function(message) {
             const active = Boolean(message && message.active);
             setDashboardSelectDisabled("ragEndpoint", active);
             setDashboardSelectDisabled("searchProvider", active);
+        });
+
+        Shiny.addCustomMessageHandler("workflowRunControlState", function(message) {
+            const disabled = Boolean(message && message.disabled);
+            ["advanceWorkflowRun", "runWorkflowToCompletion", "workflowRetryStepID", "retryWorkflowStep"].forEach(function(id) {
+                setDashboardControlDisabled(id, disabled);
+            });
         });
 
         document.addEventListener("click", function(event) {
@@ -464,10 +489,11 @@ app_ui = ui.page_fluid(
                             "runWorkflowToCompletion", "Run to completion"
                         ),
                         input_action_row(
-                            ui.input_text(
+                            ui.input_select(
                                 "workflowRetryStepID",
-                                "",
-                                placeholder="failed step id",
+                                "Retry Step",
+                                choices={"": "Select step"},
+                                selected="",
                                 width="100%",
                             ),
                             "retryWorkflowStep",

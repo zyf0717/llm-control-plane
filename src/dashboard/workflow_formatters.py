@@ -1,9 +1,11 @@
 import json
 import re
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, tzinfo
 from typing import Any
 
 from shiny import ui
+
+from .utils import HISTORY_DISPLAY_TIMEZONE
 
 
 def format_workflow_choices(workflows: list[dict[str, Any]]) -> dict[str, str]:
@@ -20,7 +22,7 @@ def format_workflow_choices(workflows: list[dict[str, Any]]) -> dict[str, str]:
 def format_workflow_run_choices(runs: list[dict[str, Any]]) -> dict[str, str]:
     return {
         str(run.get("run_id")): (
-            f"{_format_gmt8_seconds(run.get('updated_at'))} | "
+            f"{_format_display_seconds(run.get('updated_at'))} | "
             f"{run.get('run_id')} | "
             f"{run.get('workflow_id') or ''} | {run.get('status') or 'unknown'}"
         )
@@ -156,7 +158,11 @@ def _cell(value: Any) -> str:
     return str(value or "").replace("|", "\\|")
 
 
-def _format_gmt8_seconds(value: Any) -> str:
+def _format_display_seconds(
+    value: Any,
+    *,
+    display_timezone: tzinfo = HISTORY_DISPLAY_TIMEZONE,
+) -> str:
     text = str(value or "").strip()
     if not text:
         return "unknown"
@@ -167,8 +173,24 @@ def _format_gmt8_seconds(value: Any) -> str:
         return text.split(".")[0] if "." in text else text
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=UTC)
-    gmt8 = timestamp.astimezone(timezone(timedelta(hours=8)))
-    return gmt8.strftime("%Y-%m-%d %H:%M:%S GMT+8")
+    displayed = timestamp.astimezone(display_timezone)
+    return f"{displayed.strftime('%Y-%m-%d %H:%M:%S')} {_timezone_label(displayed)}"
+
+
+def _timezone_label(value: datetime) -> str:
+    name = value.tzname()
+    if name:
+        return name
+    offset = value.utcoffset()
+    if offset is None:
+        return "UTC"
+    total_minutes = int(offset.total_seconds() // 60)
+    sign = "+" if total_minutes >= 0 else "-"
+    total_minutes = abs(total_minutes)
+    hours, minutes = divmod(total_minutes, 60)
+    if minutes:
+        return f"GMT{sign}{hours}:{minutes:02d}"
+    return f"GMT{sign}{hours}"
 
 
 def _format_run_header(run: dict[str, Any]) -> ui.Tag:
@@ -198,7 +220,7 @@ def _metadata_row(*items: tuple[str, Any]) -> ui.Tag:
 
 
 def _metadata_item(label: str, value: Any) -> ui.Tag:
-    text = _compact_value(value)
+    text = _compact_timestamp(value)
     return ui.tags.div(
         ui.tags.span(
             f"{label}: ",
@@ -264,8 +286,8 @@ def _format_step_status_box(step: dict[str, Any], artifact_count: int) -> ui.Tag
     status = str(step.get("status") or "unknown")
     indicator_color = _step_indicator_color(step)
     step_id = str(step.get("step_id") or "step")
-    started = _compact_value(step.get("started_at"))
-    completed = _compact_value(step.get("completed_at"))
+    started = _compact_timestamp(step.get("started_at"))
+    completed = _compact_timestamp(step.get("completed_at"))
     output_flag = "output" if isinstance(step.get("output_json"), dict) else "no output"
     artifact_label = f"{artifact_count} artifact{'s' if artifact_count != 1 else ''}"
     error = str(step.get("error") or "").strip()
@@ -385,6 +407,14 @@ def _safe_dom_id(value: str) -> str:
 def _compact_value(value: Any) -> str:
     text = str(value or "").strip()
     return text or "-"
+
+
+def _compact_timestamp(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "-"
+    formatted = _format_display_seconds(text)
+    return formatted if formatted != "unknown" else "-"
 
 
 def _status_color(status: str) -> str:

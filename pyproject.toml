@@ -14,6 +14,7 @@ dependencies = [
   "beautifulsoup4",
   "fastapi",
   "httpx",
+  "jsonschema>=4.23",
   "pandas",
   "plotly==5.24.1",
   "python-dotenv",

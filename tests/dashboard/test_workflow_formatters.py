@@ -30,7 +30,7 @@ def test_format_workflow_run_choices_uses_run_id_keys():
 
     assert (
         choices["wf_123"]
-        == "2026-01-01 08:00:00 GMT+8 | wf_123 | implementation_plan | completed"
+        == "2026-01-01 08:00:00 +08 | wf_123 | implementation_plan | completed"
     )
 
 
@@ -119,6 +119,9 @@ def test_format_step_timeline_renders_horizontal_step_boxes():
     assert "accordion-button" not in rendered
     assert "COMPLETED" in rendered
     assert "FAILED" in rendered
+    assert "Started 2026-06-12 08:00:00 +08" in rendered
+    assert "Done 2026-06-12 08:01:00 +08" in rendered
+    assert "2026-06-12T00:00:00+00:00" not in rendered
     assert "Error: boom" in rendered
     assert "1 artifact" in rendered
     assert "- Done step" not in rendered

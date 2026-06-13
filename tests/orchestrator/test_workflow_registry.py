@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -65,6 +66,102 @@ def test_registry_loads_chat_visibility_fields(tmp_path):
     step = registry.get("sample").steps[0]
     assert step.chat_visibility == "intermediate"
     assert step.chat_stream is False
+
+
+def test_registry_loads_output_contract(tmp_path):
+    write_workflow(
+        tmp_path / "sample.yaml",
+        body=minimal_workflow(
+            steps="""
+  - id: first
+    kind: llm
+    prompt: hello
+    output_contract:
+      format: json
+      required: true
+      schema:
+        type: object
+      on_invalid:
+        action: retry
+        max_attempts: 2
+        repair: true
+"""
+        ),
+    )
+
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+
+    contract = registry.get("sample").steps[0].output_contract
+    assert contract is not None
+    assert contract.format == "json"
+    assert contract.required is True
+    assert contract.schema == {"type": "object"}
+    assert contract.on_invalid == {
+        "action": "retry",
+        "max_attempts": 2,
+        "repair": True,
+    }
+
+
+def test_registry_rejects_output_schema(tmp_path):
+    write_workflow(
+        tmp_path / "sample.yaml",
+        body=minimal_workflow(
+            steps="""
+  - id: first
+    kind: llm
+    prompt: hello
+    output_schema:
+      type: object
+"""
+        ),
+    )
+
+    with pytest.raises(ValueError, match="output_schema is no longer supported"):
+        WorkflowRegistry(tmp_path).load()
+
+
+def test_registry_rejects_invalid_output_contract_format(tmp_path):
+    write_workflow(
+        tmp_path / "sample.yaml",
+        body=minimal_workflow(
+            steps="""
+  - id: first
+    kind: llm
+    prompt: hello
+    output_contract:
+      format: xml
+"""
+        ),
+    )
+
+    with pytest.raises(ValueError, match="output_contract.format"):
+        WorkflowRegistry(tmp_path).load()
+
+
+def test_builtin_json_consumers_have_producer_contracts():
+    registry = WorkflowRegistry(DEFAULT_WORKFLOW_DIR)
+    registry.load()
+
+    for spec in registry.list():
+        producers = {
+            step.output_key or step.id: step
+            for step in spec.steps
+        }
+        for step in spec.steps:
+            for output_key in re.findall(
+                r"outputs\.([A-Za-z_][A-Za-z0-9_]*)\.json",
+                step.prompt or "",
+            ):
+                producer = producers.get(output_key)
+                assert producer is not None, (
+                    f"{spec.id}.{step.id} consumes unknown JSON output {output_key}"
+                )
+                assert producer.output_contract is not None, (
+                    f"{spec.id}.{step.id} consumes outputs.{output_key}.json, "
+                    f"but producer {producer.id} has no output_contract"
+                )
 
 
 def test_registry_loads_rerank_steps(tmp_path):

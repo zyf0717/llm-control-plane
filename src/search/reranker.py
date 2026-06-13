@@ -4,14 +4,39 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
 import httpx
+from jsonschema import Draft202012Validator
 
 from .types import SearchResult
 
 logger = logging.getLogger(__name__)
+
+
+_LLM_RERANK_RESPONSE_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["ranked"],
+    "properties": {
+        "ranked": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["id"],
+                "properties": {
+                    "id": {"type": ["string", "integer"]},
+                    "score": {"type": "number", "minimum": 0, "maximum": 1},
+                    "reason": {"type": "string"},
+                },
+            },
+        }
+    },
+}
+_LLM_RERANK_RESPONSE_VALIDATOR = Draft202012Validator(_LLM_RERANK_RESPONSE_SCHEMA)
 
 
 @dataclass(slots=True)
@@ -376,17 +401,16 @@ Rules:
         }
 
     def _parse_json(self, content: str) -> dict[str, object]:
-        content = content.strip()
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError:
-            start = content.find("{")
-            end = content.rfind("}")
-            if start < 0 or end <= start:
-                raise
-            parsed = json.loads(content[start : end + 1])
+        content = _strip_json_fence(content)
+        parsed = json.loads(content)
         if not isinstance(parsed, dict):
             raise ValueError("reranker response must be an object")
+        errors = sorted(_LLM_RERANK_RESPONSE_VALIDATOR.iter_errors(parsed), key=str)
+        if errors:
+            raise ValueError(
+                "reranker response schema invalid: "
+                + "; ".join(_format_schema_error(error) for error in errors)
+            )
         return parsed
 
     def _parse_dedicated_response(
@@ -588,3 +612,24 @@ Rules:
             backend=backend,
             path="none",
         )
+
+
+def _strip_json_fence(content: str) -> str:
+    stripped = str(content or "").strip()
+    match = re.fullmatch(
+        r"```(?:json)?\s*(.*?)\s*```",
+        stripped,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    return match.group(1).strip() if match else stripped
+
+
+def _format_schema_error(error: object) -> str:
+    path = "$"
+    for part in getattr(error, "absolute_path", []):
+        if isinstance(part, int):
+            path += f"[{part}]"
+        else:
+            path += f".{part}"
+    message = str(getattr(error, "message", error))
+    return f"{path}: {message}"

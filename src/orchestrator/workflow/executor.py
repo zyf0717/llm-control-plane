@@ -12,6 +12,14 @@ from typing import Any, AsyncIterator, Protocol
 from .models import WorkflowRun, WorkflowSpec, WorkflowStepSpec
 from .registry import WorkflowRegistry
 from .store import SQLiteWorkflowStore
+from .structured_output import (
+    build_repair_prompt,
+    build_retry_prompt,
+    build_structured_output_instructions,
+    contract_requires_structure,
+    parse_structured_output,
+    validate_structured_output,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -676,22 +684,119 @@ class WorkflowExecutor:
         reasoning_effort = (
             step.reasoning_effort or run.reasoning_effort or spec.defaults.reasoning_effort
         )
-        result = await self.llm_client.complete(
-            endpoint=endpoint,
+        return await self._execute_llm_step(
+            run=run,
+            spec=spec,
+            step=step,
             prompt=prompt,
+            reasoning_effort=reasoning_effort,
+        )
+
+    async def _execute_llm_step(
+        self,
+        *,
+        run: WorkflowRun,
+        spec: WorkflowSpec,
+        step: WorkflowStepSpec,
+        prompt: str,
+        reasoning_effort: str | None,
+    ) -> WorkflowStepExecution:
+        result = await self.llm_client.complete(
+            endpoint=str(run.endpoint or ""),
+            prompt=_prompt_with_contract(prompt, step),
             convo_id=run.convo_id,
             reasoning_effort=reasoning_effort,
             rag_endpoint=run.rag_endpoint or step.rag_endpoint or spec.defaults.rag_endpoint,
             max_tokens=step.max_tokens or spec.defaults.max_tokens,
         )
         text = str(result.get("text") or "")
-        parsed = _parse_json_text(text)
-        output = {
-            "text": text,
-            "json": parsed,
-            "metadata": dict(result.get("metadata") or {}),
-        }
-        return WorkflowStepExecution(output=output, artifact_text=text or None)
+        metadata = dict(result.get("metadata") or {})
+        output = await self._coerce_llm_output(
+            run=run,
+            spec=spec,
+            step=step,
+            prompt=prompt,
+            reasoning_effort=reasoning_effort,
+            text=text,
+            metadata=metadata,
+        )
+        return WorkflowStepExecution(output=output, artifact_text=output.get("text") or None)
+
+    async def _coerce_llm_output(
+        self,
+        *,
+        run: WorkflowRun,
+        spec: WorkflowSpec,
+        step: WorkflowStepSpec,
+        prompt: str,
+        reasoning_effort: str | None,
+        text: str,
+        metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        contract = step.output_contract
+        if not contract_requires_structure(contract):
+            return {
+                "text": text,
+                "json": _parse_json_text(text),
+                "metadata": metadata,
+            }
+        assert contract is not None
+
+        attempts = 1
+        repair_used = False
+        parsed = parse_structured_output(text, contract)
+        validation = validate_structured_output(parsed, contract)
+        if validation.valid:
+            return _structured_output_payload(
+                text=text,
+                value=validation.value,
+                metadata=metadata,
+                contract_format=contract.format,
+                attempts=attempts,
+                repair_used=repair_used,
+                errors=[],
+            )
+
+        errors = validation.errors
+        for mode in _correction_modes(contract):
+            repair_used = repair_used or mode == "repair"
+            retry_prompt = (
+                build_repair_prompt(text, errors, contract)
+                if mode == "repair"
+                else build_retry_prompt(prompt, errors, contract)
+            )
+            result = await self.llm_client.complete(
+                endpoint=str(run.endpoint or ""),
+                prompt=retry_prompt,
+                convo_id=run.convo_id,
+                reasoning_effort=reasoning_effort,
+                rag_endpoint=(
+                    run.rag_endpoint or step.rag_endpoint or spec.defaults.rag_endpoint
+                ),
+                max_tokens=step.max_tokens or spec.defaults.max_tokens,
+            )
+            attempts += 1
+            text = str(result.get("text") or "")
+            metadata.update(dict(result.get("metadata") or {}))
+            parsed = parse_structured_output(text, contract)
+            validation = validate_structured_output(parsed, contract)
+            if validation.valid:
+                return _structured_output_payload(
+                    text=text,
+                    value=validation.value,
+                    metadata=metadata,
+                    contract_format=contract.format,
+                    attempts=attempts,
+                    repair_used=repair_used,
+                    errors=[],
+                )
+            errors = validation.errors
+
+        raise ValueError(
+            "workflow step failed: "
+            f"step_id={step.id} reason=structured_output_invalid "
+            f"errors={'; '.join(errors)}"
+        )
 
     async def _execute_step_stream(
         self,
@@ -727,7 +832,7 @@ class WorkflowExecutor:
         metadata: dict[str, Any] = {}
         async for chunk in stream_complete(
             endpoint=endpoint,
-            prompt=prompt,
+            prompt=_prompt_with_contract(prompt, step),
             convo_id=run.convo_id,
             reasoning_effort=reasoning_effort,
             rag_endpoint=run.rag_endpoint or step.rag_endpoint or spec.defaults.rag_endpoint,
@@ -751,12 +856,15 @@ class WorkflowExecutor:
                 )
 
         text = "".join(text_parts)
-        parsed = _parse_json_text(text)
-        output = {
-            "text": text,
-            "json": parsed,
-            "metadata": metadata,
-        }
+        output = await self._coerce_llm_output(
+            run=run,
+            spec=spec,
+            step=step,
+            prompt=prompt,
+            reasoning_effort=reasoning_effort,
+            text=text,
+            metadata=metadata,
+        )
         yield {
             "type": "_execution_result",
             "execution": WorkflowStepExecution(
@@ -848,6 +956,65 @@ class WorkflowExecutor:
             "chat_visibility": step.chat_visibility,
             **extra,
         }
+
+
+def _prompt_with_contract(prompt: str, step: WorkflowStepSpec) -> str:
+    instructions = build_structured_output_instructions(step.output_contract)
+    if not instructions:
+        return prompt
+    return f"{prompt.rstrip()}\n\n{instructions}".strip()
+
+
+def _correction_modes(step_contract: Any) -> list[str]:
+    policy = step_contract.on_invalid if isinstance(step_contract.on_invalid, dict) else {}
+    action = str(policy.get("action") or "retry").strip().lower()
+    if action == "fail":
+        return []
+    max_attempts = _safe_nonnegative_int(policy.get("max_attempts"), default=2)
+    if max_attempts <= 0:
+        return []
+    repair = (
+        bool(policy["repair"])
+        if "repair" in policy
+        else action in {"repair", "retry"}
+    )
+    if action == "repair":
+        return ["repair"] * max_attempts
+    if action == "retry":
+        modes = ["retry"] * max_attempts
+        if repair:
+            modes[0] = "repair"
+        return modes
+    return []
+
+
+def _structured_output_payload(
+    *,
+    text: str,
+    value: Any,
+    metadata: dict[str, Any],
+    contract_format: str,
+    attempts: int,
+    repair_used: bool,
+    errors: list[str],
+) -> dict[str, Any]:
+    output_metadata = dict(metadata)
+    output_metadata["structured_output"] = {
+        "format": contract_format,
+        "valid": True,
+        "schema_enforced": True,
+        "attempts": attempts,
+        "repair_used": repair_used,
+        "errors": list(errors),
+    }
+    return {"text": text, "json": value, "metadata": output_metadata}
+
+
+def _safe_nonnegative_int(value: Any, *, default: int) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return default
 
 
 _TEMPLATE_PATTERN = re.compile(

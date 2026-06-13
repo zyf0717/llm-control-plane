@@ -2,11 +2,16 @@ import pytest
 
 from src.dashboard.app_server import (
     build_workflow_routing_choices,
+    build_workflow_retry_step_choices,
     build_fork_notice,
     conversation_control_change_reasons,
     normalize_reasoning_effort,
     resolve_endpoint_display_selection,
+    resolve_first_search_provider_selection,
+    resolve_workflow_retry_step_selection,
     resolve_workflow_routing_selection,
+    workflow_run_ended,
+    workflow_run_in_progress,
     workflow_snapshot_with_next_pending_running,
 )
 from src.dashboard.search_flow import (
@@ -188,6 +193,22 @@ def test_build_workflow_chat_run_payload_excludes_single_node_rag_and_search():
     assert "file contents" not in payload["params"]["latest_user_prompt"]
 
 
+def test_build_workflow_chat_run_payload_includes_workflow_search_provider():
+    payload = build_workflow_chat_run_payload(
+        {
+            "params_schema": {
+                "required": ["latest_user_prompt"],
+                "properties": {"latest_user_prompt": {"type": "string"}},
+            }
+        },
+        latest_user_prompt="latest only",
+        endpoint="node-a",
+        search_provider="duckduckgo_html",
+    )
+
+    assert payload["search_provider"] == "duckduckgo_html"
+
+
 def test_format_workflow_conversation_context_skips_system_messages():
     rendered = format_workflow_conversation_context(
         [
@@ -356,6 +377,122 @@ def test_resolve_workflow_routing_selection_handles_empty_choices():
     selected = resolve_workflow_routing_selection({}, current_selection="missing")
 
     assert selected is None
+
+
+def test_resolve_first_search_provider_selection_skips_none_option():
+    selected = resolve_first_search_provider_selection(
+        {
+            "": "None",
+            "duckduckgo_html": "DuckDuckGo",
+            "wikipedia_opensearch": "Wikipedia",
+        }
+    )
+
+    assert selected == "duckduckgo_html"
+
+
+def test_resolve_first_search_provider_selection_returns_empty_without_provider():
+    assert resolve_first_search_provider_selection({"": "None"}) == ""
+
+
+def test_build_workflow_retry_step_choices_uses_snapshot_steps():
+    choices = build_workflow_retry_step_choices(
+        {
+            "steps": [
+                {
+                    "step_id": "plan",
+                    "status": "completed",
+                    "input_json": {"current_step": {"name": "Plan"}},
+                },
+                {"step_id": "search", "status": "failed"},
+            ]
+        }
+    )
+
+    assert choices == {
+        "": "Select step",
+        "plan": "Plan (completed)",
+        "search": "search (failed)",
+    }
+
+
+def test_resolve_workflow_retry_step_selection_defaults_blank_when_all_completed():
+    selected = resolve_workflow_retry_step_selection(
+        {
+            "run": {"status": "completed"},
+            "steps": [{"step_id": "plan", "status": "completed"}],
+        },
+        current_selection="",
+    )
+
+    assert selected == ""
+
+
+def test_resolve_workflow_retry_step_selection_defaults_to_first_non_green_step():
+    selected = resolve_workflow_retry_step_selection(
+        {
+            "run": {"status": "failed"},
+            "steps": [
+                {"step_id": "plan", "status": "completed"},
+                {"step_id": "search", "status": "failed"},
+                {"step_id": "reply", "status": "pending"},
+            ]
+        },
+        current_selection="",
+    )
+
+    assert selected == "search"
+
+
+def test_resolve_workflow_retry_step_selection_stays_blank_until_run_ends():
+    selected = resolve_workflow_retry_step_selection(
+        {
+            "run": {"status": "pending"},
+            "steps": [
+                {"step_id": "plan", "status": "completed"},
+                {"step_id": "search", "status": "pending"},
+            ],
+        },
+        current_selection="",
+    )
+
+    assert selected == ""
+
+
+def test_resolve_workflow_retry_step_selection_preserves_valid_current_selection():
+    selected = resolve_workflow_retry_step_selection(
+        {
+            "run": {"status": "failed"},
+            "steps": [
+                {"step_id": "plan", "status": "completed"},
+                {"step_id": "search", "status": "failed"},
+            ]
+        },
+        current_selection="plan",
+    )
+
+    assert selected == "plan"
+
+
+def test_workflow_run_in_progress_checks_run_and_step_status():
+    assert workflow_run_in_progress({"run": {"status": "running"}, "steps": []})
+    assert workflow_run_in_progress(
+        {"run": {"status": "pending"}, "steps": [{"status": "running"}]}
+    )
+    assert not workflow_run_in_progress(
+        {"run": {"status": "failed"}, "steps": [{"status": "failed"}]}
+    )
+
+
+def test_workflow_run_ended_requires_terminal_status_without_running_step():
+    assert workflow_run_ended({"run": {"status": "completed"}, "steps": []})
+    assert workflow_run_ended(
+        {"run": {"status": "failed"}, "steps": [{"status": "failed"}]}
+    )
+    assert not workflow_run_ended(
+        {"run": {"status": "completed"}, "steps": [{"status": "running"}]}
+    )
+    assert not workflow_run_ended({"run": {"status": "pending"}, "steps": []})
 
 
 def test_workflow_snapshot_with_next_pending_running_marks_first_pending_step():
