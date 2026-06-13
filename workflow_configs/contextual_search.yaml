@@ -43,6 +43,7 @@ steps:
 
       Return strict JSON only:
       {
+        "rerank_query": "one concise context-resolved information need for ranking candidate documents",
         "queries": [
           "concise web search query for the primary information need",
           "concise web search query for a materially different evidence angle"
@@ -52,6 +53,8 @@ steps:
       }
 
       Query rules:
+      - `rerank_query` must resolve pronouns, ellipses, and references from conversation context.
+      - `rerank_query` should describe the evidence needed to answer the user; do not use search operators.
       - Return 1 to 5 queries in "queries".
       - Use multiple queries only when they target materially different source angles.
       - Keep each query under 100 characters.
@@ -64,8 +67,12 @@ steps:
       schema:
         type: object
         additionalProperties: false
-        required: [queries, reason, source_preferences]
+        required: [rerank_query, queries, reason, source_preferences]
         properties:
+          rerank_query:
+            type: string
+            minLength: 3
+            maxLength: 240
           queries:
             type: array
             minItems: 1
@@ -109,10 +116,13 @@ steps:
       Conversation history / existing context:
       {{ params.conversation_context }}
 
-      Search plan:
-      {{ outputs.search_plan.text }}
+      Search plan reason:
+      {{ outputs.search_plan.json.reason }}
+
+      Source preferences:
+      {{ outputs.search_plan.json.source_preferences }}
     prompt: |
-      {{ params.latest_user_prompt }}
+      {{ outputs.search_plan.json.rerank_query }}
     output_key: search_results
 
   - id: consolidate_reply
