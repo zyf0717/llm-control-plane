@@ -665,6 +665,98 @@ Current question"""
             {"role": "user", "content": "Follow-up"},
         ]
 
+    @pytest.mark.asyncio
+    async def test_prepare_request_context_mode_none_uses_only_current_payload(self):
+        await proxy_module.history_store.append_messages(
+            "session-none",
+            [
+                {"role": "user", "content": "Prior question"},
+                {"role": "assistant", "content": "Prior answer"},
+            ],
+        )
+        request = Mock()
+        request.headers = {"X-Convo-ID": "session-none", "X-Context-Mode": "none"}
+        request.body = AsyncMock(
+            return_value=json.dumps(
+                {"messages": [{"role": "user", "content": "Current question"}]}
+            ).encode("utf-8")
+        )
+
+        with patch.object(
+            RequestProcessor,
+            "_fetch_rag_message",
+            AsyncMock(return_value=(None, {})),
+        ):
+            body, _response_headers = await RequestProcessor.prepare_request(request)
+
+        assert body["messages"] == [
+            {"role": "user", "content": "Current question"}
+        ]
+        assert await proxy_module.history_store.get_conversation("session-none") == [
+            {"role": "user", "content": "Prior question"},
+            {"role": "assistant", "content": "Prior answer"},
+            {"role": "user", "content": "Current question"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_prepare_request_context_mode_compacted_uses_bounded_context(self):
+        await proxy_module.history_store.append_messages(
+            "session-compacted",
+            [
+                {"role": "system", "content": "Base system"},
+                {"role": "user", "content": "Old question"},
+                {"role": "assistant", "content": "Old answer"},
+                {"role": "user", "content": "Recent question"},
+                {"role": "assistant", "content": "Recent answer"},
+            ],
+        )
+        records = await proxy_module.history_store.get_conversation_message_records(
+            "session-compacted"
+        )
+        await proxy_module.history_store.upsert_compacted_conversation_state(
+            "session-compacted",
+            covered_message_id=records[2]["id"],
+            state_text="compressed old state",
+        )
+        request = Mock()
+        request.headers = {
+            "X-Convo-ID": "session-compacted",
+            "X-Context-Mode": "compacted",
+        }
+        request.body = AsyncMock(
+            return_value=json.dumps(
+                {"messages": [{"role": "user", "content": "Current question"}]}
+            ).encode("utf-8")
+        )
+
+        with patch.object(
+            RequestProcessor,
+            "_fetch_rag_message",
+            AsyncMock(return_value=(None, {})),
+        ):
+            body, _response_headers = await RequestProcessor.prepare_request(request)
+
+        assert body["messages"][0] == {"role": "system", "content": "Base system"}
+        assert body["messages"][1]["role"] == "system"
+        assert "compressed old state" in body["messages"][1]["content"]
+        assert "Recent answer" in body["messages"][1]["content"]
+        assert "Current question" not in body["messages"][1]["content"]
+        assert body["messages"][-1] == {
+            "role": "user",
+            "content": "Current question",
+        }
+        assert {"role": "user", "content": "Old question"} not in body["messages"]
+        assert await proxy_module.history_store.get_conversation(
+            "session-compacted"
+        ) == [
+            {"role": "system", "content": "Base system"},
+            {"role": "user", "content": "Old question"},
+            {"role": "assistant", "content": "Old answer"},
+            {"role": "user", "content": "Recent question"},
+            {"role": "assistant", "content": "Recent answer"},
+            {"role": "user", "content": "Current question"},
+        ]
+
     def test_normalize_rag_endpoint_targets_context_route(self):
         assert (
             RequestProcessor._normalize_rag_endpoint(
@@ -1212,6 +1304,38 @@ class TestCanonicalConversationState:
         assert response.status_code == 200
         assert proxy_module.history_store.conversations == {}
         assert proxy_module.history_store.conversation_states == {}
+
+    def test_skip_history_header_bypasses_state_and_message_persistence(self, client):
+        mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
+        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
+            "httpx.AsyncClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = _MockUpstreamResponse(
+                {"choices": [{"message": {"content": "ok"}}]}
+            )
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            response = client.post(
+                "/primary",
+                headers={
+                    "X-Convo-ID": "session-skip",
+                    "X-LLMCP-Skip-History": "true",
+                    "X-Reasoning-Effort": "high",
+                },
+                json={"messages": [{"role": "user", "content": "transient"}]},
+            )
+
+        assert response.status_code == 200
+        assert response.headers["x-history-skipped"] == "true"
+        assert "x-convo-id" not in response.headers
+        assert proxy_module.history_store.conversations == {}
+        assert proxy_module.history_store.conversation_states == {}
+        upstream_body = mock_client.post.call_args.kwargs["json"]
+        assert upstream_body["messages"] == [
+            {"role": "system", "content": "Reasoning: high"},
+            {"role": "user", "content": "transient"},
+        ]
 
     def test_slot_affinity_success_injects_slot_fields(self, client):
         mock_endpoints = [

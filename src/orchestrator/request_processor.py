@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -10,6 +11,10 @@ from fastapi import HTTPException, Request
 from src.search import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER
 
 from . import proxy_services as services
+from .conversation_context import (
+    build_bounded_chat_messages,
+    build_conversation_context_bundle,
+)
 from .trace import RequestTrace
 from .utils import HeaderManager
 
@@ -97,6 +102,13 @@ class RequestProcessor:
         if normalized.endswith("/context"):
             return normalized
         return f"{normalized}/api/retrieve/context"
+
+    @staticmethod
+    def _normalize_context_mode(raw_mode: Optional[str]) -> str:
+        mode = str(raw_mode or "full").strip().lower() or "full"
+        if mode not in {"full", "compacted", "none"}:
+            raise ValueError(f"unsupported context mode: {mode}")
+        return mode
 
     @staticmethod
     def _latest_user_message(messages: List[Dict]) -> Optional[str]:
@@ -274,7 +286,11 @@ class RequestProcessor:
 
     @staticmethod
     async def prepare_request(
-        request: Request, effective_reasoning_effort: Optional[str] = None
+        request: Request,
+        effective_reasoning_effort: Optional[str] = None,
+        *,
+        persist_history: bool = True,
+        context_mode: Optional[str] = None,
     ) -> tuple[Dict, Dict[str, str]]:
         """Parse and enrich request with conversation history and reasoning."""
         try:
@@ -289,6 +305,14 @@ class RequestProcessor:
         convo_id = RequestProcessor._normalize_convo_id(
             request.headers.get("X-Convo-ID")
         )
+        try:
+            resolved_context_mode = RequestProcessor._normalize_context_mode(
+                context_mode or request.headers.get("X-Context-Mode")
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not persist_history:
+            resolved_context_mode = "none"
         rag_endpoint = request.headers.get("X-RAG-Endpoint")
         reasoning_effort = (
             effective_reasoning_effort
@@ -302,7 +326,7 @@ class RequestProcessor:
             incoming_messages = []
 
         stored_messages = []
-        if convo_id:
+        if convo_id and persist_history:
             stored_messages = RequestProcessor._filter_ephemeral_search_messages(
                 await services.history_store.get_conversation(convo_id) or []
             )
@@ -319,7 +343,21 @@ class RequestProcessor:
             if durable_incoming_messages:
                 await services.history_store.append_messages(convo_id, durable_incoming_messages)
 
-        messages = [*stored_messages, *incoming_messages]
+        if resolved_context_mode == "full":
+            messages = [*stored_messages, *incoming_messages]
+        elif resolved_context_mode == "none" or not convo_id:
+            messages = list(incoming_messages)
+        else:
+            bundle = await build_conversation_context_bundle(
+                services.history_store,
+                source_convo_id=convo_id,
+                exclude_last_messages=len(durable_incoming_messages),
+            )
+            messages = build_bounded_chat_messages(
+                stored_messages_before=stored_messages,
+                incoming_messages=incoming_messages,
+                bundle=bundle,
+            )
 
         if messages:
             if (
@@ -448,7 +486,40 @@ class RequestProcessor:
             convo_id, [{"role": "assistant", "content": text}]
         )
         outcome["assistant_persisted"] = True
+        if RequestProcessor._schedule_compacted_state_refresh(convo_id):
+            outcome["compaction_refresh_scheduled"] = True
         return outcome
+
+    @staticmethod
+    def _schedule_compacted_state_refresh(convo_id: str) -> bool:
+        if not RequestProcessor._truthy_header(
+            os.getenv("CONVERSATION_COMPACTION_ENABLED")
+        ):
+            return False
+        endpoint = str(os.getenv("CONVERSATION_COMPACTION_ENDPOINT") or "").strip()
+        if not endpoint:
+            services.logger.warning(
+                "Conversation compaction enabled but CONVERSATION_COMPACTION_ENDPOINT is unset"
+            )
+            return False
+
+        from .conversation_compaction import maybe_refresh_compacted_conversation_state
+        from .workflow_clients import ProxyWorkflowLLMClient
+
+        task = asyncio.create_task(
+            maybe_refresh_compacted_conversation_state(
+                history_store=services.history_store,
+                llm_client=ProxyWorkflowLLMClient(),
+                source_convo_id=convo_id,
+                endpoint=endpoint,
+                reasoning_effort=RequestProcessor._normalize_reasoning_effort(
+                    os.getenv("CONVERSATION_COMPACTION_REASONING_EFFORT")
+                ),
+                force=False,
+            )
+        )
+        services.track_history_finalization(task)
+        return True
 
     @staticmethod
     async def finalize_stream_history(

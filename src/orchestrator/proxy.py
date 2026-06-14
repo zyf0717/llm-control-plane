@@ -10,6 +10,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 
 from . import proxy_services as services
+from .conversation_compaction import maybe_refresh_compacted_conversation_state
 from .llm_router import get_router
 from .request_processor import RequestProcessor
 from .search_routes import router as search_router
@@ -36,6 +37,7 @@ app.include_router(
         registry_getter=services.get_workflow_registry,
         store_getter=services.get_workflow_store,
         executor_getter=services.get_workflow_executor,
+        history_store_getter=lambda: services.history_store,
     )
 )
 app.include_router(search_router)
@@ -66,9 +68,12 @@ async def smart_route(request: Request, subpath: str = ""):
         convo_id = RequestProcessor._normalize_convo_id(
             request.headers.get("X-Convo-ID")
         )
+        skip_history = RequestProcessor._truthy_header(
+            request.headers.get("X-LLMCP-Skip-History")
+        )
         valid_endpoints = RequestProcessor.configured_endpoint_names()
         stale_headers: Dict[str, str] = {}
-        if convo_id:
+        if convo_id and not skip_history:
             state = await services.history_store.get_conversation_state(convo_id)
             pinned_endpoint = str(state.get("route_endpoint") or "").strip()
             if pinned_endpoint and pinned_endpoint in valid_endpoints:
@@ -196,6 +201,61 @@ async def list_conversations():
     except Exception as exc:
         services.logger.error("Error listing conversations: %s", exc)
         raise HTTPException(status_code=500, detail="Internal server error") from exc
+
+
+@app.get("/conversations/{convo_id}/compacted-state")
+async def get_compacted_conversation_state(convo_id: str):
+    """Retrieve compacted conversation projection metadata."""
+    state = await services.history_store.get_compacted_conversation_state(convo_id)
+    if state is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Compacted state for conversation '{convo_id}' not found",
+        )
+    return state
+
+
+@app.post("/conversations/{convo_id}/compact")
+async def compact_conversation(convo_id: str, request: Request):
+    """Refresh compacted conversation projection on demand."""
+    try:
+        body = await request.json()
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON object")
+
+    endpoint = str(body.get("endpoint") or "").strip()
+    if not endpoint:
+        raise HTTPException(status_code=400, detail="Missing endpoint")
+
+    try:
+        llm_client = services.get_workflow_executor().llm_client
+    except RuntimeError:
+        from .workflow_clients import ProxyWorkflowLLMClient
+
+        llm_client = ProxyWorkflowLLMClient()
+
+    try:
+        return await maybe_refresh_compacted_conversation_state(
+            history_store=services.history_store,
+            llm_client=llm_client,
+            source_convo_id=convo_id,
+            endpoint=endpoint,
+            reasoning_effort=RequestProcessor._normalize_reasoning_effort(
+                body.get("reasoning_effort")
+            ),
+            force=_truthy_body_value(body.get("force")),
+        )
+    except Exception as exc:
+        services.logger.error("Error compacting conversation: %s", exc)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+
+
+def _truthy_body_value(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 @app.get("/models")

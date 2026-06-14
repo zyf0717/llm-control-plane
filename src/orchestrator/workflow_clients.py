@@ -37,6 +37,7 @@ class ProxyWorkflowLLMClient:
         reasoning_effort: Optional[str] = None,
         rag_endpoint: Optional[str] = None,
         max_tokens: Optional[int] = None,
+        skip_history: bool = False,
     ) -> Dict[str, Any]:
         endpoint_key = str(endpoint or "smart").strip() or "smart"
         payload: Dict[str, Any] = {
@@ -54,6 +55,8 @@ class ProxyWorkflowLLMClient:
             headers["X-Reasoning-Effort"] = reasoning_effort
         if rag_endpoint:
             headers["X-RAG-Endpoint"] = rag_endpoint
+        if skip_history:
+            headers["X-LLMCP-Skip-History"] = "true"
         if endpoint_key != "smart":
             headers["X-Allow-Route-Switch"] = "true"
 
@@ -108,6 +111,7 @@ class ProxyWorkflowLLMClient:
         reasoning_effort: Optional[str] = None,
         rag_endpoint: Optional[str] = None,
         max_tokens: Optional[int] = None,
+        skip_history: bool = False,
     ) -> AsyncIterator[Dict[str, Any]]:
         endpoint_key = str(endpoint or "smart").strip() or "smart"
         payload: Dict[str, Any] = {
@@ -126,6 +130,8 @@ class ProxyWorkflowLLMClient:
             headers["X-Reasoning-Effort"] = reasoning_effort
         if rag_endpoint:
             headers["X-RAG-Endpoint"] = rag_endpoint
+        if skip_history:
+            headers["X-LLMCP-Skip-History"] = "true"
         if endpoint_key != "smart":
             headers["X-Allow-Route-Switch"] = "true"
 

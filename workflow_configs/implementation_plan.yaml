@@ -9,6 +9,14 @@ params_schema:
   properties:
     goal:
       type: string
+    compacted_thread_state:
+      type: string
+    recent_conversation_tail:
+      type: string
+    server_conversation_context:
+      type: string
+    context_state:
+      type: object
     context:
       type: string
     uploaded_context:
@@ -26,6 +34,12 @@ steps:
     prompt: |
       {{ params.goal }}
 
+      Compacted prior thread state:
+      {{ params.compacted_thread_state }}
+
+      Recent raw conversation tail:
+      {{ params.recent_conversation_tail }}
+
       Additional context:
       {{ params.context }}
       {{ params.uploaded_context }}
@@ -38,6 +52,12 @@ steps:
     rerank_context: |
       Goal:
       {{ params.goal }}
+
+      Compacted prior thread state:
+      {{ params.compacted_thread_state }}
+
+      Recent raw conversation tail:
+      {{ params.recent_conversation_tail }}
 
       Manual context:
       {{ params.context }}
@@ -56,6 +76,12 @@ steps:
     prompt: |
       Goal:
       {{ params.goal }}
+
+      Compacted prior thread state:
+      {{ params.compacted_thread_state }}
+
+      Recent raw conversation tail:
+      {{ params.recent_conversation_tail }}
 
       Manual context:
       {{ params.context }}

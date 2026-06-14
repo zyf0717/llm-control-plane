@@ -56,8 +56,43 @@ class HistoryStore(ABC):
         """Return the stored conversation or None when it does not exist."""
 
     @abstractmethod
+    async def get_conversation_message_records(
+        self,
+        convo_id: str,
+        *,
+        after_id: Optional[int] = None,
+        limit: Optional[int] = None,
+        newest_first: bool = False,
+    ) -> List[Dict]:
+        """Return stored messages with durable row IDs and timestamps."""
+
+    @abstractmethod
+    async def get_latest_conversation_message_id(
+        self, convo_id: str
+    ) -> Optional[int]:
+        """Return the latest durable row ID for a conversation."""
+
+    @abstractmethod
     async def append_messages(self, convo_id: str, messages: List[Dict]) -> None:
         """Append messages to a stored conversation."""
+
+    @abstractmethod
+    async def get_compacted_conversation_state(
+        self, convo_id: str
+    ) -> Optional[Dict]:
+        """Return the compacted conversation projection, if present."""
+
+    @abstractmethod
+    async def upsert_compacted_conversation_state(
+        self,
+        convo_id: str,
+        *,
+        covered_message_id: int,
+        state_text: str,
+        state_json: Optional[Dict] = None,
+        metadata_json: Optional[Dict] = None,
+    ) -> Dict:
+        """Insert or update the compacted conversation projection."""
 
     @abstractmethod
     async def list_conversations(self) -> List[Dict[str, object]]:
@@ -93,8 +128,11 @@ class MemoryHistoryStore(HistoryStore):
 
     def __init__(self):
         self.conversations: Dict[str, List[Dict]] = {}
+        self.conversation_records: Dict[str, List[Dict]] = {}
         self.updated_at: Dict[str, str] = {}
         self.conversation_states: Dict[str, Dict[str, object]] = {}
+        self.compacted_conversation_states: Dict[str, Dict] = {}
+        self._next_message_id = 1
         self._state_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
@@ -107,13 +145,86 @@ class MemoryHistoryStore(HistoryStore):
         messages = self.conversations.get(convo_id)
         return deepcopy(messages) if messages is not None else None
 
+    async def get_conversation_message_records(
+        self,
+        convo_id: str,
+        *,
+        after_id: Optional[int] = None,
+        limit: Optional[int] = None,
+        newest_first: bool = False,
+    ) -> List[Dict]:
+        records = self._records_for_conversation(convo_id)
+        if after_id is not None:
+            records = [record for record in records if int(record["id"]) > after_id]
+        records = sorted(
+            records,
+            key=lambda record: int(record["id"]),
+            reverse=bool(newest_first),
+        )
+        if limit is not None:
+            records = records[: max(0, int(limit))]
+        return deepcopy(records)
+
+    async def get_latest_conversation_message_id(
+        self, convo_id: str
+    ) -> Optional[int]:
+        records = self._records_for_conversation(convo_id)
+        if not records:
+            return None
+        return max(int(record["id"]) for record in records)
+
     async def append_messages(self, convo_id: str, messages: List[Dict]) -> None:
         if not messages:
             return
         if convo_id not in self.conversations:
             self.conversations[convo_id] = []
-        self.conversations[convo_id].extend(deepcopy(messages))
-        self.updated_at[convo_id] = _utc_now()
+        if convo_id not in self.conversation_records:
+            self.conversation_records[convo_id] = []
+        created_at = _utc_now()
+        copied_messages = deepcopy(messages)
+        self.conversations[convo_id].extend(copied_messages)
+        for message in copied_messages:
+            self.conversation_records[convo_id].append(
+                {
+                    "id": self._next_message_id,
+                    "convo_id": convo_id,
+                    "message": deepcopy(message),
+                    "created_at": created_at,
+                }
+            )
+            self._next_message_id += 1
+        self.updated_at[convo_id] = created_at
+
+    async def get_compacted_conversation_state(
+        self, convo_id: str
+    ) -> Optional[Dict]:
+        state = self.compacted_conversation_states.get(convo_id)
+        return deepcopy(state) if state is not None else None
+
+    async def upsert_compacted_conversation_state(
+        self,
+        convo_id: str,
+        *,
+        covered_message_id: int,
+        state_text: str,
+        state_json: Optional[Dict] = None,
+        metadata_json: Optional[Dict] = None,
+    ) -> Dict:
+        now = _utc_now()
+        existing = self.compacted_conversation_states.get(convo_id) or {}
+        state = {
+            "convo_id": convo_id,
+            "covered_message_id": int(covered_message_id),
+            "state_text": str(state_text or ""),
+            "state_json": deepcopy(state_json) if isinstance(state_json, dict) else None,
+            "metadata_json": deepcopy(metadata_json)
+            if isinstance(metadata_json, dict)
+            else {},
+            "created_at": existing.get("created_at") or now,
+            "updated_at": now,
+        }
+        self.compacted_conversation_states[convo_id] = deepcopy(state)
+        return deepcopy(state)
 
     async def list_conversations(self) -> List[Dict[str, object]]:
         conversations = []
@@ -254,8 +365,27 @@ class MemoryHistoryStore(HistoryStore):
 
     def clear(self) -> None:
         self.conversations.clear()
+        self.conversation_records.clear()
         self.updated_at.clear()
         self.conversation_states.clear()
+        self.compacted_conversation_states.clear()
+        self._next_message_id = 1
+
+    def _records_for_conversation(self, convo_id: str) -> List[Dict]:
+        records = self.conversation_records.get(convo_id)
+        if records is not None:
+            return deepcopy(records)
+        messages = self.conversations.get(convo_id) or []
+        timestamp = self.updated_at.get(convo_id) or _utc_now()
+        return [
+            {
+                "id": index,
+                "convo_id": convo_id,
+                "message": deepcopy(message),
+                "created_at": timestamp,
+            }
+            for index, message in enumerate(messages, start=1)
+        ]
 
 
 class SQLiteHistoryStore(HistoryStore):
@@ -291,6 +421,21 @@ class SQLiteHistoryStore(HistoryStore):
                 updated_at TEXT NOT NULL
             )
             """)
+        await self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS compacted_conversation_state (
+                convo_id TEXT PRIMARY KEY,
+                covered_message_id INTEGER NOT NULL DEFAULT 0,
+                state_text TEXT NOT NULL DEFAULT '',
+                state_json TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """)
+        await self._conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_compacted_conversation_state_updated
+            ON compacted_conversation_state (updated_at DESC)
+            """)
         await self._conn.commit()
 
     async def close(self) -> None:
@@ -314,6 +459,65 @@ class SQLiteHistoryStore(HistoryStore):
         if not rows:
             return None
         return [json.loads(row[0]) for row in rows]
+
+    async def get_conversation_message_records(
+        self,
+        convo_id: str,
+        *,
+        after_id: Optional[int] = None,
+        limit: Optional[int] = None,
+        newest_first: bool = False,
+    ) -> List[Dict]:
+        conn = self._require_connection()
+        filters = ["convo_id = ?"]
+        params: list[object] = [convo_id]
+        if after_id is not None:
+            filters.append("id > ?")
+            params.append(int(after_id))
+        order = "DESC" if newest_first else "ASC"
+        limit_sql = ""
+        if limit is not None:
+            limit_sql = " LIMIT ?"
+            params.append(max(0, int(limit)))
+        cursor = await conn.execute(
+            f"""
+            SELECT id, convo_id, message_json, created_at
+            FROM conversation_messages
+            WHERE {' AND '.join(filters)}
+            ORDER BY id {order}
+            {limit_sql}
+            """,
+            params,
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [
+            {
+                "id": int(row[0]),
+                "convo_id": row[1],
+                "message": json.loads(row[2]),
+                "created_at": row[3],
+            }
+            for row in rows
+        ]
+
+    async def get_latest_conversation_message_id(
+        self, convo_id: str
+    ) -> Optional[int]:
+        conn = self._require_connection()
+        cursor = await conn.execute(
+            """
+            SELECT MAX(id)
+            FROM conversation_messages
+            WHERE convo_id = ?
+            """,
+            (convo_id,),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        if not row or row[0] is None:
+            return None
+        return int(row[0])
 
     async def append_messages(self, convo_id: str, messages: List[Dict]) -> None:
         if not messages:
@@ -339,6 +543,76 @@ class SQLiteHistoryStore(HistoryStore):
             except BaseException:
                 await conn.rollback()
                 raise
+
+    async def get_compacted_conversation_state(
+        self, convo_id: str
+    ) -> Optional[Dict]:
+        conn = self._require_connection()
+        cursor = await conn.execute(
+            """
+            SELECT convo_id, covered_message_id, state_text, state_json,
+                   metadata_json, created_at, updated_at
+            FROM compacted_conversation_state
+            WHERE convo_id = ?
+            """,
+            (convo_id,),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        return self._row_to_compacted_state(row)
+
+    async def upsert_compacted_conversation_state(
+        self,
+        convo_id: str,
+        *,
+        covered_message_id: int,
+        state_text: str,
+        state_json: Optional[Dict] = None,
+        metadata_json: Optional[Dict] = None,
+    ) -> Dict:
+        conn = self._require_connection()
+        now = _utc_now()
+        state_json_text = (
+            json.dumps(state_json, ensure_ascii=False)
+            if isinstance(state_json, dict)
+            else None
+        )
+        metadata_json_text = json.dumps(metadata_json or {}, ensure_ascii=False)
+        async with self._write_lock:
+            await self._begin_immediate(conn)
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO compacted_conversation_state (
+                        convo_id, covered_message_id, state_text, state_json,
+                        metadata_json, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(convo_id) DO UPDATE SET
+                        covered_message_id = excluded.covered_message_id,
+                        state_text = excluded.state_text,
+                        state_json = excluded.state_json,
+                        metadata_json = excluded.metadata_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        convo_id,
+                        int(covered_message_id),
+                        str(state_text or ""),
+                        state_json_text,
+                        metadata_json_text,
+                        now,
+                        now,
+                    ),
+                )
+                await conn.commit()
+            except BaseException:
+                await conn.rollback()
+                raise
+        state = await self.get_compacted_conversation_state(convo_id)
+        if state is None:
+            raise RuntimeError(f"failed to persist compacted state: {convo_id}")
+        return state
 
     async def list_conversations(self) -> List[Dict[str, object]]:
         conn = self._require_connection()
@@ -495,6 +769,28 @@ class SQLiteHistoryStore(HistoryStore):
             },
             convo_id,
         )
+
+    @staticmethod
+    def _row_to_compacted_state(row) -> Optional[Dict]:
+        if not row:
+            return None
+        try:
+            state_json = json.loads(row[3]) if row[3] else None
+        except json.JSONDecodeError:
+            state_json = None
+        try:
+            metadata_json = json.loads(row[4] or "{}")
+        except json.JSONDecodeError:
+            metadata_json = {}
+        return {
+            "convo_id": row[0],
+            "covered_message_id": int(row[1]),
+            "state_text": row[2] or "",
+            "state_json": state_json if isinstance(state_json, dict) else None,
+            "metadata_json": metadata_json if isinstance(metadata_json, dict) else {},
+            "created_at": row[5],
+            "updated_at": row[6],
+        }
 
     def _require_connection(self) -> aiosqlite.Connection:
         if self._conn is None:

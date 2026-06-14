@@ -29,7 +29,7 @@ class ProxyHandler:
         request: Request,
         target_url: str,
         body: Dict,
-        convo_id: str,
+        convo_id: Optional[str],
         extra_headers: Dict = None,
         trace: RequestTrace = None,
     ) -> StreamingResponse:
@@ -129,7 +129,7 @@ class ProxyHandler:
         request: Request,
         target_url: str,
         body: Dict,
-        convo_id: str,
+        convo_id: Optional[str],
         extra_headers: Dict = None,
         trace: RequestTrace = None,
     ) -> Response:
@@ -205,6 +205,9 @@ async def proxy_request(
     convo_id = RequestProcessor._normalize_convo_id(
         request.headers.get("X-Convo-ID")
     )
+    skip_history = RequestProcessor._truthy_header(
+        request.headers.get("X-LLMCP-Skip-History")
+    )
     requested_reasoning = RequestProcessor._normalize_reasoning_effort(
         request.headers.get("X-Reasoning-Effort")
     )
@@ -218,7 +221,7 @@ async def proxy_request(
     state_headers: Dict[str, str] = {}
     effective_reasoning = requested_reasoning
 
-    if convo_id:
+    if convo_id and not skip_history:
         state_update = await services.history_store.update_conversation_state(
             convo_id,
             route_endpoint=endpoint_key,
@@ -274,13 +277,17 @@ async def proxy_request(
             state_headers["X-Reasoning-Effort"] = effective_reasoning
 
     body, rag_headers = await RequestProcessor.prepare_request(
-        request, effective_reasoning_effort=effective_reasoning
+        request,
+        effective_reasoning_effort=effective_reasoning,
+        persist_history=not skip_history,
+        context_mode="none" if skip_history else None,
     )
     is_streaming = body.get("stream", False) or request.query_params.get("stream") in {
         "true",
         "1",
     }
-    trace = RequestTrace(convo_id=convo_id, endpoint=endpoint_key)
+    response_convo_id = None if skip_history else convo_id
+    trace = RequestTrace(convo_id=response_convo_id, endpoint=endpoint_key)
 
     target_url = RequestProcessor.get_endpoint_url(endpoint_key)
     if not target_url:
@@ -292,11 +299,13 @@ async def proxy_request(
 
     endpoint_config = RequestProcessor.get_endpoint_config(endpoint_key)
     slot_headers = await RequestProcessor.apply_slot_affinity(
-        body, convo_id, endpoint_config
+        body, None if skip_history else convo_id, endpoint_config
     )
 
     combined_headers = dict(rag_headers)
     combined_headers.update(state_headers)
+    if skip_history:
+        combined_headers["X-History-Skipped"] = "true"
     if extra_headers:
         combined_headers.update(extra_headers)
     if state_headers.get("X-Route-Pin-Stale") == "true":
@@ -314,11 +323,10 @@ async def proxy_request(
             request,
             target_url,
             body,
-            convo_id,
+            response_convo_id,
             combined_headers,
             trace,
         )
     return await ProxyHandler.non_stream_response(
-        request, target_url, body, convo_id, combined_headers, trace
+        request, target_url, body, response_convo_id, combined_headers, trace
     )
-

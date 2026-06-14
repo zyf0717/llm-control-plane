@@ -57,6 +57,7 @@ class WorkflowLLMClient(Protocol):
         reasoning_effort: str | None = None,
         rag_endpoint: str | None = None,
         max_tokens: int | None = None,
+        skip_history: bool = False,
     ) -> dict[str, Any]:
         ...
 
@@ -69,6 +70,7 @@ class WorkflowLLMClient(Protocol):
         reasoning_effort: str | None = None,
         rag_endpoint: str | None = None,
         max_tokens: int | None = None,
+        skip_history: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
         ...
 
@@ -594,6 +596,7 @@ class WorkflowStepExecutor:
             reasoning_effort=reasoning_effort,
             rag_endpoint=run.rag_endpoint or step.rag_endpoint or spec.defaults.rag_endpoint,
             max_tokens=step.max_tokens or spec.defaults.max_tokens,
+            skip_history=True,
         )
         checked = await self._check_compaction_output(
             run=run,
@@ -688,6 +691,7 @@ class WorkflowStepExecutor:
             reasoning_effort=reasoning_effort,
             rag_endpoint=run.rag_endpoint or step.rag_endpoint or spec.defaults.rag_endpoint,
             max_tokens=step.max_tokens or spec.defaults.max_tokens,
+            skip_history=True,
         )
         repaired = validate_compaction_output_text(
             str(result.get("text") or ""), step, anchors

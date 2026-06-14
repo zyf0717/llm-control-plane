@@ -126,8 +126,102 @@ class TestSQLiteHistoryStore:
         finally:
             await store.close()
 
+    @pytest.mark.asyncio
+    async def test_sqlite_history_store_message_records_and_compacted_state(
+        self, tmp_path
+    ):
+        db_path = tmp_path / "history.sqlite3"
+        store = SQLiteHistoryStore(db_path)
+        await store.initialize()
+
+        try:
+            await store.append_messages(
+                "session-1",
+                [
+                    {"role": "user", "content": "one"},
+                    {"role": "assistant", "content": "two"},
+                ],
+            )
+            await store.append_messages(
+                "session-1", [{"role": "user", "content": "three"}]
+            )
+
+            records = await store.get_conversation_message_records("session-1")
+            assert [record["message"]["content"] for record in records] == [
+                "one",
+                "two",
+                "three",
+            ]
+            assert [record["id"] for record in records] == sorted(
+                record["id"] for record in records
+            )
+            assert await store.get_latest_conversation_message_id("session-1") == records[-1]["id"]
+
+            after_first = await store.get_conversation_message_records(
+                "session-1", after_id=records[0]["id"]
+            )
+            assert [record["message"]["content"] for record in after_first] == [
+                "two",
+                "three",
+            ]
+            newest_two = await store.get_conversation_message_records(
+                "session-1", limit=2, newest_first=True
+            )
+            assert [record["message"]["content"] for record in newest_two] == [
+                "three",
+                "two",
+            ]
+
+            state = await store.upsert_compacted_conversation_state(
+                "session-1",
+                covered_message_id=records[1]["id"],
+                state_text="summary",
+                state_json={"summary": "summary"},
+                metadata_json={"method": "test"},
+            )
+            assert state["covered_message_id"] == records[1]["id"]
+            assert state["state_json"] == {"summary": "summary"}
+            assert state["metadata_json"] == {"method": "test"}
+
+            updated = await store.upsert_compacted_conversation_state(
+                "session-1",
+                covered_message_id=records[-1]["id"],
+                state_text="updated",
+            )
+            assert updated["created_at"] == state["created_at"]
+            assert updated["updated_at"] >= state["updated_at"]
+            assert (
+                await store.get_compacted_conversation_state("session-1")
+            )["state_text"] == "updated"
+        finally:
+            await store.close()
+
 
 class TestConversationState:
+    @pytest.mark.asyncio
+    async def test_memory_history_store_message_records_and_compacted_state(self):
+        store = MemoryHistoryStore()
+        await store.append_messages(
+            "session-1",
+            [
+                {"role": "user", "content": "one"},
+                {"role": "assistant", "content": "two"},
+            ],
+        )
+        records = await store.get_conversation_message_records("session-1")
+
+        assert [record["message"]["content"] for record in records] == ["one", "two"]
+        assert await store.get_latest_conversation_message_id("session-1") == records[-1]["id"]
+
+        state = await store.upsert_compacted_conversation_state(
+            "session-1",
+            covered_message_id=records[-1]["id"],
+            state_text="summary",
+            metadata_json={"method": "memory"},
+        )
+
+        assert state == await store.get_compacted_conversation_state("session-1")
+
     @pytest.mark.asyncio
     async def test_memory_state_concurrent_first_writes_do_not_create_conflicting_pins(self):
         store = MemoryHistoryStore()

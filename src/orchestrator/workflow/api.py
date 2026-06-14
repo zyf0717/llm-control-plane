@@ -6,6 +6,11 @@ from typing import Any, Callable
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from ..conversation_context import (
+    build_conversation_context_bundle,
+    enrich_workflow_params_with_context_bundle,
+)
+from ..history_store import HistoryStore
 from .executor import WorkflowExecutor
 from .registry import WorkflowRegistry
 from .store import SQLiteWorkflowStore
@@ -16,6 +21,7 @@ def create_workflow_router(
     registry_getter: Callable[[], WorkflowRegistry],
     store_getter: Callable[[], SQLiteWorkflowStore],
     executor_getter: Callable[[], WorkflowExecutor],
+    history_store_getter: Callable[[], HistoryStore] | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -34,10 +40,58 @@ def create_workflow_router(
     @router.post("/workflows/{workflow_id}/runs")
     async def create_run(workflow_id: str, request: Request):
         body = await _json_body(request)
+        params = _dict_or_empty(body.get("params"))
+        context_mode = str(body.get("context_mode") or "").strip().lower()
+        if context_mode and context_mode not in {"full", "compacted", "none"}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unsupported context mode: {context_mode}",
+            )
+        if context_mode == "compacted":
+            if history_store_getter is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="workflow compacted context is not configured",
+                )
+            source_convo_id = _optional_str(body.get("source_convo_id"))
+            if not source_convo_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="source_convo_id is required for compacted workflow context",
+                )
+            recent_tail_messages = _optional_int(body.get("recent_tail_messages")) or 20
+            endpoint = _optional_str(body.get("endpoint"))
+            if _truthy(body.get("refresh_compacted_context")):
+                from ..conversation_compaction import (
+                    maybe_refresh_compacted_conversation_state,
+                )
+
+                if not endpoint:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="endpoint is required to refresh compacted context",
+                    )
+                try:
+                    await maybe_refresh_compacted_conversation_state(
+                        history_store=history_store_getter(),
+                        llm_client=executor_getter().llm_client,
+                        source_convo_id=source_convo_id,
+                        endpoint=endpoint,
+                        reasoning_effort=_optional_str(body.get("reasoning_effort")),
+                        force=False,
+                    )
+                except Exception as exc:
+                    raise HTTPException(status_code=500, detail=str(exc)) from exc
+            bundle = await build_conversation_context_bundle(
+                history_store_getter(),
+                source_convo_id=source_convo_id,
+                recent_tail_messages=recent_tail_messages,
+            )
+            params = enrich_workflow_params_with_context_bundle(params, bundle)
         try:
             snapshot = await executor_getter().create_run(
                 workflow_id,
-                params=_dict_or_empty(body.get("params")),
+                params=params,
                 convo_id=_optional_str(body.get("convo_id")),
                 endpoint=_optional_str(body.get("endpoint")),
                 reasoning_effort=_optional_str(body.get("reasoning_effort")),
@@ -136,6 +190,21 @@ def _dict_or_empty(value: Any) -> dict[str, Any]:
 def _optional_str(value: Any) -> str | None:
     text = str(value or "").strip()
     return text or None
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"expected integer: {value!r}") from exc
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _sse_event(event: dict[str, Any]) -> bytes:

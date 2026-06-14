@@ -4,6 +4,7 @@ import json
 from fastapi.testclient import TestClient
 
 from src.orchestrator import proxy_services as proxy_module
+from src.orchestrator.history_store import MemoryHistoryStore
 from src.orchestrator.proxy import app
 from src.orchestrator.workflow.executor import WorkflowExecutor
 from src.orchestrator.workflow.registry import WorkflowRegistry
@@ -207,6 +208,66 @@ def test_workflow_api_delete_runs_clears_history(tmp_path):
         assert delete_response.status_code == 200
         assert delete_response.json()["deleted"]["workflow_runs"] == 1
         assert client.get("/workflow-runs").json()["runs"] == []
+
+
+def test_workflow_api_compacted_context_enriches_params_and_keeps_convo_separate(
+    tmp_path,
+):
+    write_workflow(tmp_path / "sample.yaml")
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    workflow_store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    history_store = MemoryHistoryStore()
+
+    async def upsert_compacted_state():
+        await history_store.upsert_compacted_conversation_state(
+            "main-thread",
+            covered_message_id=records[0]["id"],
+            state_text="prior compacted state",
+        )
+
+    with TestClient(app) as client:
+        client.portal.call(workflow_store.initialize)
+        client.portal.call(
+            history_store.append_messages,
+            "main-thread",
+            [
+                {"role": "user", "content": "Prior user"},
+                {"role": "assistant", "content": "Prior assistant"},
+            ],
+        )
+        records = client.portal.call(
+            history_store.get_conversation_message_records,
+            "main-thread",
+        )
+        client.portal.call(upsert_compacted_state)
+        proxy_module.set_history_store(history_store)
+        proxy_module.set_workflow_components(
+            registry=registry,
+            store=workflow_store,
+            executor=WorkflowExecutor(registry, workflow_store, FakeLLMClient()),
+        )
+
+        response = client.post(
+            "/workflows/sample/runs",
+            json={
+                "params": {"goal": "ship", "conversation_context": "manual"},
+                "endpoint": "node-a",
+                "convo_id": "workflow-internal",
+                "source_convo_id": "main-thread",
+                "context_mode": "compacted",
+                "recent_tail_messages": 1,
+            },
+        )
+
+    assert response.status_code == 200
+    run = response.json()["snapshot"]["run"]
+    assert run["convo_id"] == "workflow-internal"
+    assert run["params"]["compacted_thread_state"] == "prior compacted state"
+    assert "Prior assistant" in run["params"]["recent_conversation_tail"]
+    assert run["params"]["conversation_context"].startswith("manual")
+    assert "source_convo_id" in run["params"]["context_state"]
+    assert run["params"]["context_state"]["source_convo_id"] == "main-thread"
 
 
 def _decode_sse_events(text: str) -> list[dict]:

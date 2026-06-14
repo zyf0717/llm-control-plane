@@ -11,6 +11,14 @@ params_schema:
       type: string
     conversation_context:
       type: string
+    compacted_thread_state:
+      type: string
+    recent_conversation_tail:
+      type: string
+    server_conversation_context:
+      type: string
+    context_state:
+      type: object
     context:
       type: string
     uploaded_context:
@@ -30,10 +38,14 @@ steps:
       Latest user prompt:
       {{ params.latest_user_prompt }}
 
-      Conversation history / existing context:
-      {{ params.conversation_context }}
+      Compacted prior thread state:
+      {{ params.compacted_thread_state }}
+
+      Recent raw conversation tail:
+      {{ params.recent_conversation_tail }}
 
       Additional context:
+      {{ params.conversation_context }}
       {{ params.context }}
       {{ params.uploaded_context }}
 
@@ -113,8 +125,11 @@ steps:
       Latest user prompt:
       {{ params.latest_user_prompt }}
 
-      Conversation history / existing context:
-      {{ params.conversation_context }}
+      Compacted prior thread state:
+      {{ params.compacted_thread_state }}
+
+      Recent raw conversation tail:
+      {{ params.recent_conversation_tail }}
 
       Search plan reason:
       {{ outputs.search_plan.json.reason }}
@@ -134,10 +149,14 @@ steps:
       Latest user prompt:
       {{ params.latest_user_prompt }}
 
-      Conversation history / existing context:
-      {{ params.conversation_context }}
+      Compacted prior thread state:
+      {{ params.compacted_thread_state }}
+
+      Recent raw conversation tail:
+      {{ params.recent_conversation_tail }}
 
       Additional context:
+      {{ params.conversation_context }}
       {{ params.context }}
       {{ params.uploaded_context }}
 
