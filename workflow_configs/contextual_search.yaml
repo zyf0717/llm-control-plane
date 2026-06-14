@@ -97,7 +97,7 @@ steps:
   - id: search_results
     name: Search results
     kind: search
-    search_count: 20
+    search_count: 10
     use_query_refiner: false
     depends_on: [plan_search_queries]
     prompt: |
