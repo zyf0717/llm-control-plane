@@ -12,6 +12,7 @@ from src.dashboard.app_server import (
     resolve_search_provider_selection,
     resolve_workflow_retry_step_selection,
     resolve_workflow_routing_selection,
+    workflow_chat_event_updates_workflows_tab,
     workflow_run_ended,
     workflow_run_in_progress,
     workflow_snapshot_with_next_pending_running,
@@ -611,6 +612,16 @@ def test_workflow_snapshot_with_next_pending_running_preserves_running_step():
     assert updated is not None
     assert [step["status"] for step in updated["steps"]] == ["running", "pending"]
     assert updated["run"]["current_step_id"] == "first"
+
+
+def test_workflow_chat_events_update_workflows_tab_only_at_terminal_boundary():
+    assert not workflow_chat_event_updates_workflows_tab("run_started")
+    assert not workflow_chat_event_updates_workflows_tab("snapshot")
+    assert not workflow_chat_event_updates_workflows_tab("step_started")
+    assert not workflow_chat_event_updates_workflows_tab("step_delta")
+    assert not workflow_chat_event_updates_workflows_tab("step_completed")
+    assert workflow_chat_event_updates_workflows_tab("run_completed")
+    assert workflow_chat_event_updates_workflows_tab("error")
 
 
 @pytest.mark.asyncio

@@ -285,6 +285,11 @@ def workflow_snapshot_with_next_pending_running(
     return updated
 
 
+def workflow_chat_event_updates_workflows_tab(event_type: str) -> bool:
+    """Only terminal buffered workflow events should re-render the Workflows tab."""
+    return str(event_type or "").strip() in {"run_completed", "error"}
+
+
 def _input_value(input_obj: Any, name: str, default: Any = None) -> Any:
     try:
         return getattr(input_obj, name)()
@@ -1476,7 +1481,6 @@ def server(input, output, session):
                     rendered_final = False
                     open_intermediate_step = ""
                     final_reasoning_open = False
-                    step_count = 0
                     final_snapshot: dict[str, Any] | None = None
 
                     async def close_intermediate():
@@ -1502,16 +1506,6 @@ def server(input, output, session):
                         snapshot = event.get("snapshot")
                         if isinstance(snapshot, dict):
                             final_snapshot = snapshot
-                            if event_type in {"step_completed", "snapshot"}:
-                                step_count += 1 if event_type == "step_completed" else 0
-                                await apply_workflow_snapshot(
-                                    snapshot,
-                                    step_number=(
-                                        step_count
-                                        if event_type == "step_completed"
-                                        else None
-                                    ),
-                                )
 
                         visibility = str(event.get("chat_visibility") or "hidden")
                         step_id = str(event.get("step_id") or "")
@@ -1575,6 +1569,11 @@ def server(input, output, session):
                                 yield await close_intermediate()
                             if final_reasoning_open:
                                 yield await close_final_reasoning()
+                            if (
+                                workflow_chat_event_updates_workflows_tab(event_type)
+                                and final_snapshot is not None
+                            ):
+                                await apply_workflow_snapshot(final_snapshot)
                             yield f"Error: {event.get('error') or 'workflow failed'}"
                             return
 
@@ -1593,6 +1592,8 @@ def server(input, output, session):
                                 workflow_status_message.set(
                                     f"Ran {run_id}: status {status}."
                                 )
+                                if workflow_chat_event_updates_workflows_tab(event_type):
+                                    await apply_workflow_snapshot(final_snapshot)
                                 run_info.set(workflow_chat_run_info(final_snapshot))
                                 if not rendered_final:
                                     rendered_final = True
