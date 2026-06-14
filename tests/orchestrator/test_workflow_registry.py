@@ -178,7 +178,7 @@ def test_registry_loads_rerank_steps(tmp_path):
     name: Rerank
     kind: rerank
     depends_on: [search]
-    rerank_context: "Goal: {{ params.goal }}"
+    rerank_source_text: "Goal: {{ params.goal }}"
     prompt: hello
 """
         ),
@@ -192,28 +192,28 @@ def test_registry_loads_rerank_steps(tmp_path):
     assert search_step.use_query_refiner is False
     assert rerank_step.kind == "rerank"
     assert rerank_step.depends_on == ["search"]
-    assert rerank_step.rerank_context == "Goal: {{ params.goal }}"
+    assert rerank_step.rerank_source_text == "Goal: {{ params.goal }}"
 
 
-def test_registry_loads_compact_context_steps(tmp_path):
+def test_registry_loads_compress_source_steps(tmp_path):
     write_workflow(
         tmp_path / "sample.yaml",
         body=minimal_workflow(
             steps="""
-  - id: compact
-    name: Compact
-    kind: compact_context
-    prompt: "{{ params.context }}"
-    output_key: compacted
-    compaction_trigger_chars: 1000
-    compaction_chunk_chars: 800
-    compaction_target_chars: 400
-    compaction_max_output_chars: 600
-    compaction_max_output_json_bytes: 12000
-    compaction_max_rounds: 2
-    compaction_input_format: auto
-    compaction_output_format: text
-    compaction_goal: Preserve evidence.
+  - id: compress
+    name: Compress
+    kind: compress_source
+    prompt: "{{ params.manual_source_text }}"
+    output_key: compressed
+    compression_trigger_chars: 1000
+    compression_chunk_chars: 800
+    compression_target_chars: 400
+    compression_max_output_chars: 600
+    compression_max_output_json_bytes: 12000
+    compression_max_rounds: 2
+    compression_input_format: auto
+    compression_output_format: text
+    compression_goal: Preserve evidence.
 """
         ),
     )
@@ -222,81 +222,81 @@ def test_registry_loads_compact_context_steps(tmp_path):
     registry.load()
 
     step = registry.get("sample").steps[0]
-    assert step.kind == "compact_context"
-    assert step.compaction_trigger_chars == 1000
-    assert step.compaction_chunk_chars == 800
-    assert step.compaction_target_chars == 400
-    assert step.compaction_max_output_chars == 600
-    assert step.compaction_max_output_json_bytes == 12000
-    assert step.compaction_max_rounds == 2
-    assert step.compaction_input_format == "auto"
-    assert step.compaction_output_format == "text"
-    assert step.compaction_goal == "Preserve evidence."
+    assert step.kind == "compress_source"
+    assert step.compression_trigger_chars == 1000
+    assert step.compression_chunk_chars == 800
+    assert step.compression_target_chars == 400
+    assert step.compression_max_output_chars == 600
+    assert step.compression_max_output_json_bytes == 12000
+    assert step.compression_max_rounds == 2
+    assert step.compression_input_format == "auto"
+    assert step.compression_output_format == "text"
+    assert step.compression_goal == "Preserve evidence."
 
 
-def test_registry_rejects_invalid_compaction_budgets(tmp_path):
+def test_registry_rejects_invalid_compression_budgets(tmp_path):
     write_workflow(
         tmp_path / "sample.yaml",
         body=minimal_workflow(
             steps="""
-  - id: compact
-    kind: compact_context
+  - id: compress
+    kind: compress_source
     prompt: hello
-    compaction_trigger_chars: 100
-    compaction_chunk_chars: 80
-    compaction_target_chars: 90
-    compaction_max_output_chars: 120
+    compression_trigger_chars: 100
+    compression_chunk_chars: 80
+    compression_target_chars: 90
+    compression_max_output_chars: 120
 """
         ),
     )
 
-    with pytest.raises(ValueError, match="compaction budgets"):
+    with pytest.raises(ValueError, match="compression budgets"):
         WorkflowRegistry(tmp_path).load()
 
 
-def test_registry_rejects_zero_compaction_budgets(tmp_path):
+def test_registry_rejects_zero_compression_budgets(tmp_path):
     write_workflow(
         tmp_path / "sample.yaml",
         body=minimal_workflow(
             steps="""
-  - id: compact
-    kind: compact_context
+  - id: compress
+    kind: compress_source
     prompt: hello
-    compaction_max_rounds: 0
+    compression_max_rounds: 0
 """
         ),
     )
 
-    with pytest.raises(ValueError, match="compaction_max_rounds must be positive"):
+    with pytest.raises(ValueError, match="compression_max_rounds must be positive"):
         WorkflowRegistry(tmp_path).load()
 
 
-def test_registry_rejects_invalid_compaction_formats(tmp_path):
+def test_registry_rejects_invalid_compression_formats(tmp_path):
     write_workflow(
         tmp_path / "sample.yaml",
         body=minimal_workflow(
             steps="""
-  - id: compact
-    kind: compact_context
+  - id: compress
+    kind: compress_source
     prompt: hello
-    compaction_input_format: xml
+    compression_input_format: xml
 """
         ),
     )
 
-    with pytest.raises(ValueError, match="compaction_input_format"):
+    with pytest.raises(ValueError, match="compression_input_format"):
         WorkflowRegistry(tmp_path).load()
 
 
-def test_registry_supplies_builtin_compaction_contract_for_structured_output(tmp_path):
+def test_registry_supplies_builtin_compression_contract_for_structured_output(tmp_path):
     write_workflow(
         tmp_path / "sample.yaml",
         body=minimal_workflow(
             steps="""
-  - id: compact
-    kind: compact_context
+  - id: compress
+    kind: compress_source
     prompt: hello
-    compaction_output_format: json
+    compression_output_format: json
 """
         ),
     )
@@ -318,15 +318,15 @@ def test_registry_supplies_builtin_compaction_contract_for_structured_output(tmp
     ]
 
 
-def test_registry_rejects_compaction_contract_format_mismatch(tmp_path):
+def test_registry_rejects_compression_contract_format_mismatch(tmp_path):
     write_workflow(
         tmp_path / "sample.yaml",
         body=minimal_workflow(
             steps="""
-  - id: compact
-    kind: compact_context
+  - id: compress
+    kind: compress_source
     prompt: hello
-    compaction_output_format: json
+    compression_output_format: json
     output_contract:
       format: yaml
 """
@@ -391,20 +391,53 @@ def test_registry_rejects_inline_workflow_reranker_flag(tmp_path):
         WorkflowRegistry(tmp_path).load()
 
 
-def test_registry_rejects_rerank_context_on_search_step(tmp_path):
+def test_registry_rejects_rerank_source_text_on_search_step(tmp_path):
     write_workflow(
         tmp_path / "sample.yaml",
         body=minimal_workflow(
             steps="""
   - id: search
     kind: search
-    rerank_context: hello
+    rerank_source_text: hello
     prompt: hello
 """
         ),
     )
 
-    with pytest.raises(ValueError, match="rerank_context"):
+    with pytest.raises(ValueError, match="rerank_source_text"):
+        WorkflowRegistry(tmp_path).load()
+
+
+def test_registry_rejects_old_compact_context_step_kind(tmp_path):
+    write_workflow(
+        tmp_path / "sample.yaml",
+        body=minimal_workflow(
+            steps="""
+  - id: old_compress
+    kind: compact_context
+    prompt: hello
+"""
+        ),
+    )
+
+    with pytest.raises(ValueError, match="unsupported kind: compact_context"):
+        WorkflowRegistry(tmp_path).load()
+
+
+def test_registry_rejects_old_compaction_fields(tmp_path):
+    write_workflow(
+        tmp_path / "sample.yaml",
+        body=minimal_workflow(
+            steps="""
+  - id: compress
+    kind: compress_source
+    prompt: hello
+    compaction_target_chars: 100
+"""
+        ),
+    )
+
+    with pytest.raises(ValueError, match="compaction fields"):
         WorkflowRegistry(tmp_path).load()
 
 
@@ -415,7 +448,7 @@ def test_default_workflow_config_directory_loads_shipped_specs():
     registry.load()
 
     assert {spec.id for spec in registry.list()} == {
-        "contextual_search",
+        "threaded_search",
         "implementation_plan",
         "research_brief",
     }

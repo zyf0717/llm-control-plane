@@ -266,7 +266,7 @@ app_ui = ui.page_fluid(
             const searchProviderEnabled = Boolean(
                 message && message.searchProviderEnabled
             );
-            setDashboardSelectDisabled("ragEndpoint", active);
+            setDashboardSelectDisabled("retrievalEndpoint", active);
             setDashboardSelectDisabled(
                 "searchProvider",
                 active && !searchProviderEnabled
@@ -359,23 +359,23 @@ app_ui = ui.page_fluid(
                     ui.div(
                         input_action_row(
                             ui.input_text(
-                                "convoID",
+                                "conversationID",
                                 "Conversation ID",
-                                placeholder="Convo ID",
+                                placeholder="Conversation ID",
                                 width="100%",
                             ),
-                            "generateConvoID",
+                            "generateConversationID",
                             "🔄",
                             button_class="dashboard-square-button",
                         ),
                         input_action_row(
                             ui.input_select(
-                                "ragEndpoint",
-                                "RAG Endpoint",
+                                "retrievalEndpoint",
+                                "Retrieval Endpoint",
                                 choices=[],
                                 width="100%",
                             ),
-                            "refreshRagEndpoints",
+                            "refreshRetrievalEndpoints",
                             "🔄",
                             button_class="dashboard-square-button",
                         ),
@@ -453,14 +453,14 @@ app_ui = ui.page_fluid(
                         col_widths=[7, 5],
                     ),
                     ui.input_text(
-                        "workflowConvoID",
+                        "workflowConversationID",
                         "Conversation ID",
                         placeholder="Optional",
                         width="100%",
                     ),
                     ui.input_select(
-                        "workflowRagEndpoint",
-                        "RAG Endpoint",
+                        "workflowRetrievalEndpoint",
+                        "Retrieval Endpoint",
                         choices={},
                         width="100%",
                     ),
@@ -517,7 +517,7 @@ app_ui = ui.page_fluid(
             "History",
             input_action_row(
                 ui.input_select(
-                    "historyConvoSelector",
+                    "historyConversationSelector",
                     "Conversation",
                     choices={},
                     width="100%",
@@ -532,8 +532,8 @@ app_ui = ui.page_fluid(
             "Traces",
             ui.layout_columns(
                 ui.input_text(
-                    "traceConvoFilter",
-                    "Convo ID",
+                    "traceConversationFilter",
+                    "Conversation ID",
                     placeholder="Optional",
                     width="100%",
                 ),

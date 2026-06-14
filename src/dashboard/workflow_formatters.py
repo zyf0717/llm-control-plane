@@ -48,7 +48,7 @@ def format_workflow_run_table(runs: list[dict[str, Any]]) -> ui.Tag:
     if not runs:
         return ui.card(ui.markdown("**No workflow runs found**"))
     rows = [
-        "| Run | Workflow | Status | Step | Updated | Convo |",
+        "| Run | Workflow | Status | Step | Updated | Conversation |",
         "| --- | --- | --- | --- | --- | --- |",
     ]
     for run in runs[:50]:
@@ -61,7 +61,7 @@ def format_workflow_run_table(runs: list[dict[str, Any]]) -> ui.Tag:
                     _cell(run.get("status")),
                     _cell(run.get("current_step_id") or ""),
                     _cell(run.get("updated_at")),
-                    _cell(run.get("convo_id")),
+                    _cell(run.get("conversation_id")),
                 ]
             )
             + " |"
@@ -202,7 +202,7 @@ def _format_run_header(run: dict[str, Any]) -> ui.Tag:
         ),
         _metadata_row(
             ("Current step", run.get("current_step_id")),
-            ("Conversation", run.get("convo_id")),
+            ("Conversation", run.get("conversation_id")),
         ),
         _metadata_row(
             ("Updated", run.get("updated_at")),

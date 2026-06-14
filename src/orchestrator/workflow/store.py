@@ -9,7 +9,7 @@ from typing import Any
 
 import aiosqlite
 
-from ..history_store import DEFAULT_HISTORY_DB_PATH
+from ..conversation_store import DEFAULT_CONVERSATION_DB_PATH
 from .models import WorkflowRun, WorkflowRunStatus, WorkflowStepRun
 
 
@@ -29,17 +29,18 @@ class SQLiteWorkflowStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = await aiosqlite.connect(str(self.db_path))
         await self._conn.execute("PRAGMA journal_mode=WAL")
+        await self._drop_legacy_schema_if_needed()
         await self._conn.execute("""
             CREATE TABLE IF NOT EXISTS workflow_runs (
                 run_id TEXT PRIMARY KEY,
                 workflow_id TEXT NOT NULL,
                 workflow_version TEXT NOT NULL,
                 status TEXT NOT NULL,
-                convo_id TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
                 params_json TEXT NOT NULL,
                 endpoint TEXT,
                 reasoning_effort TEXT,
-                rag_endpoint TEXT,
+                retrieval_endpoint TEXT,
                 search_provider TEXT,
                 current_step_id TEXT,
                 created_at TEXT NOT NULL,
@@ -53,8 +54,8 @@ class SQLiteWorkflowStore:
             ON workflow_runs (status, updated_at DESC)
             """)
         await self._conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_workflow_runs_convo_id
-            ON workflow_runs (convo_id)
+            CREATE INDEX IF NOT EXISTS idx_workflow_runs_conversation_id
+            ON workflow_runs (conversation_id)
             """)
         await self._conn.execute("""
             CREATE TABLE IF NOT EXISTS workflow_step_runs (
@@ -98,8 +99,8 @@ class SQLiteWorkflowStore:
                 await conn.execute(
                     """
                     INSERT INTO workflow_runs (
-                        run_id, workflow_id, workflow_version, status, convo_id,
-                        params_json, endpoint, reasoning_effort, rag_endpoint,
+                        run_id, workflow_id, workflow_version, status, conversation_id,
+                        params_json, endpoint, reasoning_effort, retrieval_endpoint,
                         search_provider, current_step_id, created_at, updated_at,
                         completed_at
                     )
@@ -110,11 +111,11 @@ class SQLiteWorkflowStore:
                         run.workflow_id,
                         run.workflow_version,
                         run.status,
-                        run.convo_id,
+                        run.conversation_id,
                         json.dumps(run.params),
                         run.endpoint,
                         run.reasoning_effort,
-                        run.rag_endpoint,
+                        run.retrieval_endpoint,
                         run.search_provider,
                         run.current_step_id,
                         run.created_at,
@@ -141,8 +142,8 @@ class SQLiteWorkflowStore:
         conn = self._require_connection()
         cursor = await conn.execute(
             """
-            SELECT run_id, workflow_id, workflow_version, status, convo_id,
-                   params_json, endpoint, reasoning_effort, rag_endpoint,
+            SELECT run_id, workflow_id, workflow_version, status, conversation_id,
+                   params_json, endpoint, reasoning_effort, retrieval_endpoint,
                    search_provider, current_step_id, created_at, updated_at,
                    completed_at
             FROM workflow_runs
@@ -158,8 +159,8 @@ class SQLiteWorkflowStore:
         conn = self._require_connection()
         cursor = await conn.execute(
             """
-            SELECT run_id, workflow_id, workflow_version, status, convo_id,
-                   params_json, endpoint, reasoning_effort, rag_endpoint,
+            SELECT run_id, workflow_id, workflow_version, status, conversation_id,
+                   params_json, endpoint, reasoning_effort, retrieval_endpoint,
                    search_provider, current_step_id, created_at, updated_at,
                    completed_at
             FROM workflow_runs
@@ -489,9 +490,34 @@ class SQLiteWorkflowStore:
         rows = await cursor.fetchall()
         await cursor.close()
         existing = {str(row[1]) for row in rows}
-        for column in ["rag_endpoint", "search_provider"]:
+        for column in ["retrieval_endpoint", "search_provider"]:
             if column not in existing:
                 await conn.execute(f"ALTER TABLE workflow_runs ADD COLUMN {column} TEXT")
+
+    async def _drop_legacy_schema_if_needed(self) -> None:
+        conn = self._require_connection()
+        cursor = await conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+        tables = {str(row[0]) for row in await cursor.fetchall()}
+        await cursor.close()
+        if "workflow_runs" not in tables:
+            return
+
+        cursor = await conn.execute("PRAGMA table_info(workflow_runs)")
+        columns = {str(row[1]) for row in await cursor.fetchall()}
+        await cursor.close()
+        legacy_columns = {
+            "convo_id",
+            "rag_endpoint",
+        } & columns
+        missing_required = "conversation_id" not in columns
+        if not legacy_columns and not missing_required:
+            return
+
+        for table in ("workflow_artifacts", "workflow_step_runs", "workflow_runs"):
+            await conn.execute(f"DROP TABLE IF EXISTS {table}")
+        await conn.commit()
 
     @staticmethod
     async def _table_count(conn: aiosqlite.Connection, table: str) -> int:
@@ -512,11 +538,11 @@ class SQLiteWorkflowStore:
             workflow_id=row[1],
             workflow_version=row[2],
             status=row[3],
-            convo_id=row[4],
+            conversation_id=row[4],
             params=_loads_json(row[5]),
             endpoint=row[6],
             reasoning_effort=row[7],
-            rag_endpoint=row[8],
+            retrieval_endpoint=row[8],
             search_provider=row[9],
             current_step_id=row[10],
             created_at=row[11],
@@ -539,8 +565,8 @@ class SQLiteWorkflowStore:
 
 
 def build_workflow_store_from_env() -> SQLiteWorkflowStore:
-    raw_db_path = os.getenv("WORKFLOW_DB_PATH") or os.getenv("HISTORY_DB_PATH")
-    db_path = Path(raw_db_path) if raw_db_path else DEFAULT_HISTORY_DB_PATH
+    raw_db_path = os.getenv("WORKFLOW_DB_PATH")
+    db_path = Path(raw_db_path) if raw_db_path else DEFAULT_CONVERSATION_DB_PATH
     return SQLiteWorkflowStore(db_path)
 
 

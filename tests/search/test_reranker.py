@@ -81,7 +81,7 @@ async def test_valid_reranker_response_reorders_results_and_attaches_metadata():
         ranking = await reranker.rerank(
             query="q",
             results=results,
-            context="prior context",
+            source_text="prior source_text",
         )
 
     assert post.await_args.args[0] == "https://reranker.local/v1/chat/completions"
@@ -229,7 +229,7 @@ async def test_context_and_candidate_limits_are_enforced():
         SearchRerankerConfig(
             enabled=True,
             model_endpoint="https://reranker.local",
-            max_context_chars=4,
+            max_source_chars=4,
             max_candidates=1,
         )
     )
@@ -242,7 +242,7 @@ async def test_context_and_candidate_limits_are_enforced():
         ranking = await reranker.rerank(
             query="q",
             results=results,
-            context="abcdef",
+            source_text="abcdef",
         )
 
     body = post.await_args.kwargs["json"]
@@ -297,7 +297,7 @@ async def test_dedicated_reranker_posts_documents_and_reorders_by_index():
         ranking = await reranker.rerank(
             query="q",
             results=results,
-            context="abcdef",
+            source_text="abcdef",
         )
 
     assert post.await_args.args[0] == "https://reranker.local/rerank"

@@ -17,12 +17,12 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 PROXY_BASE_URL = os.getenv("PROXY_BASE_URL")
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
-DEFAULT_RAG_ENDPOINT = "localhost:8100"
-NONE_RAG_OPTION_LABEL = "None"
-NONE_RAG_OPTION_VALUE = ""
+DEFAULT_RETRIEVAL_ENDPOINT = "localhost:8100"
+NONE_RETRIEVAL_OPTION_LABEL = "None"
+NONE_RETRIEVAL_OPTION_VALUE = ""
 NONE_SEARCH_PROVIDER_LABEL = "None"
 NONE_SEARCH_PROVIDER_VALUE = ""
-DEFAULT_QUERY_REFINER_MAX_CONTEXT_CHARS = 12000
+DEFAULT_QUERY_REFINER_MAX_SOURCE_CHARS = 12000
 DEFAULT_DISPLAY_TIMEZONE_NAME = "Asia/Singapore"
 SEARCH_PROVIDER_DISPLAY_NAMES = {
     "duckduckgo_html": "DuckDuckGo",
@@ -104,19 +104,19 @@ async def fetch_models_data():
         return {}
 
 
-def load_rag_endpoint_config():
-    """Load configured RAG endpoints and default selection from config.yaml."""
+def load_retrieval_endpoint_config():
+    """Load configured Retrieval endpoints and default selection from config.yaml."""
     try:
         config = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
     except FileNotFoundError:
-        logger.warning("config.yaml not found; using default RAG endpoint")
+        logger.warning("config.yaml not found; using default Retrieval endpoint")
         config = {}
     except yaml.YAMLError as e:
-        logger.warning("Failed to parse config.yaml for RAG endpoints: %s", e)
+        logger.warning("Failed to parse config.yaml for Retrieval endpoints: %s", e)
         config = {}
 
-    rag_config = config.get("rag", {}) if isinstance(config, dict) else {}
-    configured_endpoints = rag_config.get("endpoints", [])
+    retrieval_config = config.get("retrieval", {}) if isinstance(config, dict) else {}
+    configured_endpoints = retrieval_config.get("endpoints", [])
 
     endpoints = []
     seen_retrieve_urls = set()
@@ -149,23 +149,23 @@ def load_rag_endpoint_config():
     if not endpoints:
         endpoints = [
             {
-                "name": DEFAULT_RAG_ENDPOINT,
-                "retrieve_url": f"http://{DEFAULT_RAG_ENDPOINT}/api/retrieve/context",
-                "health_url": f"http://{DEFAULT_RAG_ENDPOINT}/api/health",
+                "name": DEFAULT_RETRIEVAL_ENDPOINT,
+                "retrieve_url": f"http://{DEFAULT_RETRIEVAL_ENDPOINT}/api/retrieve/context",
+                "health_url": f"http://{DEFAULT_RETRIEVAL_ENDPOINT}/api/health",
             }
         ]
 
-    default_endpoint = str(rag_config.get("default_endpoint") or "").strip()
+    default_endpoint = str(retrieval_config.get("default_endpoint") or "").strip()
     if not default_endpoint:
         default_endpoint = endpoints[0]["retrieve_url"]
 
     return endpoints, default_endpoint
 
 
-async def fetch_available_rag_endpoints():
-    """Return configured RAG endpoint choices with a persistent None option."""
-    endpoint_configs, default_endpoint = load_rag_endpoint_config()
-    rag_choices = {NONE_RAG_OPTION_VALUE: NONE_RAG_OPTION_LABEL}
+async def fetch_available_retrieval_endpoints():
+    """Return configured Retrieval endpoint choices with a persistent None option."""
+    endpoint_configs, default_endpoint = load_retrieval_endpoint_config()
+    retrieval_choices = {NONE_RETRIEVAL_OPTION_VALUE: NONE_RETRIEVAL_OPTION_LABEL}
 
     async with httpx.AsyncClient(timeout=5.0) as client:
         for endpoint in endpoint_configs:
@@ -175,15 +175,15 @@ async def fetch_available_rag_endpoints():
                     response = await client.get(health_url)
                     response.raise_for_status()
                 except Exception as e:
-                    logger.warning("RAG health check failed for %s: %s", health_url, e)
+                    logger.warning("Retrieval health check failed for %s: %s", health_url, e)
 
             retrieve_url = endpoint["retrieve_url"]
             label = endpoint["name"]
             if label != retrieve_url:
                 label = f"{label} ({retrieve_url})"
-            rag_choices[retrieve_url] = label
+            retrieval_choices[retrieve_url] = label
 
-    return rag_choices, NONE_RAG_OPTION_VALUE
+    return retrieval_choices, NONE_RETRIEVAL_OPTION_VALUE
 
 
 def format_search_provider_label(provider_id: str) -> str:
@@ -247,42 +247,42 @@ def fetch_available_search_providers() -> tuple[dict[str, str], str]:
     return choices, NONE_SEARCH_PROVIDER_VALUE
 
 
-def load_query_refiner_max_context_chars() -> int:
-    """Return the configured client-side query-refiner context bound."""
+def load_query_refiner_max_source_chars() -> int:
+    """Return the configured client-side query-refiner source text bound."""
     try:
         config = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
     except (FileNotFoundError, yaml.YAMLError):
-        return DEFAULT_QUERY_REFINER_MAX_CONTEXT_CHARS
+        return DEFAULT_QUERY_REFINER_MAX_SOURCE_CHARS
 
     search_config = config.get("search", {}) if isinstance(config, dict) else {}
     try:
         value = int(
             search_config.get(
-                "query_refiner_max_context_chars",
-                DEFAULT_QUERY_REFINER_MAX_CONTEXT_CHARS,
+                "query_refiner_max_source_chars",
+                DEFAULT_QUERY_REFINER_MAX_SOURCE_CHARS,
             )
         )
     except (TypeError, ValueError):
-        return DEFAULT_QUERY_REFINER_MAX_CONTEXT_CHARS
+        return DEFAULT_QUERY_REFINER_MAX_SOURCE_CHARS
     return max(0, value)
 
 
-def trim_search_context(context: Any, max_chars: int) -> str:
-    """Trim query-refiner context from the front, preserving the newest request tail."""
-    text = str(context or "").strip()
+def trim_search_source_text(source_text: Any, max_chars: int) -> str:
+    """Trim query-refiner source text from the front, preserving the newest request tail."""
+    text = str(source_text or "").strip()
     if not text or max_chars <= 0:
         return ""
     if len(text) <= max_chars:
         return text
 
-    marker = "[trimmed earlier context]\n"
+    marker = "[trimmed earlier source text]\n"
     if max_chars <= len(marker):
         return text[-max_chars:]
     return marker + text[-(max_chars - len(marker)) :]
 
 
 async def fetch_search_results(
-    *, query: str, provider: str, count: int = 5, context: Any = None
+    *, query: str, provider: str, count: int = 5, source_text: Any = None
 ) -> dict[str, Any]:
     """Fetch normalized search candidates from the proxy search endpoint."""
     payload = {
@@ -291,12 +291,12 @@ async def fetch_search_results(
         "count": int(count),
         "use_reranker": False,
     }
-    trimmed_context = trim_search_context(
-        context,
-        load_query_refiner_max_context_chars(),
+    trimmed_source_text = trim_search_source_text(
+        source_text,
+        load_query_refiner_max_source_chars(),
     )
-    if trimmed_context:
-        payload["context"] = trimmed_context
+    if trimmed_source_text:
+        payload["source_text"] = trimmed_source_text
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.post(f"{PROXY_BASE_URL}/search/web", json=payload)
@@ -364,12 +364,12 @@ def find_model_by_endpoint(endpoint_data, endpoint_key):
     return None
 
 
-async def fetch_convo_history(convo_id):
-    """Fetch conversation history for a given convo_id."""
+async def fetch_conversation_history(conversation_id):
+    """Fetch conversation history for a given conversation_id."""
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
-                f"{PROXY_BASE_URL}/conversations/retrieve", json={"convo_id": convo_id}
+                f"{PROXY_BASE_URL}/conversations/retrieve", json={"conversation_id": conversation_id}
             )
             response.raise_for_status()
             return response.json()
@@ -378,12 +378,12 @@ async def fetch_convo_history(convo_id):
         return {}
 
 
-async def fetch_convo_state(convo_id):
+async def fetch_conversation_control_state(conversation_id):
     """Fetch persisted proxy route/reasoning state for a conversation."""
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
-                f"{PROXY_BASE_URL}/conversations/state", json={"convo_id": convo_id}
+                f"{PROXY_BASE_URL}/conversations/state", json={"conversation_id": conversation_id}
             )
             response.raise_for_status()
             data = response.json()
@@ -395,7 +395,7 @@ async def fetch_convo_state(convo_id):
 
 def format_history_choice_label(conversation):
     """Build a stable history dropdown label from conversation metadata."""
-    convo_id = str(conversation.get("convo_id") or "").strip()
+    conversation_id = str(conversation.get("conversation_id") or "").strip()
     raw_last_updated = conversation.get("last_updated")
     timestamp_label = str(raw_last_updated or "Unknown time")
 
@@ -412,17 +412,17 @@ def format_history_choice_label(conversation):
                 "%Y-%m-%d %H:%M:%S"
             )
 
-    return f"{timestamp_label} | {convo_id}"
+    return f"{timestamp_label} | {conversation_id}"
 
 
 def create_history_select_choices(conversations):
-    """Build History tab select choices keyed by convo id."""
+    """Build History tab select choices keyed by conversation id."""
     return {
-        str(conversation.get("convo_id") or "").strip(): format_history_choice_label(
+        str(conversation.get("conversation_id") or "").strip(): format_history_choice_label(
             conversation
         )
         for conversation in conversations
-        if str(conversation.get("convo_id") or "").strip()
+        if str(conversation.get("conversation_id") or "").strip()
     }
 
 
@@ -444,8 +444,8 @@ async def fetch_conversation_summaries():
     for conversation in data:
         if not isinstance(conversation, dict):
             continue
-        convo_id = str(conversation.get("convo_id") or "").strip()
-        if not convo_id:
+        conversation_id = str(conversation.get("conversation_id") or "").strip()
+        if not conversation_id:
             continue
         summaries.append(conversation)
 
@@ -465,7 +465,7 @@ def _matches_trace_filter(value: Any, expected: str) -> bool:
 
 def read_trace_events(
     *,
-    convo_id: str = "",
+    conversation_id: str = "",
     trace_id: str = "",
     endpoint: str = "",
     max_events: int = 200,
@@ -494,7 +494,7 @@ def read_trace_events(
                     continue
                 if not isinstance(event, dict):
                     continue
-                if not _matches_trace_filter(event.get("convo_id"), convo_id):
+                if not _matches_trace_filter(event.get("conversation_id"), conversation_id):
                     continue
                 if not _matches_trace_filter(event.get("request_id"), trace_id):
                     continue

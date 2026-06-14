@@ -4,24 +4,24 @@ import json
 from copy import deepcopy
 from typing import Any
 
-from .history_store import HistoryStore
+from .conversation_store import ConversationStore
 
 
-CONTEXT_TRUNCATION_MARKER = (
-    "[... older conversation messages omitted to fit context budget ...]"
+BRIEFING_TRUNCATION_MARKER = (
+    "[... older conversation messages omitted to fit briefing budget ...]"
 )
 MESSAGE_TRUNCATION_MARKER = "[... beginning of message omitted ...]"
-WORKFLOW_CONTEXT_DELIMITER = "--- Server bounded conversation context ---"
-BOUNDED_CONTEXT_PREFIX = (
-    "Bounded prior conversation context. Treat as a compressed, derived "
+WORKFLOW_BRIEFING_DELIMITER = "--- Server thread briefing ---"
+BOUNDED_BRIEFING_PREFIX = (
+    "Bounded prior conversation briefing. Treat as a compressed, derived "
     "summary of previous turns; current user message remains authoritative."
 )
 
 
-def message_record_to_context_block(record: dict[str, Any]) -> str:
+def message_record_to_briefing_block(record: dict[str, Any]) -> str:
     message = record.get("message") if isinstance(record.get("message"), dict) else {}
     role = str(message.get("role") or "unknown").strip() or "unknown"
-    content = _message_content_text(message)
+    content = _message_source_text(message)
     if not content.strip():
         return ""
     message_id = int(record.get("id") or 0)
@@ -40,7 +40,7 @@ def format_message_records(
     )
     blocks = [
         block
-        for block in (message_record_to_context_block(record) for record in ordered)
+        for block in (message_record_to_briefing_block(record) for record in ordered)
         if block.strip()
     ]
     text = "\n\n".join(blocks).strip()
@@ -48,7 +48,7 @@ def format_message_records(
         return text
 
     selected: list[str] = []
-    selected_chars = len(CONTEXT_TRUNCATION_MARKER)
+    selected_chars = len(BRIEFING_TRUNCATION_MARKER)
     for block in reversed(blocks):
         separator = 2 if selected else 2
         projected = selected_chars + separator + len(block)
@@ -59,37 +59,37 @@ def format_message_records(
 
     if selected:
         selected.reverse()
-        return f"{CONTEXT_TRUNCATION_MARKER}\n\n" + "\n\n".join(selected)
+        return f"{BRIEFING_TRUNCATION_MARKER}\n\n" + "\n\n".join(selected)
 
     suffix_budget = max(
         0,
         max_chars
-        - len(CONTEXT_TRUNCATION_MARKER)
+        - len(BRIEFING_TRUNCATION_MARKER)
         - len(MESSAGE_TRUNCATION_MARKER)
         - 4,
     )
     suffix = text[-suffix_budget:] if suffix_budget else ""
     return (
-        f"{CONTEXT_TRUNCATION_MARKER}\n\n"
+        f"{BRIEFING_TRUNCATION_MARKER}\n\n"
         f"{MESSAGE_TRUNCATION_MARKER}\n{suffix}"
     ).strip()
 
 
-async def build_conversation_context_bundle(
-    history_store: HistoryStore,
+async def build_thread_briefing_bundle(
+    conversation_store: ConversationStore,
     *,
-    source_convo_id: str,
-    recent_tail_messages: int = 20,
-    max_recent_tail_chars: int = 12000,
+    source_conversation_id: str,
+    recent_message_count: int = 20,
+    max_recent_message_chars: int = 12000,
     exclude_last_messages: int = 0,
 ) -> dict[str, Any]:
-    compacted_state = await history_store.get_compacted_conversation_state(
-        source_convo_id
+    thread_state = await conversation_store.get_thread_state(
+        source_conversation_id
     )
-    tail_limit = max(0, int(recent_tail_messages)) + max(0, int(exclude_last_messages))
+    tail_limit = max(0, int(recent_message_count)) + max(0, int(exclude_last_messages))
     tail_records = (
-        await history_store.get_conversation_message_records(
-            source_convo_id,
+        await conversation_store.get_conversation_message_records(
+            source_conversation_id,
             limit=tail_limit or None,
             newest_first=True,
         )
@@ -99,37 +99,37 @@ async def build_conversation_context_bundle(
     tail_records = sorted(tail_records, key=lambda record: int(record.get("id") or 0))
     if exclude_last_messages > 0:
         tail_records = tail_records[: -int(exclude_last_messages)] or []
-    recent_tail = format_message_records(
+    recent_conversation_messages = format_message_records(
         tail_records,
-        max_chars=max_recent_tail_chars,
+        max_chars=max_recent_message_chars,
     )
-    compacted_text = (
-        str((compacted_state or {}).get("state_text") or "").strip()
-        if compacted_state
+    thread_state_text = (
+        str((thread_state or {}).get("state_text") or "").strip()
+        if thread_state
         else ""
     )
-    latest_message_id = await history_store.get_latest_conversation_message_id(
-        source_convo_id
+    latest_message_id = await conversation_store.get_latest_conversation_message_id(
+        source_conversation_id
     )
     covered_message_id = int(
-        (compacted_state or {}).get("covered_message_id") or 0
+        (thread_state or {}).get("covered_message_id") or 0
     )
-    server_context = (
-        "Compacted prior conversation state:\n"
-        f"{compacted_text or '(none)'}\n\n"
-        "Recent raw conversation tail:\n"
-        f"{recent_tail or '(none)'}"
+    thread_briefing = (
+        "Prior thread context:\n"
+        f"{thread_state_text or '(none)'}\n\n"
+        "Recent conversation context:\n"
+        f"{recent_conversation_messages or '(none)'}"
     )
     return {
-        "compacted_thread_state": compacted_text,
-        "recent_conversation_tail": recent_tail,
-        "server_conversation_context": server_context,
-        "context_state": {
-            "source_convo_id": source_convo_id,
+        "thread_state_text": thread_state_text,
+        "recent_conversation_messages": recent_conversation_messages,
+        "thread_briefing": thread_briefing,
+        "thread_metadata": {
+            "source_conversation_id": source_conversation_id,
             "covered_message_id": covered_message_id,
             "latest_message_id": latest_message_id,
-            "recent_tail_messages": int(recent_tail_messages),
-            "has_compacted_state": bool(compacted_text),
+            "recent_message_count": int(recent_message_count),
+            "has_thread_state": bool(thread_state_text),
         },
     }
 
@@ -146,42 +146,42 @@ def build_bounded_chat_messages(
             systems.append(message)
 
     incoming_without_leading_systems = _drop_leading_system_messages(incoming_messages)
-    synthetic_context = {
+    synthetic_briefing = {
         "role": "system",
         "content": (
-            BOUNDED_CONTEXT_PREFIX
+            BOUNDED_BRIEFING_PREFIX
             + "\n\n"
-            + str(bundle.get("server_conversation_context") or "").strip()
+            + str(bundle.get("thread_briefing") or "").strip()
         ).strip(),
     }
     messages: list[dict[str, Any]] = [*systems]
-    if synthetic_context["content"] != BOUNDED_CONTEXT_PREFIX:
-        messages.append(synthetic_context)
+    if synthetic_briefing["content"] != BOUNDED_BRIEFING_PREFIX:
+        messages.append(synthetic_briefing)
     messages.extend(deepcopy(incoming_without_leading_systems))
     return messages
 
 
-def enrich_workflow_params_with_context_bundle(
+def enrich_workflow_params_with_thread_bundle(
     params: dict[str, Any],
     bundle: dict[str, Any],
 ) -> dict[str, Any]:
     enriched = deepcopy(params) if isinstance(params, dict) else {}
-    server_context = str(bundle.get("server_conversation_context") or "").strip()
-    enriched["compacted_thread_state"] = str(
-        bundle.get("compacted_thread_state") or ""
+    server_briefing = str(bundle.get("thread_briefing") or "").strip()
+    enriched["thread_state_text"] = str(
+        bundle.get("thread_state_text") or ""
     )
-    enriched["recent_conversation_tail"] = str(
-        bundle.get("recent_conversation_tail") or ""
+    enriched["recent_conversation_messages"] = str(
+        bundle.get("recent_conversation_messages") or ""
     )
-    enriched["server_conversation_context"] = server_context
-    enriched["context_state"] = deepcopy(bundle.get("context_state") or {})
+    enriched["thread_metadata"] = deepcopy(bundle.get("thread_metadata") or {})
 
-    existing_context = str(enriched.get("conversation_context") or "").strip()
-    if not existing_context:
-        enriched["conversation_context"] = server_context
-    elif server_context:
-        enriched["conversation_context"] = (
-            f"{existing_context}\n\n{WORKFLOW_CONTEXT_DELIMITER}\n\n{server_context}"
+    existing_briefing = str(enriched.get("thread_briefing") or "").strip()
+    if not existing_briefing:
+        enriched["thread_briefing"] = server_briefing
+    elif server_briefing:
+        enriched["thread_briefing"] = (
+            f"{existing_briefing}\n\n{WORKFLOW_BRIEFING_DELIMITER}\n\n"
+            f"{server_briefing}"
         )
     return enriched
 
@@ -206,7 +206,7 @@ def _drop_leading_system_messages(
     return deepcopy(messages[index:])
 
 
-def _message_content_text(message: dict[str, Any]) -> str:
+def _message_source_text(message: dict[str, Any]) -> str:
     content = message.get("content")
     if isinstance(content, str):
         return content

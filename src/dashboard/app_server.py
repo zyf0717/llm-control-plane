@@ -23,14 +23,14 @@ from .formatters import (
     format_timings_info,
 )
 from .prompt_state import (
-    append_managed_rag_suffix,
+    append_managed_retrieval_suffix,
     build_system_prompt_state,
     extract_first_system_prompt,
     first_turn_system_prompt_to_send,
     normalize_system_prompt,
 )
 from .search_flow import (
-    build_query_refiner_context,
+    build_query_refiner_source_text,
     build_search_failure_state,
     build_search_preface,
     build_search_success_state,
@@ -43,10 +43,10 @@ from .utils import (
     create_endpoint_display_choices,
     fetch_conversation_summaries,
     fetch_available_endpoints,
-    fetch_available_rag_endpoints,
+    fetch_available_retrieval_endpoints,
     fetch_available_search_providers,
-    fetch_convo_history,
-    fetch_convo_state,
+    fetch_conversation_history,
+    fetch_conversation_control_state,
     fetch_search_results,
     find_model_by_endpoint,
     read_trace_events,
@@ -54,12 +54,12 @@ from .utils import (
 from .workflow_server_helpers import (
     WORKFLOW_RUN_MAX_STEPS,
     advance_workflow_to_terminal,
-    build_uploaded_file_context,
+    build_uploaded_file_source_text,
     build_workflow_chat_run_payload,
     build_workflow_params_template,
     format_workflow_intermediate_content,
-    format_workflow_conversation_context,
-    merge_uploaded_context,
+    format_workflow_thread_briefing,
+    merge_uploaded_source_text,
     workflow_chat_response_text,
     workflow_chat_run_info,
     workflow_snapshot_status,
@@ -84,7 +84,7 @@ from .workflow_formatters import (
 
 DEFAULT_WORKFLOW_ROUTING_ID = ""
 WORKFLOW_ROUTING_NONE_LABEL = "None"
-CONTEXTUAL_SEARCH_WORKFLOW_ID = "contextual_search"
+THREADED_SEARCH_WORKFLOW_ID = "threaded_search"
 ENDED_WORKFLOW_RUN_STATUSES = {"completed", "failed", "cancelled"}
 
 
@@ -134,7 +134,7 @@ def resolve_first_search_provider_selection(choices: Dict[str, str]) -> str:
 
 
 def workflow_requires_search_provider(workflow_id: Optional[str]) -> bool:
-    return str(workflow_id or "").strip() == CONTEXTUAL_SEARCH_WORKFLOW_ID
+    return str(workflow_id or "").strip() == THREADED_SEARCH_WORKFLOW_ID
 
 
 def build_search_provider_choices(
@@ -338,13 +338,13 @@ def conversation_control_change_reasons(
 
 def build_fork_notice(
     *,
-    old_convo_id: str,
-    new_convo_id: str,
+    old_conversation_id: str,
+    new_conversation_id: str,
     reasons: list[str],
 ) -> str:
     reason_text = " and ".join(reasons) if reasons else "conversation controls"
     return (
-        f"Conversation forked from `{old_convo_id}` to `{new_convo_id}` because "
+        f"Conversation forked from `{old_conversation_id}` to `{new_conversation_id}` because "
         f"{reason_text} changed. Prior history was copied and the new settings "
         "were applied at the start of the fork."
     )
@@ -366,7 +366,7 @@ def server(input, output, session):
     system_prompt_states = reactive.Value({})
     system_prompt_seed = reactive.Value("")
     history_refresh_trigger = reactive.Value(0)
-    history_selected_convo_id = reactive.Value("")
+    history_selected_conversation_id = reactive.Value("")
     trace_snapshot = reactive.Value(None)
     workflow_specs = reactive.Value([])
     workflow_spec = reactive.Value(None)
@@ -377,11 +377,11 @@ def server(input, output, session):
     workflow_run_snapshot = reactive.Value(None)
     workflow_status_message = reactive.Value("")
 
-    def current_active_convo_id() -> str:
-        return str(input.convoID() or "").strip()
+    def current_active_conversation_id() -> str:
+        return str(input.conversationID() or "").strip()
 
-    def current_history_convo_id() -> str:
-        return str(history_selected_convo_id.get() or "").strip()
+    def current_history_conversation_id() -> str:
+        return str(history_selected_conversation_id.get() or "").strip()
 
     def current_endpoint_display_value() -> str:
         return str(input.endpoint() or "").strip()
@@ -395,14 +395,14 @@ def server(input, output, session):
         stored_endpoint_key = str(selected_endpoint_key_state.get() or "").strip()
         return stored_endpoint_key or None
 
-    def get_system_prompt_state(convo_id: str) -> Dict[str, Any]:
-        state = system_prompt_states.get().get(convo_id)
+    def get_system_prompt_state(conversation_id: str) -> Dict[str, Any]:
+        state = system_prompt_states.get().get(conversation_id)
         if isinstance(state, dict):
             return state
         return build_system_prompt_state()
 
     def set_system_prompt_state(
-        convo_id: str,
+        conversation_id: str,
         *,
         prompt: Optional[str] = None,
         started: Optional[bool] = None,
@@ -410,7 +410,7 @@ def server(input, output, session):
         committed_prompt: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
     ) -> Dict[str, Any]:
-        state = dict(get_system_prompt_state(convo_id))
+        state = dict(get_system_prompt_state(conversation_id))
         if prompt is not None:
             state["prompt"] = normalize_system_prompt(prompt)
         if committed_prompt is not None:
@@ -426,7 +426,7 @@ def server(input, output, session):
             state["locked"] = bool(locked)
 
         states = dict(system_prompt_states.get())
-        states[convo_id] = state
+        states[conversation_id] = state
         system_prompt_states.set(states)
         return state
 
@@ -438,26 +438,26 @@ def server(input, output, session):
         )
         ui.update_select("reasoningEffort", selected=reasoning_effort, session=session)
 
-    async def load_system_prompt_state(convo_id: str) -> Dict[str, Any]:
-        if not convo_id:
+    async def load_system_prompt_state(conversation_id: str) -> Dict[str, Any]:
+        if not conversation_id:
             state = build_system_prompt_state()
             apply_system_prompt_view(state)
             return state
 
-        cached_state = system_prompt_states.get().get(convo_id)
+        cached_state = system_prompt_states.get().get(conversation_id)
         if isinstance(cached_state, dict):
             apply_system_prompt_view(cached_state)
             return cached_state
 
-        convo_history = await fetch_convo_history(convo_id)
-        convo_state = await fetch_convo_state(convo_id)
-        persisted_reasoning = str(convo_state.get("reasoning_effort") or "").strip()
+        conversation_history = await fetch_conversation_history(conversation_id)
+        conversation_control_state = await fetch_conversation_control_state(conversation_id)
+        persisted_reasoning = str(conversation_control_state.get("reasoning_effort") or "").strip()
         reasoning_effort = normalize_reasoning_effort(
             persisted_reasoning or input.reasoningEffort(),
             default="medium",
         )
-        if isinstance(convo_history, list) and convo_history:
-            restored_prompt = extract_first_system_prompt(convo_history)
+        if isinstance(conversation_history, list) and conversation_history:
+            restored_prompt = extract_first_system_prompt(conversation_history)
             state = build_system_prompt_state(
                 restored_prompt,
                 started=True,
@@ -469,7 +469,7 @@ def server(input, output, session):
             state = build_system_prompt_state(reasoning_effort=reasoning_effort)
 
         states = dict(system_prompt_states.get())
-        states[convo_id] = state
+        states[conversation_id] = state
         system_prompt_states.set(states)
         apply_system_prompt_view(state)
         return state
@@ -507,25 +507,25 @@ def server(input, output, session):
             session=session,
         )
 
-    async def update_rag_endpoints(current_selection: Optional[str] = None) -> None:
-        rag_choices, default_selection = await fetch_available_rag_endpoints()
+    async def update_retrieval_endpoints(current_selection: Optional[str] = None) -> None:
+        retrieval_choices, default_selection = await fetch_available_retrieval_endpoints()
         selected = (
-            current_selection if current_selection in rag_choices else default_selection
+            current_selection if current_selection in retrieval_choices else default_selection
         )
         ui.update_select(
-            "ragEndpoint",
-            choices=rag_choices,
+            "retrievalEndpoint",
+            choices=retrieval_choices,
             selected=selected,
             session=session,
         )
         with reactive.isolate():
-            workflow_current = str(input.workflowRagEndpoint() or "")
+            workflow_current = str(input.workflowRetrievalEndpoint() or "")
         workflow_selected = (
-            workflow_current if workflow_current in rag_choices else default_selection
+            workflow_current if workflow_current in retrieval_choices else default_selection
         )
         ui.update_select(
-            "workflowRagEndpoint",
-            choices=rag_choices,
+            "workflowRetrievalEndpoint",
+            choices=retrieval_choices,
             selected=workflow_selected,
             session=session,
         )
@@ -602,14 +602,14 @@ def server(input, output, session):
 
     async def update_history_selector() -> None:
         with reactive.isolate():
-            current_selection = current_history_convo_id()
+            current_selection = current_history_conversation_id()
         conversations = await fetch_conversation_summaries()
         history_choices = create_history_select_choices(conversations)
         selected = current_selection if current_selection in history_choices else None
         if not selected and conversations:
-            selected = str(conversations[0]["convo_id"])
+            selected = str(conversations[0]["conversation_id"])
         ui.update_select(
-            "historyConvoSelector",
+            "historyConversationSelector",
             choices=history_choices,
             selected=selected,
             session=session,
@@ -646,7 +646,7 @@ def server(input, output, session):
             {
                 "active": bool(routing_selected),
                 "searchProviderEnabled": routing_selected
-                == CONTEXTUAL_SEARCH_WORKFLOW_ID,
+                == THREADED_SEARCH_WORKFLOW_ID,
             },
         )
         update_single_node_search_provider_select(
@@ -709,15 +709,15 @@ def server(input, output, session):
     @reactive.Effect
     async def _initialize_endpoints():
         await update_endpoints_and_data()
-        await update_rag_endpoints()
+        await update_retrieval_endpoints()
         await update_search_providers()
         await update_history_selector()
         await update_workflow_selector()
         await update_workflow_run_selector()
 
     @reactive.Effect
-    def _initialize_convo_id():
-        ui.update_text("convoID", value=str(uuid.uuid4().hex[:12]), session=session)
+    def _initialize_conversation_id():
+        ui.update_text("conversationID", value=str(uuid.uuid4().hex[:12]), session=session)
 
     @reactive.Effect
     @reactive.event(input.refreshEndpoints)
@@ -725,9 +725,9 @@ def server(input, output, session):
         await update_endpoints_and_data()
 
     @reactive.Effect
-    @reactive.event(input.refreshRagEndpoints)
-    async def _refresh_rag_endpoints():
-        await update_rag_endpoints(str(input.ragEndpoint() or ""))
+    @reactive.event(input.refreshRetrievalEndpoints)
+    async def _refresh_retrieval_endpoints():
+        await update_retrieval_endpoints(str(input.retrievalEndpoint() or ""))
         await update_search_providers(str(input.searchProvider() or ""))
 
     @reactive.Effect
@@ -778,7 +778,7 @@ def server(input, output, session):
             {
                 "active": bool(workflow_routing_id),
                 "searchProviderEnabled": workflow_routing_id
-                == CONTEXTUAL_SEARCH_WORKFLOW_ID,
+                == THREADED_SEARCH_WORKFLOW_ID,
             },
         )
 
@@ -855,9 +855,9 @@ def server(input, output, session):
                 if workflow_files_data.get("key") == workflow_file_upload_key.get()
                 else None
             )
-            params = merge_uploaded_context(
+            params = merge_uploaded_source_text(
                 workflow_params_payload(),
-                build_uploaded_file_context(uploaded_files),
+                build_uploaded_file_source_text(uploaded_files),
             )
             payload = {
                 "params": params,
@@ -866,15 +866,15 @@ def server(input, output, session):
             reasoning = str(input.workflowReasoning() or "").strip()
             if reasoning:
                 payload["reasoning_effort"] = reasoning
-            rag_endpoint = str(input.workflowRagEndpoint() or "").strip()
-            if rag_endpoint:
-                payload["rag_endpoint"] = rag_endpoint
+            retrieval_endpoint = str(input.workflowRetrievalEndpoint() or "").strip()
+            if retrieval_endpoint:
+                payload["retrieval_endpoint"] = retrieval_endpoint
             search_provider = str(input.workflowSearchProvider() or "").strip()
             if search_provider:
                 payload["search_provider"] = search_provider
-            convo_id = str(input.workflowConvoID() or "").strip()
-            if convo_id:
-                payload["convo_id"] = convo_id
+            conversation_id = str(input.workflowConversationID() or "").strip()
+            if conversation_id:
+                payload["conversation_id"] = conversation_id
             created = await create_workflow_run(workflow_id, payload)
             run_id = str(created.get("run_id") or "").strip()
             if not run_id:
@@ -978,9 +978,9 @@ def server(input, output, session):
         last_runtime.set(None)
 
     @reactive.Effect
-    @reactive.event(input.convoID)
+    @reactive.event(input.conversationID)
     async def _sync_system_prompt_for_conversation():
-        await load_system_prompt_state(current_active_convo_id())
+        await load_system_prompt_state(current_active_conversation_id())
 
     @reactive.Effect
     @reactive.event(input.outputJSON)
@@ -1005,8 +1005,8 @@ def server(input, output, session):
             ui.update_switch("autoScroll", value=False)
 
     @reactive.Effect
-    @reactive.event(input.generateConvoID)
-    def _generate_convo_id():
+    @reactive.event(input.generateConversationID)
+    def _generate_conversation_id():
         new_uuid = str(uuid.uuid4().hex[:12])
         apply_system_prompt_view(
             set_system_prompt_state(
@@ -1017,7 +1017,7 @@ def server(input, output, session):
                 locked=False,
             )
         )
-        ui.update_text("convoID", value=new_uuid, session=session)
+        ui.update_text("conversationID", value=new_uuid, session=session)
 
     @render.ui
     def system_prompt_ui():
@@ -1034,36 +1034,36 @@ def server(input, output, session):
     @reactive.Effect
     @reactive.event(input.systemPrompt)
     def _store_system_prompt_input():
-        convo_id = current_active_convo_id()
-        if not convo_id:
+        conversation_id = current_active_conversation_id()
+        if not conversation_id:
             return
-        set_system_prompt_state(convo_id, prompt=input.systemPrompt() or "")
+        set_system_prompt_state(conversation_id, prompt=input.systemPrompt() or "")
 
     @reactive.Effect
-    @reactive.event(input.ragEndpoint)
-    async def _append_rag_suffix_for_selected_endpoint():
-        convo_id = current_active_convo_id()
-        if not convo_id:
+    @reactive.event(input.retrievalEndpoint)
+    async def _append_retrieval_suffix_for_selected_endpoint():
+        conversation_id = current_active_conversation_id()
+        if not conversation_id:
             return
 
-        rag_endpoint = str(input.ragEndpoint() or "").strip()
-        rag_choices, _default_selection = await fetch_available_rag_endpoints()
-        configured_rag_endpoints = {
-            str(value).strip() for value in rag_choices if value
+        retrieval_endpoint = str(input.retrievalEndpoint() or "").strip()
+        retrieval_choices, _default_selection = await fetch_available_retrieval_endpoints()
+        configured_retrieval_endpoints = {
+            str(value).strip() for value in retrieval_choices if value
         }
-        if not rag_endpoint or rag_endpoint not in configured_rag_endpoints:
+        if not retrieval_endpoint or retrieval_endpoint not in configured_retrieval_endpoints:
             return
 
         current_prompt = input.systemPrompt()
         if current_prompt is None:
-            current_prompt = get_system_prompt_state(convo_id).get("prompt", "")
+            current_prompt = get_system_prompt_state(conversation_id).get("prompt", "")
 
-        updated_prompt = append_managed_rag_suffix(current_prompt)
+        updated_prompt = append_managed_retrieval_suffix(current_prompt)
         if updated_prompt == normalize_system_prompt(current_prompt):
             return
 
         apply_system_prompt_view(
-            set_system_prompt_state(convo_id, prompt=updated_prompt)
+            set_system_prompt_state(conversation_id, prompt=updated_prompt)
         )
 
     @render.ui
@@ -1235,25 +1235,25 @@ def server(input, output, session):
                     "**Smart Routing Decision**<br>" + "<br>".join(routing_lines)
                 )
 
-        if info and "rag" in info:
-            rag = info["rag"]
-            rag_lines = []
-            if rag.get("endpoint"):
-                rag_lines.append(f"Endpoint: {rag['endpoint']}")
-            if rag.get("injected"):
-                rag_lines.append(f"Injected: {rag['injected']}")
-            if rag.get("confidence"):
-                rag_lines.append(f"Confidence: {rag['confidence']}")
-            if rag.get("threshold"):
-                rag_lines.append(f"Threshold: {rag['threshold']}")
-            if rag.get("hits"):
-                rag_lines.append(f"Hits: {rag['hits']}")
-            if rag.get("method"):
-                rag_lines.append(f"Method: {rag['method']}")
-            if rag.get("reason") and rag.get("injected") == "false":
-                rag_lines.append(f"Skipped: {rag['reason']}")
-            if rag_lines:
-                sections.append("**RAG**<br>" + "<br>".join(rag_lines))
+        if info and "retrieval" in info:
+            retrieval = info["retrieval"]
+            retrieval_lines = []
+            if retrieval.get("endpoint"):
+                retrieval_lines.append(f"Endpoint: {retrieval['endpoint']}")
+            if retrieval.get("injected"):
+                retrieval_lines.append(f"Injected: {retrieval['injected']}")
+            if retrieval.get("confidence"):
+                retrieval_lines.append(f"Confidence: {retrieval['confidence']}")
+            if retrieval.get("threshold"):
+                retrieval_lines.append(f"Threshold: {retrieval['threshold']}")
+            if retrieval.get("hits"):
+                retrieval_lines.append(f"Hits: {retrieval['hits']}")
+            if retrieval.get("method"):
+                retrieval_lines.append(f"Method: {retrieval['method']}")
+            if retrieval.get("reason") and retrieval.get("injected") == "false":
+                retrieval_lines.append(f"Skipped: {retrieval['reason']}")
+            if retrieval_lines:
+                sections.append("**Retrieval**<br>" + "<br>".join(retrieval_lines))
 
         if info and "search" in info:
             search = info["search"]
@@ -1324,7 +1324,7 @@ def server(input, output, session):
         current_endpoints = available_endpoints.get()
         current_run_info = run_info.get() or {}
         selected_endpoint_key = current_endpoint_key()
-        convo_id = current_active_convo_id() or None
+        conversation_id = current_active_conversation_id() or None
         actual_endpoint_key = selected_endpoint_key
         latest_user_prompt = str(user_input or "").strip()
         search_query = latest_user_prompt
@@ -1335,8 +1335,8 @@ def server(input, output, session):
             else selected_workflow_routing_id.get()
         ).strip()
         prompt_state = (
-            get_system_prompt_state(convo_id)
-            if convo_id
+            get_system_prompt_state(conversation_id)
+            if conversation_id
             else build_system_prompt_state()
         )
 
@@ -1346,9 +1346,9 @@ def server(input, output, session):
             if files_data.get("key") == file_upload_key.get()
             else None
         )
-        uploaded_context = build_uploaded_file_context(uploaded_files)
-        if uploaded_context and not workflow_routing_id:
-            user_input = f"{user_input}\n\n{uploaded_context}"
+        uploaded_source_text = build_uploaded_file_source_text(uploaded_files)
+        if uploaded_source_text and not workflow_routing_id:
+            user_input = f"{user_input}\n\n{uploaded_source_text}"
 
         system_prompt_input = _input_value(input, "systemPrompt")
         current_prompt = normalize_system_prompt(
@@ -1366,18 +1366,18 @@ def server(input, output, session):
             current_prompt=current_prompt,
             current_reasoning=current_reasoning,
         )
-        if convo_id and fork_reasons:
-            old_convo_id = convo_id
-            loaded_history = await fetch_convo_history(old_convo_id)
+        if conversation_id and fork_reasons:
+            old_conversation_id = conversation_id
+            loaded_history = await fetch_conversation_history(old_conversation_id)
             if isinstance(loaded_history, list):
                 forked_history = [
                     dict(message)
                     for message in loaded_history
                     if isinstance(message, dict) and message.get("role") != "system"
                 ]
-            convo_id = str(uuid.uuid4().hex[:12])
+            conversation_id = str(uuid.uuid4().hex[:12])
             prompt_state = set_system_prompt_state(
-                convo_id,
+                conversation_id,
                 prompt=current_prompt,
                 committed_prompt=current_prompt,
                 reasoning_effort=current_reasoning,
@@ -1385,13 +1385,13 @@ def server(input, output, session):
                 locked=False,
             )
             apply_system_prompt_view(prompt_state)
-            ui.update_text("convoID", value=convo_id, session=session)
+            ui.update_text("conversationID", value=conversation_id, session=session)
             await chat.append_message(
                 {
                     "role": "assistant",
                     "content": build_fork_notice(
-                        old_convo_id=old_convo_id,
-                        new_convo_id=convo_id,
+                        old_conversation_id=old_conversation_id,
+                        new_conversation_id=conversation_id,
                         reasons=fork_reasons,
                     ),
                 }
@@ -1416,8 +1416,8 @@ def server(input, output, session):
 
                 if fork_reasons:
                     workflow_history = forked_history
-                elif convo_id:
-                    loaded_history = await fetch_convo_history(convo_id)
+                elif conversation_id:
+                    loaded_history = await fetch_conversation_history(conversation_id)
                     workflow_history = (
                         loaded_history if isinstance(loaded_history, list) else []
                     )
@@ -1428,17 +1428,17 @@ def server(input, output, session):
                 payload = build_workflow_chat_run_payload(
                     spec,
                     latest_user_prompt=latest_user_prompt,
-                    conversation_context=format_workflow_conversation_context(
+                    thread_briefing=format_workflow_thread_briefing(
                         workflow_history
                     ),
-                    context=current_prompt,
-                    uploaded_context=uploaded_context,
+                    manual_source_text=current_prompt,
+                    uploaded_source_text=uploaded_source_text,
                     endpoint=endpoint_for_workflow,
                     reasoning_effort=current_reasoning,
-                    convo_id=convo_id or "",
+                    conversation_id=conversation_id or "",
                     search_provider=(
                         str(_input_value(input, "searchProvider") or "").strip()
-                        if workflow_routing_id == CONTEXTUAL_SEARCH_WORKFLOW_ID
+                        if workflow_routing_id == THREADED_SEARCH_WORKFLOW_ID
                         else ""
                     ),
                 )
@@ -1600,10 +1600,10 @@ def server(input, output, session):
                             return
 
                 await chat.append_message_stream(workflow_response_stream())
-                if convo_id and not bool(prompt_state.get("started")):
+                if conversation_id and not bool(prompt_state.get("started")):
                     apply_system_prompt_view(
                         set_system_prompt_state(
-                            convo_id,
+                            conversation_id,
                             prompt=current_prompt,
                             committed_prompt=current_prompt,
                             reasoning_effort=current_reasoning,
@@ -1630,11 +1630,11 @@ def server(input, output, session):
             try:
                 if fork_reasons:
                     query_refiner_history = forked_history
-                elif convo_id:
-                    query_refiner_history = await fetch_convo_history(convo_id)
+                elif conversation_id:
+                    query_refiner_history = await fetch_conversation_history(conversation_id)
                 else:
                     query_refiner_history = []
-                query_refiner_context = build_query_refiner_context(
+                query_refiner_source_text = build_query_refiner_source_text(
                     system_prompt=current_prompt,
                     history=query_refiner_history,
                     user_input=user_input,
@@ -1643,7 +1643,7 @@ def server(input, output, session):
                     query=search_query,
                     provider=selected_search_provider,
                     count=5,
-                    context=query_refiner_context,
+                    source_text=query_refiner_source_text,
                 )
                 search_state = build_search_success_state(search_response)
             except Exception as exc:
@@ -1664,7 +1664,7 @@ def server(input, output, session):
             merged_info = merge_run_info(metadata, search_state)
             run_info.set(merged_info)
 
-        rag_endpoint = _input_value(input, "ragEndpoint")
+        retrieval_endpoint = _input_value(input, "retrievalEndpoint")
         response_stream = stream_chat_response(
             endpoint_key=actual_endpoint_key,
             text=user_input,
@@ -1673,21 +1673,21 @@ def server(input, output, session):
             output_json=bool(_input_value(input, "outputJSON", False)),
             reasoning_effort=current_reasoning,
             output_reasoning=bool(_input_value(input, "outputReasoning", False)),
-            convo_id=convo_id,
+            conversation_id=conversation_id,
             current_routing_info=current_run_info.get("routing", {}),
             system_prompt=system_prompt_to_send,
             extra_turn_messages=extra_turn_messages,
-            rag_endpoint=rag_endpoint if rag_endpoint else None,
+            retrieval_endpoint=retrieval_endpoint if retrieval_endpoint else None,
             on_metadata=publish_run_info,
             on_send_button_state=send_button_state.set,
             on_runtime=last_runtime.set,
         )
         await chat.append_message_stream(response_stream)
 
-        if convo_id and not bool(prompt_state.get("started")):
+        if conversation_id and not bool(prompt_state.get("started")):
             apply_system_prompt_view(
                 set_system_prompt_state(
-                    convo_id,
+                    conversation_id,
                     prompt=current_prompt,
                     committed_prompt=current_prompt,
                     reasoning_effort=current_reasoning,
@@ -1711,7 +1711,7 @@ def server(input, output, session):
     def _manual_trace_refresh():
         with reactive.isolate():
             events = read_trace_events(
-                convo_id=str(input.traceConvoFilter() or ""),
+                conversation_id=str(input.traceConversationFilter() or ""),
                 trace_id=str(input.traceIDFilter() or ""),
                 endpoint=str(input.traceEndpointFilter() or ""),
                 max_events=int(input.traceMaxRows() or 200),
@@ -1724,9 +1724,9 @@ def server(input, output, session):
         )
 
     @reactive.Effect
-    @reactive.event(input.historyConvoSelector)
+    @reactive.event(input.historyConversationSelector)
     def _sync_history_selector_state():
-        history_selected_convo_id.set(str(input.historyConvoSelector() or "").strip())
+        history_selected_conversation_id.set(str(input.historyConversationSelector() or "").strip())
 
     @reactive.Effect
     @reactive.event(history_refresh_trigger)
@@ -1734,26 +1734,26 @@ def server(input, output, session):
         await update_history_selector()
 
     @render.ui
-    @reactive.event(input.historyConvoSelector, history_refresh_trigger)
+    @reactive.event(input.historyConversationSelector, history_refresh_trigger)
     async def historyBox():
-        convo_id = current_history_convo_id()
-        if not convo_id:
+        conversation_id = current_history_conversation_id()
+        if not conversation_id:
             return ui.card(
                 ui.markdown(
                     "**No conversation ID provided**\n\nEnter a conversation ID to view history."
                 ),
             )
 
-        convo_history = await fetch_convo_history(convo_id)
-        if not convo_history:
+        conversation_history = await fetch_conversation_history(conversation_id)
+        if not conversation_history:
             return ui.card(
                 ui.markdown(
-                    f"**No history found for conversation: {convo_id}**\n\nThis conversation may not exist or has no messages."
+                    f"**No history found for conversation: {conversation_id}**\n\nThis conversation may not exist or has no messages."
                 ),
             )
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        message_count = len(convo_history) if isinstance(convo_history, list) else None
+        message_count = len(conversation_history) if isinstance(conversation_history, list) else None
         return ui.card(
             ui.markdown(f"**Conversation History** *(refreshed at {timestamp})*"),
             (
@@ -1762,7 +1762,7 @@ def server(input, output, session):
                 else None
             ),
             ui.tags.pre(
-                format_history_json(convo_history),
+                format_history_json(conversation_history),
                 style=(
                     "max-height: 36rem; overflow: auto; white-space: pre-wrap; "
                     "overflow-wrap: anywhere; margin-bottom: 0;"

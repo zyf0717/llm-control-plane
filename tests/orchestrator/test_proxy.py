@@ -7,16 +7,17 @@ import json
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from src.logging_config import LOG_DIR_ENV
 from src.orchestrator import proxy_services as proxy_module
-from src.orchestrator.history_store import MemoryHistoryStore
+from src.orchestrator.conversation_store import MemoryConversationStore
 from src.orchestrator.proxy import app
 from src.orchestrator.request_processor import RequestProcessor
 from src.orchestrator.upstream_proxy import ProxyHandler
 from src.orchestrator.utils import HeaderManager
-from src.search.safety import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER
+from src.search.safety import EPHEMERAL_WEB_SEARCH_EVIDENCE_MARKER
 
 
 @pytest.fixture
@@ -26,12 +27,12 @@ def client():
 
 
 @pytest.fixture(autouse=True)
-def memory_history_store():
+def memory_conversation_store():
     """Install a fresh in-memory history store for each test."""
-    store = MemoryHistoryStore()
-    proxy_module.set_history_store(store)
+    store = MemoryConversationStore()
+    proxy_module.set_conversation_store(store)
     yield store
-    proxy_module.set_history_store(MemoryHistoryStore())
+    proxy_module.set_conversation_store(MemoryConversationStore())
 
 
 @pytest.fixture
@@ -213,7 +214,7 @@ class TestEndpointRouting:
         assert {event["status_code"] for event in trace_events} == {200}
 
     def test_custom_endpoint_stream_persists_assistant_and_trace_history(
-        self, client, memory_history_store, monkeypatch, tmp_path
+        self, client, memory_conversation_store, monkeypatch, tmp_path
     ):
         monkeypatch.setenv(LOG_DIR_ENV, str(tmp_path))
         mock_endpoints = [{"name": "test-endpoint", "url": "https://test.example.com"}]
@@ -229,7 +230,7 @@ class TestEndpointRouting:
 
             response = client.post(
                 "/test-endpoint",
-                headers={"X-Convo-ID": "session-stream"},
+                headers={"X-Conversation-ID": "session-stream"},
                 json={
                     "stream": True,
                     "messages": [{"role": "user", "content": "hello"}],
@@ -237,7 +238,7 @@ class TestEndpointRouting:
             )
 
         assert response.status_code == 200
-        assert memory_history_store.conversations["session-stream"] == [
+        assert memory_conversation_store.conversations["session-stream"] == [
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "Hello"},
         ]
@@ -248,25 +249,25 @@ class TestEndpointRouting:
             .splitlines()
         ]
         completed = [event for event in trace_events if event["phase"] == "completed"]
-        assert completed[0]["history"] == {
+        assert completed[0]["conversation"] == {
             "assistant_chars": 5,
             "assistant_persisted": True,
         }
 
     @pytest.mark.asyncio
     async def test_stream_history_finalization_survives_caller_cancellation(
-        self, memory_history_store, monkeypatch
+        self, memory_conversation_store, monkeypatch
     ):
         started = asyncio.Event()
         release = asyncio.Event()
-        original_append = memory_history_store.append_messages
+        original_append = memory_conversation_store.append_messages
 
-        async def delayed_append(convo_id, messages):
+        async def delayed_append(conversation_id, messages):
             started.set()
             await release.wait()
-            await original_append(convo_id, messages)
+            await original_append(conversation_id, messages)
 
-        monkeypatch.setattr(memory_history_store, "append_messages", delayed_append)
+        monkeypatch.setattr(memory_conversation_store, "append_messages", delayed_append)
 
         waiter = asyncio.create_task(
             RequestProcessor.finalize_stream_response(
@@ -279,19 +280,19 @@ class TestEndpointRouting:
             await waiter
 
         release.set()
-        if proxy_module.history_finalization_tasks:
+        if proxy_module.conversation_finalization_tasks:
             await asyncio.gather(
-                *proxy_module.history_finalization_tasks,
+                *proxy_module.conversation_finalization_tasks,
                 return_exceptions=True,
             )
 
-        assert memory_history_store.conversations["session-cancel"] == [
+        assert memory_conversation_store.conversations["session-cancel"] == [
             {"role": "assistant", "content": "Partial assistant"}
         ]
 
     @pytest.mark.asyncio
     async def test_stream_producer_persists_after_downstream_disconnect(
-        self, memory_history_store
+        self, memory_conversation_store
     ):
         release = asyncio.Event()
         request = Mock()
@@ -321,13 +322,13 @@ class TestEndpointRouting:
                 *proxy_module.stream_producer_tasks,
                 return_exceptions=True,
             )
-        if proxy_module.history_finalization_tasks:
+        if proxy_module.conversation_finalization_tasks:
             await asyncio.gather(
-                *proxy_module.history_finalization_tasks,
+                *proxy_module.conversation_finalization_tasks,
                 return_exceptions=True,
             )
 
-        assert memory_history_store.conversations["session-disconnect"] == [
+        assert memory_conversation_store.conversations["session-disconnect"] == [
             {"role": "assistant", "content": "FirstSecond"}
         ]
 
@@ -361,25 +362,25 @@ class TestConversationHistory:
     """Tests for conversation history functionality."""
 
     @pytest.mark.asyncio
-    async def test_conversation_history_basic(self, memory_history_store):
+    async def test_conversation_history_basic(self, memory_conversation_store):
         """Test basic conversation history tracking."""
-        convo_id = "test-convo"
+        conversation_id = "test-conversation"
         messages = [{"role": "user", "content": "Hello"}]
 
-        await memory_history_store.append_messages(convo_id, messages)
+        await memory_conversation_store.append_messages(conversation_id, messages)
 
-        assert await memory_history_store.get_conversation(convo_id) == messages
+        assert await memory_conversation_store.get_conversation(conversation_id) == messages
 
     @pytest.mark.asyncio
-    async def test_conversation_history_append(self, memory_history_store):
+    async def test_conversation_history_append(self, memory_conversation_store):
         """Test appending to existing conversation history."""
-        convo_id = "test-convo"
-        await memory_history_store.append_messages(
-            convo_id, [{"role": "assistant", "content": "Hi there!"}]
+        conversation_id = "test-conversation"
+        await memory_conversation_store.append_messages(
+            conversation_id, [{"role": "assistant", "content": "Hi there!"}]
         )
 
-        await memory_history_store.append_messages(
-            convo_id, [{"role": "user", "content": "How are you?"}]
+        await memory_conversation_store.append_messages(
+            conversation_id, [{"role": "user", "content": "How are you?"}]
         )
 
         expected_messages = [
@@ -387,7 +388,7 @@ class TestConversationHistory:
             {"role": "user", "content": "How are you?"},
         ]
         assert (
-            await memory_history_store.get_conversation(convo_id) == expected_messages
+            await memory_conversation_store.get_conversation(conversation_id) == expected_messages
         )
 
 
@@ -395,9 +396,9 @@ class TestRequestPreparation:
     """Tests for proxy request preparation logic."""
 
     @pytest.mark.asyncio
-    async def test_prepare_request_rewrites_latest_user_turn_with_rag_context(self):
+    async def test_prepare_request_rewrites_latest_user_turn_with_retrieval_context(self):
         request = Mock()
-        request.headers = {"X-RAG-Endpoint": "http://localhost:8100/api/retrieve"}
+        request.headers = {"X-Retrieval-Endpoint": "http://localhost:8100/api/retrieve"}
         request.body = AsyncMock(
             return_value=json.dumps(
                 {
@@ -410,7 +411,7 @@ class TestRequestPreparation:
             ).encode("utf-8")
         )
 
-        rag_user_content = """Retrieved reference excerpts:
+        retrieval_user_content = """Retrieved evidence excerpts:
 
 Source: doc-1
 Excerpt:
@@ -418,35 +419,35 @@ Retrieved context
 
 Current user question:
 Need context"""
-        rag_headers = {
-            "X-RAG-Injected": "true",
-            "X-RAG-Hits": "1",
+        retrieval_headers = {
+            "X-Retrieval-Injected": "true",
+            "X-Retrieval-Hits": "1",
         }
 
         with patch.object(
             RequestProcessor,
-            "_fetch_rag_message",
-            AsyncMock(return_value=(rag_user_content, rag_headers)),
+            "_fetch_retrieval_message",
+            AsyncMock(return_value=(retrieval_user_content, retrieval_headers)),
         ):
             body, response_headers = await RequestProcessor.prepare_request(request)
 
         assert body["messages"] == [
             {"role": "system", "content": "Base system"},
             {"role": "assistant", "content": "Prior answer"},
-            {"role": "user", "content": rag_user_content},
+            {"role": "user", "content": retrieval_user_content},
         ]
-        assert response_headers == rag_headers
+        assert response_headers == retrieval_headers
 
     @pytest.mark.asyncio
-    async def test_prepare_request_does_not_persist_rag_in_history(self):
-        await proxy_module.history_store.append_messages(
+    async def test_prepare_request_does_not_persist_retrieval_in_history(self):
+        await proxy_module.conversation_store.append_messages(
             "session-1", [{"role": "assistant", "content": "Earlier reply"}]
         )
 
         request = Mock()
         request.headers = {
-            "X-Convo-ID": "session-1",
-            "X-RAG-Endpoint": "http://localhost:8100/api/retrieve",
+            "X-Conversation-ID": "session-1",
+            "X-Retrieval-Endpoint": "http://localhost:8100/api/retrieve",
         }
         request.body = AsyncMock(
             return_value=json.dumps(
@@ -454,7 +455,7 @@ Need context"""
             ).encode("utf-8")
         )
 
-        rag_user_content = """Retrieved reference excerpts:
+        retrieval_user_content = """Retrieved evidence excerpts:
 
 Source: doc-1
 Excerpt:
@@ -464,16 +465,16 @@ Current user question:
 Current question"""
         with patch.object(
             RequestProcessor,
-            "_fetch_rag_message",
-            AsyncMock(return_value=(rag_user_content, {"X-RAG-Injected": "true"})),
+            "_fetch_retrieval_message",
+            AsyncMock(return_value=(retrieval_user_content, {"X-Retrieval-Injected": "true"})),
         ):
             body, _response_headers = await RequestProcessor.prepare_request(request)
 
         assert body["messages"] == [
             {"role": "assistant", "content": "Earlier reply"},
-            {"role": "user", "content": rag_user_content},
+            {"role": "user", "content": retrieval_user_content},
         ]
-        assert await proxy_module.history_store.get_conversation("session-1") == [
+        assert await proxy_module.conversation_store.get_conversation("session-1") == [
             {"role": "assistant", "content": "Earlier reply"},
             {"role": "user", "content": "Current question"},
         ]
@@ -482,7 +483,7 @@ Current question"""
     async def test_prepare_request_does_not_persist_reasoning_messages(self):
         request = Mock()
         request.headers = {
-            "X-Convo-ID": "session-2",
+            "X-Conversation-ID": "session-2",
             "X-Reasoning-Effort": "high",
         }
         request.body = AsyncMock(
@@ -493,13 +494,13 @@ Current question"""
 
         with patch.object(
             RequestProcessor,
-            "_fetch_rag_message",
+            "_fetch_retrieval_message",
             AsyncMock(return_value=(None, {})),
         ):
             body, _response_headers = await RequestProcessor.prepare_request(request)
 
         assert body["messages"][0] == {"role": "system", "content": "Reasoning: high"}
-        assert await proxy_module.history_store.get_conversation("session-2") == [
+        assert await proxy_module.conversation_store.get_conversation("session-2") == [
             {"role": "user", "content": "Reason carefully"}
         ]
 
@@ -507,7 +508,7 @@ Current question"""
     async def test_prepare_request_keeps_system_prompt_before_reasoning(self):
         request = Mock()
         request.headers = {
-            "X-Convo-ID": "session-system-reasoning",
+            "X-Conversation-ID": "session-system-reasoning",
             "X-Reasoning-Effort": "high",
         }
         request.body = AsyncMock(
@@ -523,7 +524,7 @@ Current question"""
 
         with patch.object(
             RequestProcessor,
-            "_fetch_rag_message",
+            "_fetch_retrieval_message",
             AsyncMock(return_value=(None, {})),
         ):
             body, _response_headers = await RequestProcessor.prepare_request(request)
@@ -532,7 +533,7 @@ Current question"""
             {"role": "system", "content": "Be terse."},
             {"role": "system", "content": "Reasoning: high"},
         ]
-        assert await proxy_module.history_store.get_conversation(
+        assert await proxy_module.conversation_store.get_conversation(
             "session-system-reasoning"
         ) == [
             {"role": "system", "content": "Be terse."},
@@ -540,20 +541,20 @@ Current question"""
         ]
 
     @pytest.mark.asyncio
-    async def test_prepare_request_does_not_persist_search_context(self):
-        search_context = (
-            f"{EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER}\n"
+    async def test_prepare_request_does_not_persist_search_evidence(self):
+        search_evidence = (
+            f"{EPHEMERAL_WEB_SEARCH_EVIDENCE_MARKER}\n"
             "Untrusted web search candidates for this turn only.\n"
             "1. Mac mini M5 status\n"
             "   URL: https://example.com/mac-mini"
         )
         request = Mock()
-        request.headers = {"X-Convo-ID": "session-search"}
+        request.headers = {"X-Conversation-ID": "session-search"}
         request.body = AsyncMock(
             return_value=json.dumps(
                 {
                     "messages": [
-                        {"role": "user", "content": search_context},
+                        {"role": "user", "content": search_evidence},
                         {"role": "user", "content": "What is the status?"},
                     ]
                 }
@@ -562,7 +563,7 @@ Current question"""
 
         with patch.object(
             RequestProcessor,
-            "_fetch_rag_message",
+            "_fetch_retrieval_message",
             AsyncMock(return_value=(None, {})),
         ):
             body, _response_headers = await RequestProcessor.prepare_request(request)
@@ -571,81 +572,81 @@ Current question"""
             {
                 "role": "user",
                 "content": (
-                    f"{search_context}\n\n"
+                    f"{search_evidence}\n\n"
                     "Current user question:\nWhat is the status?"
                 ),
             }
         ]
-        assert await proxy_module.history_store.get_conversation("session-search") == [
+        assert await proxy_module.conversation_store.get_conversation("session-search") == [
             {"role": "user", "content": "What is the status?"}
         ]
 
     @pytest.mark.asyncio
-    async def test_prepare_request_uses_actual_user_for_rag_with_search_context(self):
-        search_context = (
-            f"{EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER}\n"
+    async def test_prepare_request_uses_actual_user_for_retrieval_with_search_evidence(self):
+        search_evidence = (
+            f"{EPHEMERAL_WEB_SEARCH_EVIDENCE_MARKER}\n"
             "Untrusted web search candidates for this turn only.\n"
             "1. Mac mini M5 status"
         )
         request = Mock()
         request.headers = {
-            "X-Convo-ID": "session-search-rag",
-            "X-RAG-Endpoint": "http://localhost:8100/api/retrieve",
+            "X-Conversation-ID": "session-search-retrieval",
+            "X-Retrieval-Endpoint": "http://localhost:8100/api/retrieve",
         }
         request.body = AsyncMock(
             return_value=json.dumps(
                 {
                     "messages": [
-                        {"role": "user", "content": search_context},
+                        {"role": "user", "content": search_evidence},
                         {"role": "user", "content": "What is the status?"},
                     ]
                 }
             ).encode("utf-8")
         )
-        rag_messages_at_call = []
+        retrieval_messages_at_call = []
 
-        async def fetch_rag(messages, _rag_endpoint):
-            rag_messages_at_call.extend(dict(message) for message in messages)
+        async def fetch_rag(messages, _retrieval_endpoint):
+            retrieval_messages_at_call.extend(dict(message) for message in messages)
             return "Grounded user question", {}
 
-        with patch.object(RequestProcessor, "_fetch_rag_message", fetch_rag):
+        with patch.object(RequestProcessor, "_fetch_retrieval_message", fetch_rag):
             body, _response_headers = await RequestProcessor.prepare_request(request)
 
         assert (
-            RequestProcessor._latest_user_message(rag_messages_at_call)
+            RequestProcessor._latest_user_message(retrieval_messages_at_call)
             == "What is the status?"
         )
         assert body["messages"] == [
             {
                 "role": "user",
                 "content": (
-                    f"{search_context}\n\n"
+                    f"{search_evidence}\n\n"
                     "Current user question:\nGrounded user question"
                 ),
             }
         ]
-        assert await proxy_module.history_store.get_conversation(
-            "session-search-rag"
+        assert await proxy_module.conversation_store.get_conversation(
+            "session-search-retrieval"
         ) == [{"role": "user", "content": "What is the status?"}]
 
     @pytest.mark.asyncio
-    async def test_prepare_request_does_not_replay_stored_search_context(self):
-        search_context = (
-            f"{EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER}\n"
+    async def test_prepare_request_does_not_replay_stored_search_evidence(self):
+        search_evidence = (
+            f"{EPHEMERAL_WEB_SEARCH_EVIDENCE_MARKER}\n"
             "Untrusted web search candidates for this turn only.\n"
             "1. Prior result"
         )
-        await proxy_module.history_store.append_messages(
+        await proxy_module.conversation_store.append_messages(
             "session-contaminated",
             [
-                {"role": "system", "content": search_context},
+                {"role": "system", "content": search_evidence},
                 {"role": "user", "content": "Prior question"},
                 {"role": "assistant", "content": "Prior answer"},
             ],
         )
 
         request = Mock()
-        request.headers = {"X-Convo-ID": "session-contaminated"}
+        request.headers = {"X-Conversation-ID": "session-contaminated"}
         request.body = AsyncMock(
             return_value=json.dumps(
                 {"messages": [{"role": "user", "content": "Follow-up"}]}
@@ -654,7 +655,7 @@ Current question"""
 
         with patch.object(
             RequestProcessor,
-            "_fetch_rag_message",
+            "_fetch_retrieval_message",
             AsyncMock(return_value=(None, {})),
         ):
             body, _response_headers = await RequestProcessor.prepare_request(request)
@@ -666,16 +667,19 @@ Current question"""
         ]
 
     @pytest.mark.asyncio
-    async def test_prepare_request_context_mode_none_uses_only_current_payload(self):
-        await proxy_module.history_store.append_messages(
-            "session-none",
+    async def test_prepare_request_history_mode_conversation_replays_raw_messages(self):
+        await proxy_module.conversation_store.append_messages(
+            "session-conversation",
             [
                 {"role": "user", "content": "Prior question"},
                 {"role": "assistant", "content": "Prior answer"},
             ],
         )
         request = Mock()
-        request.headers = {"X-Convo-ID": "session-none", "X-Context-Mode": "none"}
+        request.headers = {
+            "X-Conversation-ID": "session-conversation",
+            "X-History-Mode": "conversation",
+        }
         request.body = AsyncMock(
             return_value=json.dumps(
                 {"messages": [{"role": "user", "content": "Current question"}]}
@@ -684,7 +688,37 @@ Current question"""
 
         with patch.object(
             RequestProcessor,
-            "_fetch_rag_message",
+            "_fetch_retrieval_message",
+            AsyncMock(return_value=(None, {})),
+        ):
+            body, _response_headers = await RequestProcessor.prepare_request(request)
+
+        assert body["messages"] == [
+            {"role": "user", "content": "Prior question"},
+            {"role": "assistant", "content": "Prior answer"},
+            {"role": "user", "content": "Current question"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_prepare_request_history_mode_none_uses_only_current_payload(self):
+        await proxy_module.conversation_store.append_messages(
+            "session-none",
+            [
+                {"role": "user", "content": "Prior question"},
+                {"role": "assistant", "content": "Prior answer"},
+            ],
+        )
+        request = Mock()
+        request.headers = {"X-Conversation-ID": "session-none", "X-History-Mode": "none"}
+        request.body = AsyncMock(
+            return_value=json.dumps(
+                {"messages": [{"role": "user", "content": "Current question"}]}
+            ).encode("utf-8")
+        )
+
+        with patch.object(
+            RequestProcessor,
+            "_fetch_retrieval_message",
             AsyncMock(return_value=(None, {})),
         ):
             body, _response_headers = await RequestProcessor.prepare_request(request)
@@ -692,16 +726,35 @@ Current question"""
         assert body["messages"] == [
             {"role": "user", "content": "Current question"}
         ]
-        assert await proxy_module.history_store.get_conversation("session-none") == [
+        assert await proxy_module.conversation_store.get_conversation("session-none") == [
             {"role": "user", "content": "Prior question"},
             {"role": "assistant", "content": "Prior answer"},
             {"role": "user", "content": "Current question"},
         ]
 
     @pytest.mark.asyncio
-    async def test_prepare_request_context_mode_compacted_uses_bounded_context(self):
-        await proxy_module.history_store.append_messages(
-            "session-compacted",
+    async def test_prepare_request_rejects_old_history_mode_value(self):
+        request = Mock()
+        request.headers = {
+            "X-Conversation-ID": "session-old-mode",
+            "X-History-Mode": "compacted",
+        }
+        request.body = AsyncMock(
+            return_value=json.dumps(
+                {"messages": [{"role": "user", "content": "Current question"}]}
+            ).encode("utf-8")
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            await RequestProcessor.prepare_request(request)
+
+        assert exc.value.status_code == 400
+        assert "unsupported history mode: compacted" in exc.value.detail
+
+    @pytest.mark.asyncio
+    async def test_prepare_request_history_mode_thread_uses_bounded_context(self):
+        await proxy_module.conversation_store.append_messages(
+            "session-thread",
             [
                 {"role": "system", "content": "Base system"},
                 {"role": "user", "content": "Old question"},
@@ -710,18 +763,18 @@ Current question"""
                 {"role": "assistant", "content": "Recent answer"},
             ],
         )
-        records = await proxy_module.history_store.get_conversation_message_records(
-            "session-compacted"
+        records = await proxy_module.conversation_store.get_conversation_message_records(
+            "session-thread"
         )
-        await proxy_module.history_store.upsert_compacted_conversation_state(
-            "session-compacted",
+        await proxy_module.conversation_store.upsert_thread_state(
+            "session-thread",
             covered_message_id=records[2]["id"],
-            state_text="compressed old state",
+            state_text="prior thread state",
         )
         request = Mock()
         request.headers = {
-            "X-Convo-ID": "session-compacted",
-            "X-Context-Mode": "compacted",
+            "X-Conversation-ID": "session-thread",
+            "X-History-Mode": "thread",
         }
         request.body = AsyncMock(
             return_value=json.dumps(
@@ -731,14 +784,14 @@ Current question"""
 
         with patch.object(
             RequestProcessor,
-            "_fetch_rag_message",
+            "_fetch_retrieval_message",
             AsyncMock(return_value=(None, {})),
         ):
             body, _response_headers = await RequestProcessor.prepare_request(request)
 
         assert body["messages"][0] == {"role": "system", "content": "Base system"}
         assert body["messages"][1]["role"] == "system"
-        assert "compressed old state" in body["messages"][1]["content"]
+        assert "prior thread state" in body["messages"][1]["content"]
         assert "Recent answer" in body["messages"][1]["content"]
         assert "Current question" not in body["messages"][1]["content"]
         assert body["messages"][-1] == {
@@ -746,8 +799,8 @@ Current question"""
             "content": "Current question",
         }
         assert {"role": "user", "content": "Old question"} not in body["messages"]
-        assert await proxy_module.history_store.get_conversation(
-            "session-compacted"
+        assert await proxy_module.conversation_store.get_conversation(
+            "session-thread"
         ) == [
             {"role": "system", "content": "Base system"},
             {"role": "user", "content": "Old question"},
@@ -757,24 +810,30 @@ Current question"""
             {"role": "user", "content": "Current question"},
         ]
 
-    def test_normalize_rag_endpoint_targets_context_route(self):
+    def test_normalize_retrieval_endpoint_targets_external_context_route(self):
         assert (
-            RequestProcessor._normalize_rag_endpoint(
+            RequestProcessor._normalize_retrieval_endpoint(
                 "http://localhost:8100/api/retrieve"
             )
             == "http://localhost:8100/api/retrieve/context"
         )
         assert (
-            RequestProcessor._normalize_rag_endpoint("localhost:8100")
+            RequestProcessor._normalize_retrieval_endpoint("localhost:8100")
             == "http://localhost:8100/api/retrieve/context"
         )
 
+    def test_normalize_retrieval_endpoint_rejects_internal_evidence_route(self):
+        with pytest.raises(ValueError, match="/api/retrieve/context"):
+            RequestProcessor._normalize_retrieval_endpoint(
+                "http://localhost:8100/api/retrieve/evidence"
+            )
+
     @pytest.mark.asyncio
-    async def test_prepare_request_rewrites_only_latest_user_turn_when_rag_is_present(
+    async def test_prepare_request_rewrites_only_latest_user_turn_when_retrieval_is_present(
         self,
     ):
         request = Mock()
-        request.headers = {"X-RAG-Endpoint": "http://localhost:8100/api/retrieve"}
+        request.headers = {"X-Retrieval-Endpoint": "http://localhost:8100/api/retrieve"}
         request.body = AsyncMock(
             return_value=json.dumps(
                 {
@@ -785,7 +844,7 @@ Current question"""
             ).encode("utf-8")
         )
 
-        rag_user_content = """[Retrieved reference excerpts]
+        retrieval_user_content = """[Retrieved evidence excerpts]
 
 Source: doc-1
 Excerpt:
@@ -795,19 +854,19 @@ Definition text
 Need context"""
         with patch.object(
             RequestProcessor,
-            "_fetch_rag_message",
-            AsyncMock(return_value=(rag_user_content, {"X-RAG-Injected": "true"})),
+            "_fetch_retrieval_message",
+            AsyncMock(return_value=(retrieval_user_content, {"X-Retrieval-Injected": "true"})),
         ):
             body, _response_headers = await RequestProcessor.prepare_request(request)
 
         assert body["messages"][0] == {
             "role": "user",
-            "content": rag_user_content,
+            "content": retrieval_user_content,
         }
         assert all(isinstance(message, dict) for message in body["messages"])
 
     @pytest.mark.asyncio
-    async def test_fetch_rag_message_returns_none_without_grounded_user_message(self):
+    async def test_fetch_retrieval_message_returns_none_without_grounded_user_message(self):
         mock_response = Mock()
         mock_response.raise_for_status = Mock()
         mock_response.json.return_value = {
@@ -820,17 +879,17 @@ Need context"""
             mock_client_class.return_value.__aenter__.return_value = mock_client
             mock_client.post.return_value = mock_response
 
-            rag_user_content, rag_headers = await RequestProcessor._fetch_rag_message(
+            retrieval_user_content, retrieval_headers = await RequestProcessor._fetch_retrieval_message(
                 [{"role": "user", "content": "Need context"}],
                 "http://localhost:8100/api/retrieve",
             )
 
-        assert rag_user_content is None
-        assert rag_headers["X-RAG-Injected"] == "false"
-        assert rag_headers["X-RAG-Reason"] == "empty-grounded-user-message"
+        assert retrieval_user_content is None
+        assert retrieval_headers["X-Retrieval-Injected"] == "false"
+        assert retrieval_headers["X-Retrieval-Reason"] == "empty-grounded-user-message"
 
     @pytest.mark.asyncio
-    async def test_fetch_rag_message_uses_grounded_user_message_from_context_response(
+    async def test_fetch_retrieval_message_uses_grounded_user_message_from_external_response(
         self,
     ):
         mock_response = Mock()
@@ -840,7 +899,7 @@ Need context"""
                 {"chunk_id": "chunk-1", "content": "Strong semantic match"},
                 {"chunk_id": "chunk-2", "content": "Another match"},
             ],
-            "grounded_user_message": """[Retrieved reference excerpts]
+            "grounded_user_message": """[Retrieved evidence excerpts]
 
 Source: chunk-1
 Excerpt:
@@ -857,7 +916,7 @@ Need context""",
             mock_client_class.return_value.__aenter__.return_value = mock_client
             mock_client.post.return_value = mock_response
 
-            rag_user_content, rag_headers = await RequestProcessor._fetch_rag_message(
+            retrieval_user_content, retrieval_headers = await RequestProcessor._fetch_retrieval_message(
                 [{"role": "user", "content": "Need context"}],
                 "http://localhost:8100/api/retrieve",
             )
@@ -867,18 +926,18 @@ Need context""",
         post_kwargs = mock_client.post.await_args.kwargs
         assert post_args[0] == "http://localhost:8100/api/retrieve/context"
         assert post_kwargs["json"] == {"query": "Need context", "limit": 10}
-        assert rag_user_content is not None
-        assert "Strong semantic match" in rag_user_content
-        assert rag_headers == {
-            "X-RAG-Endpoint": "http://localhost:8100/api/retrieve/context",
-            "X-RAG-Hits": "2",
-            "X-RAG-Injected": "true",
-            "X-RAG-Mode": "hybrid",
-            "X-RAG-Truncated": "true",
+        assert retrieval_user_content is not None
+        assert "Strong semantic match" in retrieval_user_content
+        assert retrieval_headers == {
+            "X-Retrieval-Endpoint": "http://localhost:8100/api/retrieve/context",
+            "X-Retrieval-Hits": "2",
+            "X-Retrieval-Injected": "true",
+            "X-Retrieval-Mode": "hybrid",
+            "X-Retrieval-Truncated": "true",
         }
 
     @pytest.mark.asyncio
-    async def test_fetch_rag_message_logs_context_summary(self, caplog):
+    async def test_fetch_retrieval_message_logs_evidence_summary(self, caplog):
         mock_response = Mock()
         mock_response.raise_for_status = Mock()
         mock_response.json.return_value = {
@@ -903,13 +962,13 @@ Need context""",
             mock_client.post.return_value = mock_response
 
             with caplog.at_level("INFO"):
-                await RequestProcessor._fetch_rag_message(
+                await RequestProcessor._fetch_retrieval_message(
                     [{"role": "user", "content": "Need context"}],
                     "http://localhost:8100/api/retrieve",
                 )
 
         assert (
-            "RAG context retrieved 2 blocks via http://localhost:8100/api/retrieve/context"
+            "Retrieval evidence retrieved 2 blocks via http://localhost:8100/api/retrieve/context"
             in caplog.text
         )
         assert "mode=hybrid" in caplog.text
@@ -919,13 +978,13 @@ Need context""",
 class TestConversationHistoryEndpoint:
 
     def test_list_conversations_returns_most_recent_first(
-        self, client, memory_history_store
+        self, client, memory_conversation_store
     ):
-        memory_history_store.updated_at = {
+        memory_conversation_store.updated_at = {
             "older": "2026-05-20T10:00:00+00:00",
             "newer": "2026-05-21T10:00:00+00:00",
         }
-        memory_history_store.conversations = {
+        memory_conversation_store.conversations = {
             "older": [{"role": "user", "content": "first"}],
             "newer": [
                 {"role": "user", "content": "second"},
@@ -938,54 +997,54 @@ class TestConversationHistoryEndpoint:
         assert response.status_code == 200
         assert response.json() == [
             {
-                "convo_id": "newer",
+                "conversation_id": "newer",
                 "last_updated": "2026-05-21T10:00:00+00:00",
                 "message_count": 2,
             },
             {
-                "convo_id": "older",
+                "conversation_id": "older",
                 "last_updated": "2026-05-20T10:00:00+00:00",
                 "message_count": 1,
             },
         ]
 
     def test_retrieve_conversation_returns_404_for_unknown_id(self, client):
-        response = client.post("/conversations/retrieve", json={"convo_id": "missing"})
+        response = client.post("/conversations/retrieve", json={"conversation_id": "missing"})
 
         assert response.status_code == 404
         assert response.json()["detail"] == "Conversation 'missing' not found"
 
-    def test_retrieve_conversation_omits_search_context(
-        self, client, memory_history_store
+    def test_retrieve_conversation_omits_search_evidence(
+        self, client, memory_conversation_store
     ):
-        search_context = (
-            f"{EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER}\n"
+        search_evidence = (
+            f"{EPHEMERAL_WEB_SEARCH_EVIDENCE_MARKER}\n"
             "Untrusted web search candidates for this turn only.\n"
             "1. Prior result"
         )
-        memory_history_store.conversations = {
+        memory_conversation_store.conversations = {
             "session-contaminated": [
-                {"role": "system", "content": search_context},
+                {"role": "system", "content": search_evidence},
                 {"role": "user", "content": "Prior question"},
             ]
         }
-        memory_history_store.updated_at = {
+        memory_conversation_store.updated_at = {
             "session-contaminated": "2026-06-07T00:00:00+00:00"
         }
 
         response = client.post(
-            "/conversations/retrieve", json={"convo_id": "session-contaminated"}
+            "/conversations/retrieve", json={"conversation_id": "session-contaminated"}
         )
 
         assert response.status_code == 200
         assert response.json() == [{"role": "user", "content": "Prior question"}]
 
-    def test_retrieve_conversation_state_returns_reasoning_and_route(
-        self, client, memory_history_store
+    def test_retrieve_conversation_control_state_returns_reasoning_and_route(
+        self, client, memory_conversation_store
     ):
-        memory_history_store.conversation_states = {
+        memory_conversation_store.conversation_control_states = {
             "session-state": {
-                "convo_id": "session-state",
+                "conversation_id": "session-state",
                 "route_endpoint": "primary",
                 "reasoning_effort": "high",
                 "slots": {},
@@ -994,7 +1053,7 @@ class TestConversationHistoryEndpoint:
         }
 
         response = client.post(
-            "/conversations/state", json={"convo_id": "session-state"}
+            "/conversations/state", json={"conversation_id": "session-state"}
         )
 
         assert response.status_code == 200
@@ -1002,10 +1061,10 @@ class TestConversationHistoryEndpoint:
         assert response.json()["reasoning_effort"] == "high"
 
     @pytest.mark.asyncio
-    async def test_update_history_persists_assistant_reply(self):
-        await RequestProcessor.update_history("session-3", "Assistant reply")
+    async def test_update_conversation_persists_assistant_reply(self):
+        await RequestProcessor.update_conversation("session-3", "Assistant reply")
 
-        assert await proxy_module.history_store.get_conversation("session-3") == [
+        assert await proxy_module.conversation_store.get_conversation("session-3") == [
             {"role": "assistant", "content": "Assistant reply"}
         ]
 
@@ -1013,7 +1072,7 @@ class TestConversationHistoryEndpoint:
 class TestCanonicalConversationState:
     @pytest.mark.asyncio
     async def test_replay_payload_rejected_before_append(self):
-        await proxy_module.history_store.append_messages(
+        await proxy_module.conversation_store.append_messages(
             "session-replay",
             [
                 {"role": "user", "content": "First"},
@@ -1021,7 +1080,7 @@ class TestCanonicalConversationState:
             ],
         )
         request = Mock()
-        request.headers = {"X-Convo-ID": "session-replay"}
+        request.headers = {"X-Conversation-ID": "session-replay"}
         request.body = AsyncMock(
             return_value=json.dumps(
                 {
@@ -1036,36 +1095,36 @@ class TestCanonicalConversationState:
 
         with patch.object(
             RequestProcessor,
-            "_fetch_rag_message",
+            "_fetch_retrieval_message",
             AsyncMock(return_value=(None, {})),
         ):
             with pytest.raises(Exception) as exc_info:
                 await RequestProcessor.prepare_request(request)
 
         assert getattr(exc_info.value, "status_code", None) == 400
-        assert await proxy_module.history_store.get_conversation("session-replay") == [
+        assert await proxy_module.conversation_store.get_conversation("session-replay") == [
             {"role": "user", "content": "First"},
             {"role": "assistant", "content": "Answer"},
         ]
 
     @pytest.mark.asyncio
-    async def test_ephemeral_search_and_rag_messages_do_not_create_replay_prefix(self):
-        await proxy_module.history_store.append_messages(
+    async def test_ephemeral_search_and_retrieval_messages_do_not_create_replay_prefix(self):
+        await proxy_module.conversation_store.append_messages(
             "session-ephemeral", [{"role": "user", "content": "Prior"}]
         )
         request = Mock()
-        request.headers = {"X-Convo-ID": "session-ephemeral"}
+        request.headers = {"X-Conversation-ID": "session-ephemeral"}
         request.body = AsyncMock(
             return_value=json.dumps(
                 {
                     "messages": [
                         {
                             "role": "user",
-                            "content": f"{EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER}\nturn-local search",
+                            "content": f"{EPHEMERAL_WEB_SEARCH_EVIDENCE_MARKER}\nturn-local search",
                         },
                         {
                             "role": "user",
-                            "content": "[Retrieved reference excerpts]\nturn-local rag",
+                            "content": "[Retrieved reference excerpts]\nturn-local retrieval",
                         },
                         {"role": "user", "content": "Follow-up"},
                     ]
@@ -1075,13 +1134,13 @@ class TestCanonicalConversationState:
 
         with patch.object(
             RequestProcessor,
-            "_fetch_rag_message",
+            "_fetch_retrieval_message",
             AsyncMock(return_value=(None, {})),
         ):
             body, _headers = await RequestProcessor.prepare_request(request)
 
         assert body["messages"][-1] == {"role": "user", "content": "Follow-up"}
-        assert await proxy_module.history_store.get_conversation("session-ephemeral") == [
+        assert await proxy_module.conversation_store.get_conversation("session-ephemeral") == [
             {"role": "user", "content": "Prior"},
             {"role": "user", "content": "Follow-up"},
         ]
@@ -1102,12 +1161,12 @@ class TestCanonicalConversationState:
 
             first = client.post(
                 "/primary",
-                headers={"X-Convo-ID": "session-route"},
+                headers={"X-Conversation-ID": "session-route"},
                 json={"messages": [{"role": "user", "content": "one"}]},
             )
             second = client.post(
                 "/secondary",
-                headers={"X-Convo-ID": "session-route"},
+                headers={"X-Conversation-ID": "session-route"},
                 json={"messages": [{"role": "user", "content": "two"}]},
             )
 
@@ -1115,7 +1174,7 @@ class TestCanonicalConversationState:
         assert second.status_code == 409
 
     def test_direct_endpoint_switch_with_opt_in_replays_history(
-        self, client, memory_history_store
+        self, client, memory_conversation_store
     ):
         mock_endpoints = [
             {"name": "primary", "url": "https://primary.example.com"},
@@ -1132,13 +1191,13 @@ class TestCanonicalConversationState:
 
             first = client.post(
                 "/primary",
-                headers={"X-Convo-ID": "session-route-switch"},
+                headers={"X-Conversation-ID": "session-route-switch"},
                 json={"messages": [{"role": "user", "content": "one"}]},
             )
             second = client.post(
                 "/secondary",
                 headers={
-                    "X-Convo-ID": "session-route-switch",
+                    "X-Conversation-ID": "session-route-switch",
                     "X-Allow-Route-Switch": "true",
                 },
                 json={"messages": [{"role": "user", "content": "two"}]},
@@ -1150,10 +1209,10 @@ class TestCanonicalConversationState:
         assert second.headers["x-route-previous"] == "primary"
         assert second.headers["x-route-decision"] == "secondary"
         assert second.headers["x-warning"] == proxy_module.SWITCH_WARNING_MESSAGE
-        assert memory_history_store.conversation_states["session-route-switch"][
+        assert memory_conversation_store.conversation_control_states["session-route-switch"][
             "route_endpoint"
         ] == "secondary"
-        persisted = memory_history_store.conversations["session-route-switch"]
+        persisted = memory_conversation_store.conversations["session-route-switch"]
         assert persisted == [
             {"role": "user", "content": "one"},
             {"role": "assistant", "content": "ok"},
@@ -1185,7 +1244,7 @@ class TestCanonicalConversationState:
             first = client.post(
                 "/primary",
                 headers={
-                    "X-Convo-ID": "session-reasoning-conflict",
+                    "X-Conversation-ID": "session-reasoning-conflict",
                     "X-Reasoning-Effort": "low",
                 },
                 json={"messages": [{"role": "user", "content": "one"}]},
@@ -1193,7 +1252,7 @@ class TestCanonicalConversationState:
             second = client.post(
                 "/primary",
                 headers={
-                    "X-Convo-ID": "session-reasoning-conflict",
+                    "X-Conversation-ID": "session-reasoning-conflict",
                     "X-Reasoning-Effort": "high",
                 },
                 json={"messages": [{"role": "user", "content": "two"}]},
@@ -1203,7 +1262,7 @@ class TestCanonicalConversationState:
         assert second.status_code == 409
 
     def test_reasoning_switch_with_opt_in_updates_state(
-        self, client, memory_history_store
+        self, client, memory_conversation_store
     ):
         mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
         with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
@@ -1218,7 +1277,7 @@ class TestCanonicalConversationState:
             first = client.post(
                 "/primary",
                 headers={
-                    "X-Convo-ID": "session-reasoning-switch",
+                    "X-Conversation-ID": "session-reasoning-switch",
                     "X-Reasoning-Effort": "low",
                 },
                 json={"messages": [{"role": "user", "content": "one"}]},
@@ -1226,7 +1285,7 @@ class TestCanonicalConversationState:
             second = client.post(
                 "/primary",
                 headers={
-                    "X-Convo-ID": "session-reasoning-switch",
+                    "X-Conversation-ID": "session-reasoning-switch",
                     "X-Reasoning-Effort": "high",
                     "X-Allow-Reasoning-Switch": "true",
                 },
@@ -1239,7 +1298,7 @@ class TestCanonicalConversationState:
         assert second.headers["x-reasoning-previous"] == "low"
         assert second.headers["x-reasoning-effort"] == "high"
         assert second.headers["x-warning"] == proxy_module.SWITCH_WARNING_MESSAGE
-        assert memory_history_store.conversation_states["session-reasoning-switch"][
+        assert memory_conversation_store.conversation_control_states["session-reasoning-switch"][
             "reasoning_effort"
         ] == "high"
         second_body = mock_client.post.call_args.kwargs["json"]
@@ -1263,14 +1322,14 @@ class TestCanonicalConversationState:
             first = client.post(
                 "/primary",
                 headers={
-                    "X-Convo-ID": "session-reasoning",
+                    "X-Conversation-ID": "session-reasoning",
                     "X-Reasoning-Effort": "high",
                 },
                 json={"messages": [{"role": "user", "content": "one"}]},
             )
             second = client.post(
                 "/primary",
-                headers={"X-Convo-ID": "session-reasoning"},
+                headers={"X-Conversation-ID": "session-reasoning"},
                 json={"messages": [{"role": "user", "content": "two"}]},
             )
 
@@ -1284,7 +1343,7 @@ class TestCanonicalConversationState:
             "content": "Reasoning: high",
         }
 
-    def test_no_convo_id_keeps_stateless_behavior(self, client):
+    def test_no_conversation_id_keeps_stateless_behavior(self, client):
         mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
         with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
             "httpx.AsyncClient"
@@ -1302,10 +1361,10 @@ class TestCanonicalConversationState:
             )
 
         assert response.status_code == 200
-        assert proxy_module.history_store.conversations == {}
-        assert proxy_module.history_store.conversation_states == {}
+        assert proxy_module.conversation_store.conversations == {}
+        assert proxy_module.conversation_store.conversation_control_states == {}
 
-    def test_skip_history_header_bypasses_state_and_message_persistence(self, client):
+    def test_skip_conversation_header_bypasses_state_and_message_persistence(self, client):
         mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
         with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
             "httpx.AsyncClient"
@@ -1319,18 +1378,18 @@ class TestCanonicalConversationState:
             response = client.post(
                 "/primary",
                 headers={
-                    "X-Convo-ID": "session-skip",
-                    "X-LLMCP-Skip-History": "true",
+                    "X-Conversation-ID": "session-skip",
+                    "X-LLMCP-Skip-Conversation": "true",
                     "X-Reasoning-Effort": "high",
                 },
                 json={"messages": [{"role": "user", "content": "transient"}]},
             )
 
         assert response.status_code == 200
-        assert response.headers["x-history-skipped"] == "true"
-        assert "x-convo-id" not in response.headers
-        assert proxy_module.history_store.conversations == {}
-        assert proxy_module.history_store.conversation_states == {}
+        assert response.headers["x-conversation-skipped"] == "true"
+        assert "x-conversation-id" not in response.headers
+        assert proxy_module.conversation_store.conversations == {}
+        assert proxy_module.conversation_store.conversation_control_states == {}
         upstream_body = mock_client.post.call_args.kwargs["json"]
         assert upstream_body["messages"] == [
             {"role": "system", "content": "Reasoning: high"},
@@ -1361,7 +1420,7 @@ class TestCanonicalConversationState:
 
             response = client.post(
                 "/llama",
-                headers={"X-Convo-ID": "session-slot"},
+                headers={"X-Conversation-ID": "session-slot"},
                 json={"messages": [{"role": "user", "content": "slot me"}]},
             )
 
@@ -1395,7 +1454,7 @@ class TestCanonicalConversationState:
 
             response = client.post(
                 "/not-llama",
-                headers={"X-Convo-ID": "session-non-llama"},
+                headers={"X-Conversation-ID": "session-non-llama"},
                 json={"messages": [{"role": "user", "content": "hello"}]},
             )
 

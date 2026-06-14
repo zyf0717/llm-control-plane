@@ -7,12 +7,12 @@ from .query_refiner import (
     SearchQueryRefinerConfig,
 )
 from .reranker import SearchReranker, SearchRerankerConfig, SearchReranking
-from .safety import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER, wrap_search_results
+from .safety import EPHEMERAL_WEB_SEARCH_EVIDENCE_MARKER, wrap_search_results
 from .search_router import SearchConfig, SearchProviderConfig, SearchRouter
 from .types import SearchArgs, SearchResponse, SearchResult
 
 __all__ = [
-    "EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER",
+    "EPHEMERAL_WEB_SEARCH_EVIDENCE_MARKER",
     "SearchArgs",
     "SearchConfig",
     "SearchProviderConfig",

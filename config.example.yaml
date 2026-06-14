@@ -16,10 +16,10 @@ endpoints:
 dashboard:
   display_timezone: "Asia/Singapore"
 
-rag:
+retrieval:
   default_endpoint: "http://localhost:8100/api/retrieve/context"
   endpoints:
-    - name: "local-rag"
+    - name: "local-retrieval"
       retrieve_url: "http://localhost:8100/api/retrieve/context"
       health_url: "http://localhost:8100/api/health"
   top_k: 10
@@ -30,7 +30,7 @@ search:
   query_refiner_model: "search-query-refiner"
   query_refiner_enabled: false
   query_refiner_timeout_ms: 7000
-  query_refiner_max_context_chars: 12000
+  query_refiner_max_source_chars: 12000
   query_refiner_max_output_tokens: 512
   query_refiner_max_queries: 1
   reranker_model_endpoint: ""
@@ -39,7 +39,7 @@ search:
   reranker_model: "search-reranker"
   reranker_enabled: false
   reranker_timeout_ms: 7000
-  reranker_max_context_chars: 12000
+  reranker_max_source_chars: 12000
   reranker_max_candidates: 20
   reranker_max_output_tokens: 1024
   search_max_total_results: 10

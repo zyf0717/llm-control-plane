@@ -10,10 +10,10 @@ from src.logging_config import configure_logging
 from src.search import build_search_router
 
 from .config import CONFIG_FILE, load_config
-from .history_store import (
-    HistoryStore,
-    MemoryHistoryStore,
-    build_history_store_from_env,
+from .conversation_store import (
+    ConversationStore,
+    MemoryConversationStore,
+    build_conversation_store_from_env,
 )
 from .utils import HeaderManager
 from .workflow import (
@@ -28,8 +28,8 @@ configure_logging()
 
 config = load_config(CONFIG_FILE)
 endpoints = config.get("endpoints", [])
-rag_config = config.get("rag", {})
-RAG_TOP_K = int(rag_config.get("top_k", 3))
+retrieval_config = config.get("retrieval", {})
+RETRIEVAL_TOP_K = int(retrieval_config.get("top_k", 3))
 search_service = build_search_router(
     config.get("search", {}),
     query_refiner_headers=HeaderManager.create_auth_headers(),
@@ -37,13 +37,13 @@ search_service = build_search_router(
 
 logger = logging.getLogger(__name__)
 
-history_store: HistoryStore = MemoryHistoryStore()
+conversation_store: ConversationStore = MemoryConversationStore()
 workflow_registry = WorkflowRegistry()
 workflow_store: SQLiteWorkflowStore = build_workflow_store_from_env()
 workflow_executor: Optional[WorkflowExecutor] = None
 reachable_endpoints: list[str] = []
 VALID_REASONING_EFFORTS = {"low", "medium", "high"}
-history_finalization_tasks: set[asyncio.Task] = set()
+conversation_finalization_tasks: set[asyncio.Task] = set()
 stream_producer_tasks: set[asyncio.Task] = set()
 SWITCH_WARNING_MESSAGE = (
     "Conversation endpoint/reasoning changed; full history was replayed to the "
@@ -51,17 +51,17 @@ SWITCH_WARNING_MESSAGE = (
 )
 
 
-def track_history_finalization(task: asyncio.Task) -> asyncio.Task:
-    history_finalization_tasks.add(task)
+def track_conversation_finalization(task: asyncio.Task) -> asyncio.Task:
+    conversation_finalization_tasks.add(task)
 
     def discard_done(done_task: asyncio.Task) -> None:
-        history_finalization_tasks.discard(done_task)
+        conversation_finalization_tasks.discard(done_task)
         if done_task.cancelled():
             return
         exc = done_task.exception()
         if exc:
             logger.error(
-                "Background history finalization failed",
+                "Background conversation finalization failed",
                 exc_info=(type(exc), exc, exc.__traceback__),
             )
 
@@ -87,18 +87,18 @@ def track_stream_producer(task: asyncio.Task) -> asyncio.Task:
     return task
 
 
-async def drain_history_finalizations(timeout: float = 5.0) -> None:
-    if not history_finalization_tasks:
+async def drain_conversation_finalizations(timeout: float = 5.0) -> None:
+    if not conversation_finalization_tasks:
         return
     try:
         await asyncio.wait_for(
-            asyncio.gather(*history_finalization_tasks, return_exceptions=True),
+            asyncio.gather(*conversation_finalization_tasks, return_exceptions=True),
             timeout=timeout,
         )
     except asyncio.TimeoutError:
         logger.warning(
-            "Timed out waiting for %d history finalization task(s)",
-            len(history_finalization_tasks),
+            "Timed out waiting for %d conversation finalization task(s)",
+            len(conversation_finalization_tasks),
         )
 
 
@@ -117,9 +117,9 @@ async def drain_stream_producers(timeout: float = 5.0) -> None:
         )
 
 
-def set_history_store(store: HistoryStore) -> None:
-    global history_store
-    history_store = store
+def set_conversation_store(store: ConversationStore) -> None:
+    global conversation_store
+    conversation_store = store
 
 
 def set_workflow_components(
@@ -137,22 +137,22 @@ def set_workflow_components(
         workflow_executor = executor
 
 
-async def initialize_history_store() -> None:
-    global history_store
-    candidate = build_history_store_from_env()
+async def initialize_conversation_store() -> None:
+    global conversation_store
+    candidate = build_conversation_store_from_env()
     await candidate.initialize()
-    history_store = candidate
-    logger.info("Conversation history backend: %s", history_store.backend_name)
+    conversation_store = candidate
+    logger.info("Conversation history backend: %s", conversation_store.backend_name)
 
 
-async def startup_history_store() -> None:
-    await initialize_history_store()
+async def startup_conversation_store() -> None:
+    await initialize_conversation_store()
 
 
-async def shutdown_history_store() -> None:
+async def shutdown_conversation_store() -> None:
     await drain_stream_producers()
-    await drain_history_finalizations()
-    await history_store.close()
+    await drain_conversation_finalizations()
+    await conversation_store.close()
 
 
 async def initialize_workflow_components() -> None:

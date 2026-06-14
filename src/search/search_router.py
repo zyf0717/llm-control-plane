@@ -306,7 +306,11 @@ class SearchRouter:
         reranking = await self.reranker.rerank(
             query=args.query,
             results=response.results,
-            context=args.rerank_context if args.rerank_context is not None else args.context,
+            source_text=(
+                args.rerank_source_text
+                if args.rerank_source_text is not None
+                else args.source_text
+            ),
         )
         response.results = reranking.results
         response.reranking = reranking.to_public_dict()

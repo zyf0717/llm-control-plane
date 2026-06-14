@@ -4,7 +4,7 @@ import json
 from fastapi.testclient import TestClient
 
 from src.orchestrator import proxy_services as proxy_module
-from src.orchestrator.history_store import MemoryHistoryStore
+from src.orchestrator.conversation_store import MemoryConversationStore
 from src.orchestrator.proxy import app
 from src.orchestrator.workflow.executor import WorkflowExecutor
 from src.orchestrator.workflow.registry import WorkflowRegistry
@@ -79,15 +79,15 @@ def test_workflow_api_create_advance_and_get(tmp_path):
             json={
                 "params": {"goal": "ship"},
                 "endpoint": "node-a",
-                "rag_endpoint": "http://rag/api/retrieve/context",
+                "retrieval_endpoint": "http://retrieval/api/retrieve/context",
                 "search_provider": "duckduckgo_html",
             },
         )
         assert create_response.status_code == 200
         run_id = create_response.json()["run_id"]
         assert (
-            create_response.json()["snapshot"]["run"]["rag_endpoint"]
-            == "http://rag/api/retrieve/context"
+            create_response.json()["snapshot"]["run"]["retrieval_endpoint"]
+            == "http://retrieval/api/retrieve/context"
         )
         assert (
             create_response.json()["snapshot"]["run"]["search_provider"]
@@ -210,26 +210,26 @@ def test_workflow_api_delete_runs_clears_history(tmp_path):
         assert client.get("/workflow-runs").json()["runs"] == []
 
 
-def test_workflow_api_compacted_context_enriches_params_and_keeps_convo_separate(
+def test_workflow_api_thread_mode_enriches_params_and_keeps_conversation_separate(
     tmp_path,
 ):
     write_workflow(tmp_path / "sample.yaml")
     registry = WorkflowRegistry(tmp_path)
     registry.load()
     workflow_store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
-    history_store = MemoryHistoryStore()
+    conversation_store = MemoryConversationStore()
 
-    async def upsert_compacted_state():
-        await history_store.upsert_compacted_conversation_state(
+    async def upsert_thread_state():
+        await conversation_store.upsert_thread_state(
             "main-thread",
             covered_message_id=records[0]["id"],
-            state_text="prior compacted state",
+            state_text="prior thread state",
         )
 
     with TestClient(app) as client:
         client.portal.call(workflow_store.initialize)
         client.portal.call(
-            history_store.append_messages,
+            conversation_store.append_messages,
             "main-thread",
             [
                 {"role": "user", "content": "Prior user"},
@@ -237,11 +237,11 @@ def test_workflow_api_compacted_context_enriches_params_and_keeps_convo_separate
             ],
         )
         records = client.portal.call(
-            history_store.get_conversation_message_records,
+            conversation_store.get_conversation_message_records,
             "main-thread",
         )
-        client.portal.call(upsert_compacted_state)
-        proxy_module.set_history_store(history_store)
+        client.portal.call(upsert_thread_state)
+        proxy_module.set_conversation_store(conversation_store)
         proxy_module.set_workflow_components(
             registry=registry,
             store=workflow_store,
@@ -251,23 +251,23 @@ def test_workflow_api_compacted_context_enriches_params_and_keeps_convo_separate
         response = client.post(
             "/workflows/sample/runs",
             json={
-                "params": {"goal": "ship", "conversation_context": "manual"},
+                "params": {"goal": "ship", "thread_briefing": "manual"},
                 "endpoint": "node-a",
-                "convo_id": "workflow-internal",
-                "source_convo_id": "main-thread",
-                "context_mode": "compacted",
-                "recent_tail_messages": 1,
+                "conversation_id": "workflow-internal",
+                "source_conversation_id": "main-thread",
+                "history_mode": "thread",
+                "recent_message_count": 1,
             },
         )
 
     assert response.status_code == 200
     run = response.json()["snapshot"]["run"]
-    assert run["convo_id"] == "workflow-internal"
-    assert run["params"]["compacted_thread_state"] == "prior compacted state"
-    assert "Prior assistant" in run["params"]["recent_conversation_tail"]
-    assert run["params"]["conversation_context"].startswith("manual")
-    assert "source_convo_id" in run["params"]["context_state"]
-    assert run["params"]["context_state"]["source_convo_id"] == "main-thread"
+    assert run["conversation_id"] == "workflow-internal"
+    assert run["params"]["thread_state_text"] == "prior thread state"
+    assert "Prior assistant" in run["params"]["recent_conversation_messages"]
+    assert run["params"]["thread_briefing"].startswith("manual")
+    assert "source_conversation_id" in run["params"]["thread_metadata"]
+    assert run["params"]["thread_metadata"]["source_conversation_id"] == "main-thread"
 
 
 def _decode_sse_events(text: str) -> list[dict]:

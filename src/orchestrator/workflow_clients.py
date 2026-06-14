@@ -33,11 +33,11 @@ class ProxyWorkflowLLMClient:
         *,
         endpoint: str,
         prompt: str,
-        convo_id: str,
+        conversation_id: str,
         reasoning_effort: Optional[str] = None,
-        rag_endpoint: Optional[str] = None,
+        retrieval_endpoint: Optional[str] = None,
         max_tokens: Optional[int] = None,
-        skip_history: bool = False,
+        skip_conversation: bool = False,
     ) -> Dict[str, Any]:
         endpoint_key = str(endpoint or "smart").strip() or "smart"
         payload: Dict[str, Any] = {
@@ -49,14 +49,14 @@ class ProxyWorkflowLLMClient:
 
         headers = {
             "Content-Type": "application/json",
-            "X-Convo-ID": convo_id,
+            "X-Conversation-ID": conversation_id,
         }
         if reasoning_effort:
             headers["X-Reasoning-Effort"] = reasoning_effort
-        if rag_endpoint:
-            headers["X-RAG-Endpoint"] = rag_endpoint
-        if skip_history:
-            headers["X-LLMCP-Skip-History"] = "true"
+        if retrieval_endpoint:
+            headers["X-Retrieval-Endpoint"] = retrieval_endpoint
+        if skip_conversation:
+            headers["X-LLMCP-Skip-Conversation"] = "true"
         if endpoint_key != "smart":
             headers["X-Allow-Route-Switch"] = "true"
 
@@ -91,9 +91,9 @@ class ProxyWorkflowLLMClient:
                 metadata.setdefault("routing", {})[
                     lower_name.replace("x-route-", "").replace("-", "_")
                 ] = str(header_value)
-            elif lower_name.startswith("x-rag-"):
-                metadata.setdefault("rag", {})[
-                    lower_name.replace("x-rag-", "").replace("-", "_")
+            elif lower_name.startswith("x-retrieval-"):
+                metadata.setdefault("retrieval", {})[
+                    lower_name.replace("x-retrieval-", "").replace("-", "_")
                 ] = str(header_value)
 
         for key in ("usage", "stats", "model_info", "runtime", "timings"):
@@ -107,11 +107,11 @@ class ProxyWorkflowLLMClient:
         *,
         endpoint: str,
         prompt: str,
-        convo_id: str,
+        conversation_id: str,
         reasoning_effort: Optional[str] = None,
-        rag_endpoint: Optional[str] = None,
+        retrieval_endpoint: Optional[str] = None,
         max_tokens: Optional[int] = None,
-        skip_history: bool = False,
+        skip_conversation: bool = False,
     ) -> AsyncIterator[Dict[str, Any]]:
         endpoint_key = str(endpoint or "smart").strip() or "smart"
         payload: Dict[str, Any] = {
@@ -124,14 +124,14 @@ class ProxyWorkflowLLMClient:
 
         headers = {
             "Content-Type": "application/json",
-            "X-Convo-ID": convo_id,
+            "X-Conversation-ID": conversation_id,
         }
         if reasoning_effort:
             headers["X-Reasoning-Effort"] = reasoning_effort
-        if rag_endpoint:
-            headers["X-RAG-Endpoint"] = rag_endpoint
-        if skip_history:
-            headers["X-LLMCP-Skip-History"] = "true"
+        if retrieval_endpoint:
+            headers["X-Retrieval-Endpoint"] = retrieval_endpoint
+        if skip_conversation:
+            headers["X-LLMCP-Skip-Conversation"] = "true"
         if endpoint_key != "smart":
             headers["X-Allow-Route-Switch"] = "true"
 
@@ -198,7 +198,7 @@ class ProxyWorkflowSearchClient:
             )
         )
         payload = response.to_dict()
-        payload["wrapped_results"] = wrap_search_results(response)
+        payload["search_evidence"] = wrap_search_results(response)
         return payload
 
     async def rerank_results(
@@ -206,7 +206,7 @@ class ProxyWorkflowSearchClient:
         *,
         query: str,
         results: list[dict[str, Any]],
-        context: Optional[str] = None,
+        source_text: Optional[str] = None,
         top_k: Optional[int] = None,
     ) -> Dict[str, Any]:
         reranker = getattr(services.search_service, "reranker", None)
@@ -220,13 +220,13 @@ class ProxyWorkflowSearchClient:
                 results=search_results,
             )
             payload = response.to_dict()
-            payload["wrapped_results"] = wrap_search_results(response)
+            payload["search_evidence"] = wrap_search_results(response)
             return payload
 
         reranking = await reranker.rerank(
             query=query,
             results=search_results,
-            context=context,
+            source_text=source_text,
             top_k=top_k,
         )
         response = SearchResponse(
@@ -238,7 +238,7 @@ class ProxyWorkflowSearchClient:
         if reranking.warning:
             response.warnings.append(f"reranker: {reranking.warning}")
         payload = response.to_dict()
-        payload["wrapped_results"] = wrap_search_results(response)
+        payload["search_evidence"] = wrap_search_results(response)
         return payload
 
 
@@ -275,9 +275,9 @@ def _metadata_from_headers(endpoint_key: str, headers: Dict[str, Any]) -> Dict[s
             metadata.setdefault("routing", {})[
                 lower_name.replace("x-route-", "").replace("-", "_")
             ] = str(header_value)
-        elif lower_name.startswith("x-rag-"):
-            metadata.setdefault("rag", {})[
-                lower_name.replace("x-rag-", "").replace("-", "_")
+        elif lower_name.startswith("x-retrieval-"):
+            metadata.setdefault("retrieval", {})[
+                lower_name.replace("x-retrieval-", "").replace("-", "_")
             ] = str(header_value)
     return metadata
 

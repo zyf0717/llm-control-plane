@@ -10,9 +10,9 @@ _TEMPLATE_PATTERN = re.compile(
 )
 
 
-def render_template(template: str, context: dict[str, Any]) -> str:
+def render_template(template: str, data: dict[str, Any]) -> str:
     def replace(match: re.Match[str]) -> str:
-        value: Any = context
+        value: Any = data
         for part in match.group(2).split("."):
             if isinstance(value, dict) and part in value:
                 value = value[part]

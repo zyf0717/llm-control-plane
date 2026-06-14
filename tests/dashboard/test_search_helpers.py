@@ -17,7 +17,7 @@ from src.dashboard.app_server import (
     workflow_snapshot_with_next_pending_running,
 )
 from src.dashboard.search_flow import (
-    build_query_refiner_context,
+    build_query_refiner_source_text,
     build_search_failure_state,
     build_search_preface,
     build_search_success_state,
@@ -30,20 +30,20 @@ from src.dashboard.trace_formatters import (
 )
 from src.dashboard.workflow_server_helpers import (
     advance_workflow_to_terminal,
-    build_uploaded_file_context,
+    build_uploaded_file_source_text,
     build_workflow_chat_params,
     build_workflow_chat_run_payload,
     build_workflow_params_template,
     format_workflow_intermediate_content,
-    format_workflow_conversation_context,
-    merge_uploaded_context,
+    format_workflow_thread_briefing,
+    merge_uploaded_source_text,
     workflow_chat_response_text,
 )
-from src.search.safety import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER
+from src.search.safety import EPHEMERAL_WEB_SEARCH_EVIDENCE_MARKER
 
 
-def test_build_query_refiner_context_includes_prompt_history_and_current_request():
-    context = build_query_refiner_context(
+def test_build_query_refiner_source_text_includes_prompt_history_and_current_request():
+    source_text = build_query_refiner_source_text(
         system_prompt="Prefer primary sources.",
         history=[
             {"role": "user", "content": "Earlier question"},
@@ -53,10 +53,10 @@ def test_build_query_refiner_context_includes_prompt_history_and_current_request
         user_input="Current question",
     )
 
-    assert "System prompt:\nPrefer primary sources." in context
-    assert "Conversation history:\nuser: Earlier question" in context
-    assert "assistant: Earlier answer" in context
-    assert "Current user request:\nCurrent question" in context
+    assert "System prompt:\nPrefer primary sources." in source_text
+    assert "Conversation history:\nuser: Earlier question" in source_text
+    assert "assistant: Earlier answer" in source_text
+    assert "Current user request:\nCurrent question" in source_text
 
 
 def test_build_workflow_params_template_uses_selected_schema_fields():
@@ -66,8 +66,8 @@ def test_build_workflow_params_template_uses_selected_schema_fields():
                 "required": ["latest_user_prompt"],
                 "properties": {
                     "latest_user_prompt": {"type": "string"},
-                    "conversation_context": {"type": "string"},
-                    "context": {"type": "string"},
+                    "thread_briefing": {"type": "string"},
+                    "manual_source_text": {"type": "string"},
                 },
             }
         }
@@ -76,60 +76,60 @@ def test_build_workflow_params_template_uses_selected_schema_fields():
     assert rendered == (
         '{\n'
         '  "latest_user_prompt": "",\n'
-        '  "conversation_context": "",\n'
-        '  "context": ""\n'
+        '  "thread_briefing": "",\n'
+        '  "manual_source_text": ""\n'
         '}'
     )
 
 
-def test_build_uploaded_file_context_reads_utf8_files(tmp_path):
+def test_build_uploaded_file_source_text_reads_utf8_files(tmp_path):
     path = tmp_path / "notes.txt"
     path.write_text("hello workflow", encoding="utf-8")
 
-    context = build_uploaded_file_context(
+    source_text = build_uploaded_file_source_text(
         [{"name": "notes.txt", "datapath": str(path)}]
     )
 
-    assert "--- File: notes.txt ---" in context
-    assert "hello workflow" in context
+    assert "--- File: notes.txt ---" in source_text
+    assert "hello workflow" in source_text
 
 
-def test_merge_uploaded_context_appends_to_existing_param():
-    merged = merge_uploaded_context(
-        {"goal": "ship", "uploaded_context": "manual upload"},
+def test_merge_uploaded_source_text_appends_to_existing_param():
+    merged = merge_uploaded_source_text(
+        {"goal": "ship", "uploaded_source_text": "manual upload"},
         "file upload",
     )
 
     assert merged == {
         "goal": "ship",
-        "uploaded_context": "manual upload\n\nfile upload",
+        "uploaded_source_text": "manual upload\n\nfile upload",
     }
 
 
-def test_build_workflow_chat_params_maps_contextual_search_schema():
+def test_build_workflow_chat_params_maps_threaded_search_schema():
     params = build_workflow_chat_params(
         {
             "params_schema": {
                 "required": ["latest_user_prompt"],
                 "properties": {
                     "latest_user_prompt": {"type": "string"},
-                    "conversation_context": {"type": "string"},
-                    "context": {"type": "string"},
-                    "uploaded_context": {"type": "string"},
+                    "thread_briefing": {"type": "string"},
+                    "manual_source_text": {"type": "string"},
+                    "uploaded_source_text": {"type": "string"},
                 },
             }
         },
         latest_user_prompt="find sources",
-        conversation_context="user: previous",
-        context="system prompt",
-        uploaded_context="file contents",
+        thread_briefing="user: previous",
+        manual_source_text="system prompt",
+        uploaded_source_text="file contents",
     )
 
     assert params == {
         "latest_user_prompt": "find sources",
-        "conversation_context": "user: previous",
-        "context": "system prompt",
-        "uploaded_context": "file contents",
+        "thread_briefing": "user: previous",
+        "manual_source_text": "system prompt",
+        "uploaded_source_text": "file contents",
     }
 
 
@@ -163,34 +163,34 @@ def test_build_workflow_chat_params_omits_unknown_required_param():
     assert params == {}
 
 
-def test_build_workflow_chat_run_payload_excludes_single_node_rag_and_search():
+def test_build_workflow_chat_run_payload_excludes_single_node_retrieval_and_search():
     payload = build_workflow_chat_run_payload(
         {
             "params_schema": {
                 "required": ["latest_user_prompt"],
                 "properties": {
                     "latest_user_prompt": {"type": "string"},
-                    "uploaded_context": {"type": "string"},
+                    "uploaded_source_text": {"type": "string"},
                 },
             }
         },
         latest_user_prompt="latest only",
-        uploaded_context="--- File: notes.txt ---\nfile contents",
+        uploaded_source_text="--- File: notes.txt ---\nfile contents",
         endpoint="node-a",
         reasoning_effort="high",
-        convo_id="convo-1",
+        conversation_id="conversation-1",
     )
 
     assert payload == {
         "params": {
             "latest_user_prompt": "latest only",
-            "uploaded_context": "--- File: notes.txt ---\nfile contents",
+            "uploaded_source_text": "--- File: notes.txt ---\nfile contents",
         },
         "endpoint": "node-a",
         "reasoning_effort": "high",
-        "convo_id": "convo-1",
+        "conversation_id": "conversation-1",
     }
-    assert "rag_endpoint" not in payload
+    assert "retrieval_endpoint" not in payload
     assert "search_provider" not in payload
     assert "file contents" not in payload["params"]["latest_user_prompt"]
 
@@ -211,8 +211,8 @@ def test_build_workflow_chat_run_payload_includes_workflow_search_provider():
     assert payload["search_provider"] == "duckduckgo_html"
 
 
-def test_format_workflow_conversation_context_skips_system_messages():
-    rendered = format_workflow_conversation_context(
+def test_format_workflow_thread_briefing_skips_system_messages():
+    rendered = format_workflow_thread_briefing(
         [
             {"role": "system", "content": "hidden"},
             {"role": "user", "content": "Earlier question"},
@@ -315,12 +315,12 @@ def test_format_workflow_intermediate_content_leaves_text_as_is():
 
 def test_build_workflow_routing_choices_prepends_none_option():
     choices = build_workflow_routing_choices(
-        {"contextual_search": "Contextual Search"}
+        {"threaded_search": "Threaded Search"}
     )
 
     assert choices == {
         "": "None",
-        "contextual_search": "Contextual Search",
+        "threaded_search": "Threaded Search",
     }
 
 
@@ -329,7 +329,7 @@ def test_resolve_workflow_routing_selection_defaults_to_none():
         {
             "": "None",
             "implementation_plan": "Implementation Plan",
-            "contextual_search": "Contextual Search",
+            "threaded_search": "Threaded Search",
         },
         current_selection="",
     )
@@ -342,7 +342,7 @@ def test_resolve_workflow_routing_selection_preserves_valid_current_selection():
         {
             "": "None",
             "implementation_plan": "Implementation Plan",
-            "contextual_search": "Contextual Search",
+            "threaded_search": "Threaded Search",
         },
         current_selection="implementation_plan",
     )
@@ -702,7 +702,7 @@ def test_format_trace_summary_uses_display_timezone():
             "phase": "started",
             "status_code": 200,
             "endpoint": "gmktec-evo-x2",
-            "convo_id": "abc123",
+            "conversation_id": "abc123",
             "request_id": "trace123",
             "timing": {"elapsed_ms": 42},
         }
@@ -727,18 +727,18 @@ def test_build_search_success_state_normalizes_proxy_payload():
             ],
             "degraded": False,
             "warnings": ["provider warning"],
-            "wrapped_results": '{"source":"web_search"}',
+            "search_evidence": '{"source":"web_search"}',
         }
     )
 
     assert state["provider_label"] == "DuckDuckGo"
     assert state["result_count"] == 1
-    assert state["wrapped_results"] == '{"source":"web_search"}'
+    assert state["search_evidence"] == '{"source":"web_search"}'
     assert state["show_preface"] is True
 
 
-def test_build_search_turn_messages_uses_wrapped_results_as_ephemeral_user_context():
-    wrapped_results = '{"source":"web_search","untrusted":true}'
+def test_build_search_turn_messages_uses_search_evidence_as_ephemeral_user_context():
+    search_evidence = '{"source":"web_search","untrusted":true}'
     state = build_search_success_state(
         {
             "provider": "duckduckgo_html",
@@ -750,7 +750,7 @@ def test_build_search_turn_messages_uses_wrapped_results_as_ephemeral_user_conte
                     "snippet": "Computing pioneer",
                 }
             ],
-            "wrapped_results": wrapped_results,
+            "search_evidence": search_evidence,
         }
     )
 
@@ -758,13 +758,13 @@ def test_build_search_turn_messages_uses_wrapped_results_as_ephemeral_user_conte
 
     assert messages[0]["role"] == "user"
     assert messages[0]["content"] == (
-        f"{EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER}\n{wrapped_results}"
+        f"{EPHEMERAL_WEB_SEARCH_EVIDENCE_MARKER}\n{search_evidence}"
     )
     assert "URL:" not in messages[0]["content"]
     assert "Snippet:" not in messages[0]["content"]
 
 
-def test_build_search_turn_messages_requires_wrapped_results():
+def test_build_search_turn_messages_requires_search_evidence():
     state = build_search_success_state(
         {
             "provider": "duckduckgo_html",
@@ -804,7 +804,7 @@ def test_build_search_preface_renders_results_and_warnings():
             ],
             "degraded": True,
             "warnings": ["selector drift"],
-            "wrapped_results": '{"source":"web_search"}',
+            "search_evidence": '{"source":"web_search"}',
         }
     )
 
@@ -828,7 +828,7 @@ def test_build_search_preface_shows_refined_query_when_query_refiner_used():
                 "effective_query": "llama.cpp server KV cache metrics cached_tokens",
             },
             "results": [],
-            "wrapped_results": '{"source":"web_search"}',
+            "search_evidence": '{"source":"web_search"}',
         }
     )
 
@@ -851,7 +851,7 @@ def test_build_search_preface_shows_all_fanout_queries_when_query_refiner_used()
             "query": "q1",
             "query_refinement": {"used": True, "queries": ["q1", "q2", "q1"]},
             "results": [],
-            "wrapped_results": '{"source":"web_search"}',
+            "search_evidence": '{"source":"web_search"}',
         }
     )
 
@@ -872,7 +872,7 @@ def test_build_search_preface_keeps_legacy_heading_without_query_refiner_use():
             "query": "Ada Lovelace",
             "query_refinement": {"used": False},
             "results": [],
-            "wrapped_results": '{"source":"web_search"}',
+            "search_evidence": '{"source":"web_search"}',
         }
     )
 
@@ -890,7 +890,7 @@ def test_build_search_preface_handles_empty_successful_search():
             "results": [],
             "degraded": False,
             "warnings": [],
-            "wrapped_results": '{"source":"web_search"}',
+            "search_evidence": '{"source":"web_search"}',
         }
     )
 
@@ -907,7 +907,7 @@ def test_merge_run_info_adds_search_block_without_dropping_existing_metadata():
                 "results": [],
                 "degraded": True,
                 "warnings": ["timeout"],
-                "wrapped_results": '{"source":"web_search"}',
+                "search_evidence": '{"source":"web_search"}',
             }
         ),
     )
@@ -985,7 +985,7 @@ def test_normalize_reasoning_effort_preserves_explicit_none():
     assert normalize_reasoning_effort("none", default="medium") == "none"
 
 
-def test_conversation_control_change_reasons_detects_mid_convo_prompt_change():
+def test_conversation_control_change_reasons_detects_mid_conversation_prompt_change():
     state = {
         "started": True,
         "committed_prompt": "Be concise.",
@@ -999,7 +999,7 @@ def test_conversation_control_change_reasons_detects_mid_convo_prompt_change():
     ) == ["system prompt"]
 
 
-def test_conversation_control_change_reasons_detects_mid_convo_reasoning_change():
+def test_conversation_control_change_reasons_detects_mid_conversation_reasoning_change():
     state = {
         "started": True,
         "committed_prompt": "Be concise.",
@@ -1013,7 +1013,7 @@ def test_conversation_control_change_reasons_detects_mid_convo_reasoning_change(
     ) == ["reasoning"]
 
 
-def test_conversation_control_change_reasons_ignores_unstarted_convo():
+def test_conversation_control_change_reasons_ignores_unstarted_conversation():
     state = {
         "started": False,
         "committed_prompt": "Be concise.",
@@ -1048,8 +1048,8 @@ def test_conversation_control_change_reasons_defaults_missing_reasoning_to_mediu
 
 def test_build_fork_notice_names_old_new_ids_and_reasons():
     notice = build_fork_notice(
-        old_convo_id="old123",
-        new_convo_id="new456",
+        old_conversation_id="old123",
+        new_conversation_id="new456",
         reasons=["system prompt", "reasoning"],
     )
 

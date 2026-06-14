@@ -18,7 +18,7 @@ class _FakeStreamingResponse:
             yield line
 
 
-class _FakeStreamContext:
+class _FakeStreamSource:
     def __init__(self, response):
         self._response = response
 
@@ -45,7 +45,7 @@ def test_build_chat_messages_with_user_only():
     assert messages == [{"role": "user", "content": "Hello"}]
 
 
-def test_build_chat_messages_includes_turn_local_search_context_after_system_prompt():
+def test_build_chat_messages_includes_turn_local_search_evidence_after_system_prompt():
     messages = build_chat_messages(
         text="Need sources",
         system_prompt="Be concise.",
@@ -76,7 +76,7 @@ async def test_stream_chat_response_does_not_emit_metadata_for_content_only_chun
         headers={
             "x-trace-id": "abc123",
             "x-route-decision": "gpu-node-a",
-            "x-rag-endpoint": "http://rag.local/context",
+            "x-retrieval-endpoint": "http://retrieval.local/evidence",
         },
         lines=[
             'data: {"choices":[{"delta":{"content":"Hello"}}]}',
@@ -95,7 +95,7 @@ async def test_stream_chat_response_does_not_emit_metadata_for_content_only_chun
     with patch("httpx.AsyncClient") as mock_client_class:
         mock_client = Mock()
         mock_client_class.return_value.__aenter__.return_value = mock_client
-        mock_client.stream.return_value = _FakeStreamContext(response)
+        mock_client.stream.return_value = _FakeStreamSource(response)
 
         async for chunk in stream_chat_response(
             endpoint_key="smart",
@@ -110,12 +110,12 @@ async def test_stream_chat_response_does_not_emit_metadata_for_content_only_chun
         {
             "trace": {"id": "abc123"},
             "routing": {"decision": "gpu-node-a"},
-            "rag": {"endpoint": "http://rag.local/context"},
+            "retrieval": {"endpoint": "http://retrieval.local/evidence"},
         },
         {
             "trace": {"id": "abc123"},
             "routing": {"decision": "gpu-node-a"},
-            "rag": {"endpoint": "http://rag.local/context"},
+            "retrieval": {"endpoint": "http://retrieval.local/evidence"},
             "usage": {"prompt_tokens": 12},
         },
     ]
@@ -152,7 +152,7 @@ async def test_concrete_endpoint_request_opts_into_switches_and_surfaces_warning
             endpoints_dict={"node-b": {"url": "http://node-b.local"}},
             stream=False,
             reasoning_effort="high",
-            convo_id="convo-1",
+            conversation_id="conversation-1",
             on_metadata=metadata_events.append,
         ):
             chunks.append(chunk)
@@ -161,7 +161,7 @@ async def test_concrete_endpoint_request_opts_into_switches_and_surfaces_warning
     assert call.args[0] == "http://proxy.local/node-b"
     assert call.kwargs["headers"]["X-Allow-Route-Switch"] == "true"
     assert "X-Allow-Reasoning-Switch" not in call.kwargs["headers"]
-    assert call.kwargs["headers"]["X-Convo-ID"] == "convo-1"
+    assert call.kwargs["headers"]["X-Conversation-ID"] == "conversation-1"
     rendered = "".join(chunks)
     assert rendered.startswith(
         "**Warning:** conversation endpoint changed from node-a to node-b; "

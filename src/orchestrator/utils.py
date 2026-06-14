@@ -102,7 +102,7 @@ class HeaderManager:
     @staticmethod
     def create_response_headers(
         source_headers: Optional[Dict] = None,
-        convo_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
         for_streaming: bool = False,
     ) -> Dict[str, str]:
         """Create safe response headers."""
@@ -120,8 +120,8 @@ class HeaderManager:
                 }
             )
 
-        if convo_id:
-            headers["X-Convo-ID"] = convo_id
+        if conversation_id:
+            headers["X-Conversation-ID"] = conversation_id
 
         return headers
 

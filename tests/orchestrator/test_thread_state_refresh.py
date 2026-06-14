@@ -1,10 +1,10 @@
 import pytest
 
-from src.orchestrator.conversation_compaction import (
-    ConversationCompactionSettings,
-    maybe_refresh_compacted_conversation_state,
+from src.orchestrator.thread_state_refresh import (
+    ThreadStateRefreshSettings,
+    maybe_refresh_thread_state,
 )
-from src.orchestrator.history_store import MemoryHistoryStore
+from src.orchestrator.conversation_store import MemoryConversationStore
 
 
 class CapturingLLMClient:
@@ -17,18 +17,18 @@ class CapturingLLMClient:
 
 
 @pytest.mark.asyncio
-async def test_conversation_compaction_skips_below_thresholds():
-    store = MemoryHistoryStore()
+async def test_thread_state_refresh_skips_below_thresholds():
+    store = MemoryConversationStore()
     llm = CapturingLLMClient()
     await store.append_messages("session-1", [{"role": "user", "content": "short"}])
 
-    result = await maybe_refresh_compacted_conversation_state(
-        history_store=store,
+    result = await maybe_refresh_thread_state(
+        conversation_store=store,
         llm_client=llm,
-        source_convo_id="session-1",
+        source_conversation_id="session-1",
         endpoint="node-a",
-        settings=ConversationCompactionSettings(
-            recent_tail_messages=0,
+        settings=ThreadStateRefreshSettings(
+            recent_message_count=0,
             trigger_delta_chars=1000,
             trigger_delta_messages=10,
         ),
@@ -37,12 +37,12 @@ async def test_conversation_compaction_skips_below_thresholds():
     assert result["updated"] is False
     assert result["reason"] == "below-threshold"
     assert llm.calls == []
-    assert await store.get_compacted_conversation_state("session-1") is None
+    assert await store.get_thread_state("session-1") is None
 
 
 @pytest.mark.asyncio
-async def test_conversation_compaction_force_calls_llm_and_persists_state():
-    store = MemoryHistoryStore()
+async def test_thread_state_refresh_force_calls_llm_and_persists_state():
+    store = MemoryConversationStore()
     llm = CapturingLLMClient()
     await store.append_messages(
         "session-1",
@@ -52,62 +52,62 @@ async def test_conversation_compaction_force_calls_llm_and_persists_state():
         ],
     )
 
-    result = await maybe_refresh_compacted_conversation_state(
-        history_store=store,
+    result = await maybe_refresh_thread_state(
+        conversation_store=store,
         llm_client=llm,
-        source_convo_id="session-1",
+        source_conversation_id="session-1",
         endpoint="node-a",
-        settings=ConversationCompactionSettings(
-            compaction_chunk_chars=100000,
-            compaction_target_chars=90000,
-            compaction_max_output_chars=100000,
+        settings=ThreadStateRefreshSettings(
+            compression_chunk_chars=100000,
+            compression_target_chars=90000,
+            compression_max_output_chars=100000,
         ),
         force=True,
     )
 
-    state = await store.get_compacted_conversation_state("session-1")
+    state = await store.get_thread_state("session-1")
     latest_id = await store.get_latest_conversation_message_id("session-1")
     assert result["updated"] is True
     assert len(llm.calls) == 1
-    assert llm.calls[0]["skip_history"] is True
+    assert llm.calls[0]["skip_conversation"] is True
     assert state is not None
     assert state["covered_message_id"] == latest_id
     assert "New raw conversation messages" in state["state_text"]
 
 
 @pytest.mark.asyncio
-async def test_conversation_compaction_includes_previous_state_and_advances():
-    store = MemoryHistoryStore()
+async def test_thread_state_refresh_includes_previous_state_and_advances():
+    store = MemoryConversationStore()
     llm = CapturingLLMClient()
-    settings = ConversationCompactionSettings(
-        recent_tail_messages=0,
+    settings = ThreadStateRefreshSettings(
+        recent_message_count=0,
         trigger_delta_chars=1,
         trigger_delta_messages=1,
-        compaction_chunk_chars=100000,
-        compaction_target_chars=90000,
-        compaction_max_output_chars=100000,
+        compression_chunk_chars=100000,
+        compression_target_chars=90000,
+        compression_max_output_chars=100000,
     )
     await store.append_messages("session-1", [{"role": "user", "content": "alpha"}])
-    first = await maybe_refresh_compacted_conversation_state(
-        history_store=store,
+    first = await maybe_refresh_thread_state(
+        conversation_store=store,
         llm_client=llm,
-        source_convo_id="session-1",
+        source_conversation_id="session-1",
         endpoint="node-a",
         settings=settings,
     )
     await store.append_messages("session-1", [{"role": "assistant", "content": "beta"}])
 
-    second = await maybe_refresh_compacted_conversation_state(
-        history_store=store,
+    second = await maybe_refresh_thread_state(
+        conversation_store=store,
         llm_client=llm,
-        source_convo_id="session-1",
+        source_conversation_id="session-1",
         endpoint="node-a",
         settings=settings,
     )
 
     assert first["updated"] is True
     assert second["updated"] is True
-    assert "Previous compacted state" in llm.calls[1]["prompt"]
+    assert "Previous thread state" in llm.calls[1]["prompt"]
     assert "alpha" in llm.calls[1]["prompt"]
     assert "beta" in llm.calls[1]["prompt"]
     assert second["covered_message_id"] > first["covered_message_id"]

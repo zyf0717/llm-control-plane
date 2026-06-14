@@ -132,13 +132,13 @@ class StubReranker:
     def __init__(self, warning: str | None = None):
         self.calls = 0
         self.last_query = None
-        self.last_context = None
+        self.last_source_text = None
         self.warning = warning
 
-    async def rerank(self, *, query, results, context=None):
+    async def rerank(self, *, query, results, source_text=None):
         self.calls += 1
         self.last_query = query
-        self.last_context = context
+        self.last_source_text = source_text
         if self.warning:
             return SearchReranking(
                 results=results,
@@ -419,12 +419,12 @@ async def test_router_reranks_single_query_after_provider_results():
     )
 
     response = await router.search(
-        SearchArgs(query="q", context="refiner context", rerank_context="rerank context")
+        SearchArgs(query="q", source_text="refiner source_text", rerank_source_text="rerank source_text")
     )
 
     assert reranker.calls == 1
     assert reranker.last_query == "q"
-    assert reranker.last_context == "rerank context"
+    assert reranker.last_source_text == "rerank source_text"
     assert [result.title for result in response.results] == ["B", "A"]
     assert response.results[0].score == 1.0
     assert response.reranking == {

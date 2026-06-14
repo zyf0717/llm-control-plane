@@ -48,7 +48,7 @@ def test_search_web_endpoint_rejects_missing_query():
     assert result.json()["detail"] == "query is required"
 
 
-def test_search_web_endpoint_accepts_context():
+def test_search_web_endpoint_accepts_source_text():
     response = SearchResponse(query="alpha", provider="none", results=[], warnings=[])
 
     with patch(
@@ -57,12 +57,12 @@ def test_search_web_endpoint_accepts_context():
     ) as search:
         result = client.post(
             "/search/web",
-            json={"query": "alpha", "context": "prior context"},
+            json={"query": "alpha", "source_text": "prior source_text"},
         )
 
     assert result.status_code == 200
-    assert search.await_args.args[0].context == "prior context"
-    assert "wrapped_results" in result.json()
+    assert search.await_args.args[0].source_text == "prior source_text"
+    assert "search_evidence" in result.json()
 
 
 def test_search_web_endpoint_accepts_new_query_refiner_bypass_flag():
@@ -97,7 +97,7 @@ def test_search_web_endpoint_accepts_reranker_bypass_flag():
     assert search.await_args.args[0].use_reranker is False
 
 
-def test_search_web_endpoint_accepts_reranker_camel_flag_and_context():
+def test_search_web_endpoint_accepts_rerank_source_text():
     response = SearchResponse(query="alpha", provider="none", results=[], warnings=[])
 
     with patch(
@@ -109,13 +109,27 @@ def test_search_web_endpoint_accepts_reranker_camel_flag_and_context():
             json={
                 "query": "alpha",
                 "useReranker": False,
-                "rerankContext": "ranking context",
+                "rerank_source_text": "ranking source text",
             },
         )
 
     assert result.status_code == 200
     assert search.await_args.args[0].use_reranker is False
-    assert search.await_args.args[0].rerank_context == "ranking context"
+    assert search.await_args.args[0].rerank_source_text == "ranking source text"
+
+
+def test_search_web_endpoint_rejects_old_context_fields():
+    result = client.post(
+        "/search/web",
+        json={
+            "query": "alpha",
+            "context": "old",
+            "rerankContext": "old",
+        },
+    )
+
+    assert result.status_code == 400
+    assert "Unsupported search field" in result.json()["detail"]
 
 
 def test_search_web_endpoint_ignores_legacy_planner_bypass_flag():

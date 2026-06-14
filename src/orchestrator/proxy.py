@@ -10,7 +10,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 
 from . import proxy_services as services
-from .conversation_compaction import maybe_refresh_compacted_conversation_state
+from .thread_state_refresh import maybe_refresh_thread_state
 from .llm_router import get_router
 from .request_processor import RequestProcessor
 from .search_routes import router as search_router
@@ -21,13 +21,13 @@ from .workflow import create_workflow_router
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    await services.startup_history_store()
+    await services.startup_conversation_store()
     await services.startup_workflow_components()
     try:
         yield
     finally:
         await services.shutdown_workflow_components()
-        await services.shutdown_history_store()
+        await services.shutdown_conversation_store()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -37,7 +37,7 @@ app.include_router(
         registry_getter=services.get_workflow_registry,
         store_getter=services.get_workflow_store,
         executor_getter=services.get_workflow_executor,
-        history_store_getter=lambda: services.history_store,
+        conversation_store_getter=lambda: services.conversation_store,
     )
 )
 app.include_router(search_router)
@@ -65,16 +65,16 @@ async def smart_route(request: Request, subpath: str = ""):
         if not user_messages:
             raise HTTPException(status_code=400, detail="No user messages found")
 
-        convo_id = RequestProcessor._normalize_convo_id(
-            request.headers.get("X-Convo-ID")
+        conversation_id = RequestProcessor._normalize_conversation_id(
+            request.headers.get("X-Conversation-ID")
         )
-        skip_history = RequestProcessor._truthy_header(
-            request.headers.get("X-LLMCP-Skip-History")
+        skip_conversation = RequestProcessor._truthy_header(
+            request.headers.get("X-LLMCP-Skip-Conversation")
         )
         valid_endpoints = RequestProcessor.configured_endpoint_names()
         stale_headers: Dict[str, str] = {}
-        if convo_id and not skip_history:
-            state = await services.history_store.get_conversation_state(convo_id)
+        if conversation_id and not skip_conversation:
+            state = await services.conversation_store.get_conversation_control_state(conversation_id)
             pinned_endpoint = str(state.get("route_endpoint") or "").strip()
             if pinned_endpoint and pinned_endpoint in valid_endpoints:
                 routing_headers = {
@@ -89,8 +89,8 @@ async def smart_route(request: Request, subpath: str = ""):
                     route_conflict_policy="use-existing",
                 )
             if pinned_endpoint and pinned_endpoint not in valid_endpoints:
-                await services.history_store.update_conversation_state(
-                    convo_id,
+                await services.conversation_store.update_conversation_control_state(
+                    conversation_id,
                     valid_route_endpoints=valid_endpoints,
                     clear_route=True,
                 )
@@ -149,19 +149,19 @@ async def retrieve_conversation(request: Request):
     """Retrieve conversation history."""
     try:
         body = await request.json()
-        convo_id = body.get("convo_id")
+        conversation_id = body.get("conversation_id")
 
-        if not convo_id:
-            raise HTTPException(status_code=400, detail="Missing convo_id")
+        if not conversation_id:
+            raise HTTPException(status_code=400, detail="Missing conversation_id")
 
-        conversation = await services.history_store.get_conversation(convo_id)
+        conversation = await services.conversation_store.get_conversation(conversation_id)
         if conversation is None:
             raise HTTPException(
                 status_code=404,
-                detail=f"Conversation '{convo_id}' not found",
+                detail=f"Conversation '{conversation_id}' not found",
             )
 
-        return RequestProcessor._filter_ephemeral_search_messages(conversation)
+        return RequestProcessor._filter_ephemeral_evidence_messages(conversation)
 
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="Invalid JSON") from exc
@@ -173,16 +173,16 @@ async def retrieve_conversation(request: Request):
 
 
 @app.post("/conversations/state")
-async def retrieve_conversation_state(request: Request):
+async def retrieve_conversation_control_state(request: Request):
     """Retrieve route/reasoning/slot state for a conversation."""
     try:
         body = await request.json()
-        convo_id = body.get("convo_id")
+        conversation_id = body.get("conversation_id")
 
-        if not convo_id:
-            raise HTTPException(status_code=400, detail="Missing convo_id")
+        if not conversation_id:
+            raise HTTPException(status_code=400, detail="Missing conversation_id")
 
-        return await services.history_store.get_conversation_state(str(convo_id))
+        return await services.conversation_store.get_conversation_control_state(str(conversation_id))
 
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="Invalid JSON") from exc
@@ -197,27 +197,27 @@ async def retrieve_conversation_state(request: Request):
 async def list_conversations():
     """List conversation metadata sorted by most recent activity."""
     try:
-        return await services.history_store.list_conversations()
+        return await services.conversation_store.list_conversations()
     except Exception as exc:
         services.logger.error("Error listing conversations: %s", exc)
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 
-@app.get("/conversations/{convo_id}/compacted-state")
-async def get_compacted_conversation_state(convo_id: str):
-    """Retrieve compacted conversation projection metadata."""
-    state = await services.history_store.get_compacted_conversation_state(convo_id)
+@app.get("/threads/{conversation_id}/state")
+async def get_thread_state(conversation_id: str):
+    """Retrieve derived thread state metadata."""
+    state = await services.conversation_store.get_thread_state(conversation_id)
     if state is None:
         raise HTTPException(
             status_code=404,
-            detail=f"Compacted state for conversation '{convo_id}' not found",
+            detail=f"Thread state for conversation '{conversation_id}' not found",
         )
     return state
 
 
-@app.post("/conversations/{convo_id}/compact")
-async def compact_conversation(convo_id: str, request: Request):
-    """Refresh compacted conversation projection on demand."""
+@app.post("/threads/{conversation_id}/refresh")
+async def refresh_thread_state(conversation_id: str, request: Request):
+    """Refresh derived thread state on demand."""
     try:
         body = await request.json()
     except json.JSONDecodeError as exc:
@@ -237,10 +237,10 @@ async def compact_conversation(convo_id: str, request: Request):
         llm_client = ProxyWorkflowLLMClient()
 
     try:
-        return await maybe_refresh_compacted_conversation_state(
-            history_store=services.history_store,
+        return await maybe_refresh_thread_state(
+            conversation_store=services.conversation_store,
             llm_client=llm_client,
-            source_convo_id=convo_id,
+            source_conversation_id=conversation_id,
             endpoint=endpoint,
             reasoning_effort=RequestProcessor._normalize_reasoning_effort(
                 body.get("reasoning_effort")
@@ -248,7 +248,7 @@ async def compact_conversation(convo_id: str, request: Request):
             force=_truthy_body_value(body.get("force")),
         )
     except Exception as exc:
-        services.logger.error("Error compacting conversation: %s", exc)
+        services.logger.error("Error refreshing thread state: %s", exc)
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 

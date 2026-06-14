@@ -50,21 +50,21 @@ def build_workflow_chat_params(
     spec: dict[str, Any] | None,
     *,
     latest_user_prompt: str,
-    conversation_context: str = "",
-    context: str = "",
-    uploaded_context: str = "",
+    thread_briefing: str = "",
+    manual_source_text: str = "",
+    uploaded_source_text: str = "",
 ) -> dict[str, str]:
     keys = _workflow_param_keys(spec)
     params: dict[str, str] = {}
     for key in keys:
         if key in WORKFLOW_CHAT_PROMPT_PARAM_NAMES:
             params[key] = str(latest_user_prompt or "")
-        elif key == "conversation_context":
-            params[key] = str(conversation_context or "")
-        elif key == "context":
-            params[key] = str(context or "")
-        elif key == "uploaded_context":
-            params[key] = str(uploaded_context or "")
+        elif key == "thread_briefing":
+            params[key] = str(thread_briefing or "")
+        elif key == "manual_source_text":
+            params[key] = str(manual_source_text or "")
+        elif key == "uploaded_source_text":
+            params[key] = str(uploaded_source_text or "")
     return params
 
 
@@ -72,37 +72,37 @@ def build_workflow_chat_run_payload(
     spec: dict[str, Any] | None,
     *,
     latest_user_prompt: str,
-    conversation_context: str = "",
-    context: str = "",
-    uploaded_context: str = "",
+    thread_briefing: str = "",
+    manual_source_text: str = "",
+    uploaded_source_text: str = "",
     endpoint: str,
     reasoning_effort: str = "",
-    convo_id: str = "",
+    conversation_id: str = "",
     search_provider: str = "",
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "params": build_workflow_chat_params(
             spec,
             latest_user_prompt=latest_user_prompt,
-            conversation_context=conversation_context,
-            context=context,
-            uploaded_context=uploaded_context,
+            thread_briefing=thread_briefing,
+            manual_source_text=manual_source_text,
+            uploaded_source_text=uploaded_source_text,
         ),
         "endpoint": str(endpoint or "").strip(),
     }
     reasoning = str(reasoning_effort or "").strip()
     if reasoning:
         payload["reasoning_effort"] = reasoning
-    conversation_id = str(convo_id or "").strip()
+    conversation_id = str(conversation_id or "").strip()
     if conversation_id:
-        payload["convo_id"] = conversation_id
+        payload["conversation_id"] = conversation_id
     provider = str(search_provider or "").strip()
     if provider:
         payload["search_provider"] = provider
     return payload
 
 
-def format_workflow_conversation_context(history: list[dict[str, Any]] | None) -> str:
+def format_workflow_thread_briefing(history: list[dict[str, Any]] | None) -> str:
     lines: list[str] = []
     for message in history or []:
         if not isinstance(message, dict):
@@ -205,7 +205,7 @@ async def advance_workflow_to_terminal(
     return snapshot
 
 
-def build_uploaded_file_context(uploaded_files: Any) -> str:
+def build_uploaded_file_source_text(uploaded_files: Any) -> str:
     if not uploaded_files:
         return ""
 
@@ -226,15 +226,17 @@ def build_uploaded_file_context(uploaded_files: Any) -> str:
     return "\n\n".join(file_contents)
 
 
-def merge_uploaded_context(params: dict[str, Any], uploaded_context: str) -> dict[str, Any]:
-    context = str(uploaded_context or "").strip()
-    if not context:
+def merge_uploaded_source_text(
+    params: dict[str, Any], uploaded_source_text: str
+) -> dict[str, Any]:
+    source_text = str(uploaded_source_text or "").strip()
+    if not source_text:
         return params
 
     merged = dict(params)
-    existing = str(merged.get("uploaded_context") or "").strip()
-    merged["uploaded_context"] = "\n\n".join(
-        item for item in [existing, context] if item
+    existing = str(merged.get("uploaded_source_text") or "").strip()
+    merged["uploaded_source_text"] = "\n\n".join(
+        item for item in [existing, source_text] if item
     )
     return merged
 

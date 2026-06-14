@@ -14,7 +14,7 @@ def format_trace_summary(event: Dict[str, Any]) -> str:
     endpoint = str(event.get("endpoint") or "unknown-endpoint")
     phase = str(event.get("phase") or "completed")
     status = event.get("status_code")
-    convo_id = str(event.get("convo_id") or "no-convo")
+    conversation_id = str(event.get("conversation_id") or "no-conversation")
     elapsed = ""
     timing = event.get("timing")
     if isinstance(timing, dict) and timing.get("elapsed_ms") is not None:
@@ -22,7 +22,7 @@ def format_trace_summary(event: Dict[str, Any]) -> str:
     status_label = status if status is not None else "?"
     return (
         f"{timestamp} | {phase} | {status_label} | "
-        f"{endpoint} | {convo_id} | {trace_id}{elapsed}"
+        f"{endpoint} | {conversation_id} | {trace_id}{elapsed}"
     )
 
 

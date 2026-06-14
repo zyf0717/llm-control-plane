@@ -52,7 +52,7 @@ async def test_valid_query_refiner_response_rewrites_query():
         plan = await query_refiner.refine(
             SearchArgs(
                 query="does llama cpp expose kv cache metrics now?",
-                context="prior chat",
+                source_text="prior chat",
                 count=5,
                 freshness="day",
             )
@@ -185,7 +185,7 @@ async def test_long_context_is_truncated():
         SearchQueryRefinerConfig(
             enabled=True,
             model_endpoint="https://query_refiner.local",
-            max_context_chars=4,
+            max_source_chars=4,
         )
     )
 
@@ -193,7 +193,7 @@ async def test_long_context_is_truncated():
         "httpx.AsyncClient.post",
         AsyncMock(return_value=FakeQueryRefinerResponse('{"query": "q"}')),
     ) as post:
-        await query_refiner.refine(SearchArgs(query="q", context="abcdef"))
+        await query_refiner.refine(SearchArgs(query="q", source_text="abcdef"))
 
     body = post.await_args.kwargs["json"]
     user_message = body["messages"][1]["content"]

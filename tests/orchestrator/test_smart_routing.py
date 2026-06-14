@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.orchestrator import proxy_services as proxy_module
-from src.orchestrator.history_store import MemoryHistoryStore
+from src.orchestrator.conversation_store import MemoryConversationStore
 from src.orchestrator.llm_router import RouteDecision, WorkloadType
 from src.orchestrator.proxy import app
 
@@ -20,11 +20,11 @@ def client():
 
 
 @pytest.fixture(autouse=True)
-def memory_history_store():
-    store = MemoryHistoryStore()
-    proxy_module.set_history_store(store)
+def memory_conversation_store():
+    store = MemoryConversationStore()
+    proxy_module.set_conversation_store(store)
     yield store
-    proxy_module.set_history_store(MemoryHistoryStore())
+    proxy_module.set_conversation_store(MemoryConversationStore())
 
 
 class _MockUpstreamResponse:
@@ -285,12 +285,12 @@ class TestSmartRoutingEndpoint:
 
             first = client.post(
                 "/smart",
-                headers={"X-Convo-ID": "session-smart-pin"},
+                headers={"X-Conversation-ID": "session-smart-pin"},
                 json={"messages": [{"role": "user", "content": "first"}]},
             )
             second = client.post(
                 "/smart",
-                headers={"X-Convo-ID": "session-smart-pin"},
+                headers={"X-Conversation-ID": "session-smart-pin"},
                 json={"messages": [{"role": "user", "content": "second"}]},
             )
 
@@ -307,7 +307,7 @@ class TestSmartRoutingEndpoint:
         import asyncio
 
         asyncio.run(
-            proxy_module.history_store.update_conversation_state(
+            proxy_module.conversation_store.update_conversation_control_state(
                 "session-stale",
                 route_endpoint="removed-endpoint",
                 valid_route_endpoints=["removed-endpoint", "new-endpoint"],
@@ -336,12 +336,12 @@ class TestSmartRoutingEndpoint:
 
             response = client.post(
                 "/smart",
-                headers={"X-Convo-ID": "session-stale"},
+                headers={"X-Conversation-ID": "session-stale"},
                 json={"messages": [{"role": "user", "content": "recover"}]},
             )
 
         state = asyncio.run(
-            proxy_module.history_store.get_conversation_state("session-stale")
+            proxy_module.conversation_store.get_conversation_control_state("session-stale")
         )
         assert response.status_code == 200
         assert response.headers["x-route-pin-stale"] == "true"
@@ -349,7 +349,7 @@ class TestSmartRoutingEndpoint:
 
     @patch("src.orchestrator.proxy_services.reachable_endpoints", ["primary"])
     @patch("src.orchestrator.proxy.get_router")
-    def test_smart_route_without_convo_id_remains_stateless(self, mock_get_router, client):
+    def test_smart_route_without_conversation_id_remains_stateless(self, mock_get_router, client):
         mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
         decision = RouteDecision(
             endpoint="primary",
@@ -381,7 +381,7 @@ class TestSmartRoutingEndpoint:
         assert first.status_code == 200
         assert second.status_code == 200
         assert mock_router.route_request.await_count == 2
-        assert proxy_module.history_store.conversation_states == {}
+        assert proxy_module.conversation_store.conversation_control_states == {}
 
 
 class TestSmartRoutingIntegration:

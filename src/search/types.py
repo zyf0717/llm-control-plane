@@ -17,10 +17,10 @@ class SearchArgs:
     region: Optional[str] = None
     safe_search: Optional[str] = None
     freshness: Optional[str] = None
-    context: Optional[str] = None
+    source_text: Optional[str] = None
     use_query_refiner: bool = True
     use_reranker: bool = True
-    rerank_context: Optional[str] = None
+    rerank_source_text: Optional[str] = None
 
 
 @dataclass(slots=True)

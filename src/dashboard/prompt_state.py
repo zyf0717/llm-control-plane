@@ -1,8 +1,9 @@
 from typing import Any, Dict, Optional
 
-RAG_CITATION_SUFFIX = (
-    "If you use retrieved reference excerpts in your answer, cite the corresponding "
-    "Source label inline; if the excerpts do not support the answer, be explicit."
+RETRIEVAL_CITATION_SUFFIX = (
+    "If you use retrieved context or reference excerpts in your answer, cite the "
+    "corresponding Source label inline; if the excerpts do not support the answer, "
+    "be explicit."
 )
 LOCKED_SYSTEM_PROMPT_MESSAGE = "No system prompt was sent on turn 1."
 
@@ -12,14 +13,14 @@ def normalize_system_prompt(prompt: Optional[str]) -> str:
     return str(prompt or "").strip()
 
 
-def append_managed_rag_suffix(prompt: Optional[str]) -> str:
-    """Append the managed RAG citation suffix exactly once."""
+def append_managed_retrieval_suffix(prompt: Optional[str]) -> str:
+    """Append the managed Retrieval citation suffix exactly once."""
     normalized_prompt = normalize_system_prompt(prompt)
-    if RAG_CITATION_SUFFIX in normalized_prompt:
+    if RETRIEVAL_CITATION_SUFFIX in normalized_prompt:
         return normalized_prompt
     if not normalized_prompt:
-        return RAG_CITATION_SUFFIX
-    return f"{normalized_prompt}\n\n{RAG_CITATION_SUFFIX}"
+        return RETRIEVAL_CITATION_SUFFIX
+    return f"{normalized_prompt}\n\n{RETRIEVAL_CITATION_SUFFIX}"
 
 
 def extract_first_system_prompt(messages: Any) -> Optional[str]:

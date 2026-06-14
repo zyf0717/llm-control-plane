@@ -24,7 +24,7 @@ def mock_environment_variables():
     test_env = {
         "API_KEY_ID": "test-api-key-id",
         "API_KEY_SECRET": "test-api-secret",
-        "HISTORY_DB_PATH": "",
+        "CONVERSATION_DB_PATH": "",
     }
 
     with patch.dict(os.environ, test_env, clear=False):

@@ -1,7 +1,7 @@
 id: research_brief
 name: Research Brief
 version: 0.1.0
-description: Build a concise research brief from web search, optional RAG, and supplied context.
+description: Build a concise research brief from web search, optional Retrieval, and supplied source text.
 
 params_schema:
   type: object
@@ -9,17 +9,17 @@ params_schema:
   properties:
     question:
       type: string
-    compacted_thread_state:
+    thread_state_text:
       type: string
-    recent_conversation_tail:
+    recent_conversation_messages:
       type: string
-    server_conversation_context:
+    thread_briefing:
       type: string
-    context_state:
+    thread_metadata:
       type: object
-    context:
+    manual_source_text:
       type: string
-    uploaded_context:
+    uploaded_source_text:
       type: string
 
 defaults:
@@ -27,70 +27,70 @@ defaults:
   stream: false
 
 steps:
-  - id: search_context
-    name: Search context
+  - id: search_evidence
+    name: Search evidence
     kind: search
     use_query_refiner: true
     prompt: |
       {{ params.question }}
 
-      Compacted prior thread state:
-      {{ params.compacted_thread_state }}
+      Prior thread context:
+      {{ params.thread_state_text }}
 
-      Recent raw conversation tail:
-      {{ params.recent_conversation_tail }}
+      Recent conversation context:
+      {{ params.recent_conversation_messages }}
 
       Additional context:
-      {{ params.context }}
-      {{ params.uploaded_context }}
-    output_key: search_context
+      {{ params.manual_source_text }}
+      {{ params.uploaded_source_text }}
+    output_key: search_evidence
 
-  - id: rerank_search_context
-    name: Rerank search context
+  - id: rerank_search_evidence
+    name: Rerank search evidence
     kind: rerank
-    depends_on: [search_context]
-    rerank_context: |
+    depends_on: [search_evidence]
+    rerank_source_text: |
       Question:
       {{ params.question }}
 
-      Compacted prior thread state:
-      {{ params.compacted_thread_state }}
+      Prior thread context:
+      {{ params.thread_state_text }}
 
-      Recent raw conversation tail:
-      {{ params.recent_conversation_tail }}
+      Recent conversation context:
+      {{ params.recent_conversation_messages }}
 
       Manual context:
-      {{ params.context }}
+      {{ params.manual_source_text }}
 
       Uploaded context:
-      {{ params.uploaded_context }}
+      {{ params.uploaded_source_text }}
     prompt: |
       {{ params.question }}
-    output_key: search_context
+    output_key: search_evidence
 
   - id: synthesize_brief
     name: Synthesize brief
     kind: llm
     chat_visibility: final
-    depends_on: [rerank_search_context]
+    depends_on: [rerank_search_evidence]
     prompt: |
       Question:
       {{ params.question }}
 
-      Compacted prior thread state:
-      {{ params.compacted_thread_state }}
+      Prior thread context:
+      {{ params.thread_state_text }}
 
-      Recent raw conversation tail:
-      {{ params.recent_conversation_tail }}
+      Recent conversation context:
+      {{ params.recent_conversation_messages }}
 
       Manual context:
-      {{ params.context }}
+      {{ params.manual_source_text }}
 
       Uploaded context:
-      {{ params.uploaded_context }}
+      {{ params.uploaded_source_text }}
 
       Search context:
-      {{ outputs.search_context.text }}
+      {{ outputs.search_evidence.text }}
 
       Produce a concise research brief with key findings, uncertainty, and recommended next steps.
     output_key: research_brief

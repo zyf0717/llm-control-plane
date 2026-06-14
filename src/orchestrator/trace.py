@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from src.logging_config import get_trace_log_path
-from src.search.safety import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER
+from src.search.safety import EPHEMERAL_WEB_SEARCH_EVIDENCE_MARKER
 
 
 TRACE_ID_HEADER = "X-Trace-ID"
@@ -21,13 +21,13 @@ class RequestTrace:
     """Minimal per-request trace object for future observability."""
 
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    convo_id: Optional[str] = None
+    conversation_id: Optional[str] = None
     endpoint: Optional[str] = None
     route: dict[str, str] = field(default_factory=dict)
     search: dict[str, Any] = field(default_factory=dict)
-    rag: dict[str, str] = field(default_factory=dict)
+    retrieval: dict[str, str] = field(default_factory=dict)
     slot: dict[str, str] = field(default_factory=dict)
-    history: dict[str, Any] = field(default_factory=dict)
+    conversation: dict[str, Any] = field(default_factory=dict)
     timing: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     status_code: Optional[int] = None
@@ -41,18 +41,18 @@ class RequestTrace:
         return headers
 
     def capture_headers(self, headers: dict[str, Any]) -> None:
-        """Copy route/RAG response headers into normalized trace fields."""
+        """Copy route/Retrieval response headers into normalized trace fields."""
         for name, value in headers.items():
             lower_name = str(name).lower()
             if lower_name.startswith("x-route-"):
                 self.route[lower_name.replace("x-route-", "")] = str(value)
-            elif lower_name.startswith("x-rag-"):
-                self.rag[lower_name.replace("x-rag-", "")] = str(value)
+            elif lower_name.startswith("x-retrieval-"):
+                self.retrieval[lower_name.replace("x-retrieval-", "")] = str(value)
             elif lower_name.startswith("x-upstream-slot-"):
                 self.slot[lower_name.replace("x-upstream-slot-", "")] = str(value)
 
     def capture_search_from_body(self, body: dict[str, Any]) -> None:
-        """Record presence of turn-local web search context without storing content."""
+        """Record presence of turn-local web search evidence without storing content."""
         messages = body.get("messages") if isinstance(body, dict) else None
         if not isinstance(messages, list):
             return
@@ -63,13 +63,13 @@ class RequestTrace:
             content = message.get("content")
             if not isinstance(content, str):
                 continue
-            if EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER in content:
+            if EPHEMERAL_WEB_SEARCH_EVIDENCE_MARKER in content:
                 self.search["injected"] = "true"
                 self._capture_search_metadata(content)
                 return
 
     def _capture_search_metadata(self, content: str) -> None:
-        payload_text = content.split(EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER, 1)[1].strip()
+        payload_text = content.split(EPHEMERAL_WEB_SEARCH_EVIDENCE_MARKER, 1)[1].strip()
         try:
             payload = json.loads(payload_text)
         except json.JSONDecodeError:
@@ -102,13 +102,13 @@ class RequestTrace:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "phase": phase,
             "request_id": self.request_id,
-            "convo_id": self.convo_id,
+            "conversation_id": self.conversation_id,
             "endpoint": self.endpoint,
             "route": dict(self.route),
             "search": dict(self.search),
-            "rag": dict(self.rag),
+            "retrieval": dict(self.retrieval),
             "slot": dict(self.slot),
-            "history": dict(self.history),
+            "conversation": dict(self.conversation),
             "timing": dict(self.timing),
             "warnings": list(self.warnings),
             "status_code": self.status_code,

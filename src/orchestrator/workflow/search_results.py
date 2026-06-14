@@ -160,7 +160,7 @@ def merge_reranked_search_result(
     merged = dict(reranked) | {
         key: value
         for key, value in source.items()
-        if key not in {"results", "reranking", "warnings", "wrapped_results"}
+        if key not in {"results", "reranking", "warnings", "search_evidence"}
     }
     merged["warnings"] = warnings
     return merged

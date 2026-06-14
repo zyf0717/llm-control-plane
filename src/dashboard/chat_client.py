@@ -92,13 +92,13 @@ def _extract_metadata(
         if trace_id:
             combined["trace"] = {"id": trace_id}
 
-        rag_info = {}
+        retrieval_info = {}
         for header_name, header_value in response_headers.items():
-            if header_name.lower().startswith("x-rag-"):
-                key = header_name.lower().replace("x-rag-", "")
-                rag_info[key] = header_value
-        if rag_info:
-            combined["rag"] = rag_info
+            if header_name.lower().startswith("x-retrieval-"):
+                key = header_name.lower().replace("x-retrieval-", "")
+                retrieval_info[key] = header_value
+        if retrieval_info:
+            combined["retrieval"] = retrieval_info
 
         warning = ""
         for header_name, header_value in response_headers.items():
@@ -150,11 +150,11 @@ async def stream_chat_response(
     output_json: bool = False,
     reasoning_effort: str = "medium",
     output_reasoning: bool = False,
-    convo_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
     current_routing_info: Optional[Dict[str, Any]] = None,
     system_prompt: Optional[str] = None,
     extra_turn_messages: Optional[list[dict[str, Any]]] = None,
-    rag_endpoint: Optional[str] = None,
+    retrieval_endpoint: Optional[str] = None,
     on_metadata: Optional[MetadataCallback] = None,
     on_send_button_state: Optional[StateCallback] = None,
     on_runtime: Optional[RuntimeCallback] = None,
@@ -193,10 +193,10 @@ async def stream_chat_response(
         }
         if endpoint_key != "smart":
             headers["X-Allow-Route-Switch"] = "true"
-        if convo_id:
-            headers["X-Convo-ID"] = convo_id
-        if rag_endpoint:
-            headers["X-RAG-Endpoint"] = rag_endpoint
+        if conversation_id:
+            headers["X-Conversation-ID"] = conversation_id
+        if retrieval_endpoint:
+            headers["X-Retrieval-Endpoint"] = retrieval_endpoint
         timeout = httpx.Timeout(connect=5, read=None, write=5, pool=10)
         routing_info_holder = {"routing": current_routing_info or {}}
         metadata_holder: Dict[str, Any] = {}

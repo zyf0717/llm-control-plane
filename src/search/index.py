@@ -71,7 +71,7 @@ def build_search_router(
                 search_config.get("timeout_ms", 7000),
             )
         ),
-        max_context_chars=int(search_config.get("query_refiner_max_context_chars", 12000)),
+        max_source_chars=int(search_config.get("query_refiner_max_source_chars", 12000)),
         max_output_tokens=int(search_config.get("query_refiner_max_output_tokens", 512)),
         max_queries=int(search_config.get("query_refiner_max_queries", 1)),
         headers=dict(query_refiner_headers),
@@ -94,7 +94,7 @@ def build_search_router(
                 search_config.get("timeout_ms", 7000),
             )
         ),
-        max_context_chars=int(search_config.get("reranker_max_context_chars", 12000)),
+        max_source_chars=int(search_config.get("reranker_max_source_chars", 12000)),
         max_candidates=int(search_config.get("reranker_max_candidates", 20)),
         max_output_tokens=int(search_config.get("reranker_max_output_tokens", 1024)),
         headers=dict(query_refiner_headers),

@@ -106,7 +106,7 @@ class RerankingSearchClient(CapturingSearchClient):
             "results": list(reversed(kwargs["results"])),
             "reranking": {"used": True, "model": "stub", "path": "llm"},
             "warnings": [],
-            "wrapped_results": "reranked",
+            "search_evidence": "reranked",
         }
 
 
@@ -145,11 +145,11 @@ steps:
     )
 
 
-def write_context_workflow(path: Path) -> None:
+def write_source_workflow(path: Path) -> None:
     path.write_text(
         """
-id: context_sample
-name: Context Sample
+id: source_sample
+name: Source Sample
 version: 0.1.0
 params_schema:
   type: object
@@ -158,14 +158,14 @@ defaults:
   reasoning_effort: high
   search_provider: wikipedia_opensearch
 steps:
-  - id: search_context
+  - id: search_evidence
     kind: search
     prompt: "{{ params.goal }}"
-    output_key: search_context
+    output_key: search_evidence
   - id: synthesize
     kind: llm
-    depends_on: [search_context]
-    prompt: "{{ outputs.search_context.text }}"
+    depends_on: [search_evidence]
+    prompt: "{{ outputs.search_evidence.text }}"
     output_key: synthesis
 """,
         encoding="utf-8",
@@ -289,7 +289,7 @@ steps:
     kind: rerank
     rerank_top_k: 10
     depends_on: [search]
-    rerank_context: "Goal: {{ params.goal }}"
+    rerank_source_text: "Goal: {{ params.goal }}"
     prompt: "{{ params.goal }}"
     output_key: search
 """,
@@ -426,7 +426,7 @@ steps:
     )
 
 
-def write_compact_context_workflow(
+def write_compress_source_workflow(
     path: Path,
     *,
     input_format: str = "auto",
@@ -441,26 +441,26 @@ def write_compact_context_workflow(
 ) -> None:
     path.write_text(
         f"""
-id: compact_sample
-name: Compact Sample
+id: compress_sample
+name: Compress Sample
 version: 0.1.0
 params_schema:
   type: object
-  required: [context]
+  required: [manual_source_text]
 steps:
-  - id: compact
-    kind: compact_context
-    prompt: "{{{{ params.context }}}}"
-    output_key: compacted
-    compaction_input_format: {input_format}
-    compaction_output_format: {output_format}
-    compaction_trigger_chars: {trigger}
-    compaction_chunk_chars: {chunk}
-    compaction_target_chars: {target}
-    compaction_max_output_chars: {max_output}
-    compaction_max_output_json_bytes: {max_json_bytes}
-    compaction_max_rounds: {max_rounds}
-    compaction_goal: Preserve evidence, source refs, and concept logic.
+  - id: compress
+    kind: compress_source
+    prompt: "{{{{ params.manual_source_text }}}}"
+    output_key: compressed
+    compression_input_format: {input_format}
+    compression_output_format: {output_format}
+    compression_trigger_chars: {trigger}
+    compression_chunk_chars: {chunk}
+    compression_target_chars: {target}
+    compression_max_output_chars: {max_output}
+    compression_max_output_json_bytes: {max_json_bytes}
+    compression_max_rounds: {max_rounds}
+    compression_goal: Preserve evidence, source refs, and concept logic.
 {output_contract}
 """,
         encoding="utf-8",
@@ -494,8 +494,8 @@ async def test_executor_advances_steps_with_previous_outputs(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_executor_uses_run_search_provider_and_rag_endpoint(tmp_path):
-    write_context_workflow(tmp_path / "context_sample.yaml")
+async def test_executor_uses_run_search_provider_and_retrieval_endpoint(tmp_path):
+    write_source_workflow(tmp_path / "source_sample.yaml")
     registry = WorkflowRegistry(tmp_path)
     registry.load()
     store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
@@ -505,10 +505,10 @@ async def test_executor_uses_run_search_provider_and_rag_endpoint(tmp_path):
     executor = WorkflowExecutor(registry, store, llm, search)
     try:
         created = await executor.create_run(
-            "context_sample",
+            "source_sample",
             params={"goal": "ship"},
             endpoint="node-a",
-            rag_endpoint="http://rag/api/retrieve/context",
+            retrieval_endpoint="http://retrieval/api/retrieve/context",
             search_provider="duckduckgo_html",
         )
         run_id = created["run"]["run_id"]
@@ -517,7 +517,7 @@ async def test_executor_uses_run_search_provider_and_rag_endpoint(tmp_path):
         await executor.advance(run_id)
 
         assert search.calls[0]["provider"] == "duckduckgo_html"
-        assert llm.prompts[0]["rag_endpoint"] == "http://rag/api/retrieve/context"
+        assert llm.prompts[0]["retrieval_endpoint"] == "http://retrieval/api/retrieve/context"
     finally:
         await store.close()
 
@@ -788,7 +788,7 @@ async def test_search_step_can_dispatch_json_string_query_without_query_refiner(
 
 
 @pytest.mark.asyncio
-async def test_rerank_step_honors_explicit_context_and_overwrites_output_key(tmp_path):
+async def test_rerank_step_honors_explicit_source_text_and_overwrites_output_key(tmp_path):
     write_explicit_search_controls_workflow(
         tmp_path / "explicit_search_controls_sample.yaml"
     )
@@ -827,7 +827,7 @@ async def test_rerank_step_honors_explicit_context_and_overwrites_output_key(tmp
                         "rank": 1,
                     }
                 ],
-                "context": "Goal: ship",
+                "source_text": "Goal: ship",
                 "top_k": 10,
             }
         ]
@@ -914,8 +914,8 @@ async def test_multi_query_workflow_reranks_merged_results_when_available(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_compact_context_passes_through_below_trigger_without_llm(tmp_path):
-    write_compact_context_workflow(tmp_path / "compact.yaml", trigger=1000)
+async def test_compress_source_passes_through_below_trigger_without_llm(tmp_path):
+    write_compress_source_workflow(tmp_path / "compress.yaml", trigger=1000)
     registry = WorkflowRegistry(tmp_path)
     registry.load()
     store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
@@ -924,26 +924,26 @@ async def test_compact_context_passes_through_below_trigger_without_llm(tmp_path
     executor = WorkflowExecutor(registry, store, llm)
     try:
         created = await executor.create_run(
-            "compact_sample",
-            params={"context": "short context with useful evidence"},
+            "compress_sample",
+            params={"manual_source_text": "short source text with useful evidence"},
             endpoint="node-a",
         )
         snapshot = await executor.advance(created["run"]["run_id"])
 
         output = snapshot["steps"][0]["output_json"]
         assert llm.prompts == []
-        assert output["text"] == "short context with useful evidence"
-        assert output["json"]["compacted"] is False
+        assert output["text"] == "short source text with useful evidence"
+        assert output["json"]["compressed"] is False
         assert output["json"]["method"] == "pass_through"
-        assert output["metadata"]["kind"] == "compact_context"
+        assert output["metadata"]["kind"] == "compress_source"
     finally:
         await store.close()
 
 
 @pytest.mark.asyncio
-async def test_compact_context_pass_through_enforces_output_payload_cap(tmp_path):
-    write_compact_context_workflow(
-        tmp_path / "compact.yaml",
+async def test_compress_source_pass_through_enforces_output_payload_cap(tmp_path):
+    write_compress_source_workflow(
+        tmp_path / "compress.yaml",
         trigger=1000,
         max_json_bytes=120,
     )
@@ -955,23 +955,23 @@ async def test_compact_context_pass_through_enforces_output_payload_cap(tmp_path
     executor = WorkflowExecutor(registry, store, llm)
     try:
         created = await executor.create_run(
-            "compact_sample",
-            params={"context": "short"},
+            "compress_sample",
+            params={"manual_source_text": "short"},
             endpoint="node-a",
         )
         snapshot = await executor.advance(created["run"]["run_id"])
 
         assert llm.prompts == []
         assert snapshot["run"]["status"] == "failed"
-        assert "compaction_output_over_budget" in snapshot["steps"][0]["error"]
+        assert "compression_output_over_budget" in snapshot["steps"][0]["error"]
     finally:
         await store.close()
 
 
 @pytest.mark.asyncio
-async def test_compact_context_rejects_malformed_explicit_json_input(tmp_path):
-    write_compact_context_workflow(
-        tmp_path / "compact.yaml",
+async def test_compress_source_rejects_malformed_explicit_json_input(tmp_path):
+    write_compress_source_workflow(
+        tmp_path / "compress.yaml",
         input_format="json",
     )
     registry = WorkflowRegistry(tmp_path)
@@ -982,25 +982,25 @@ async def test_compact_context_rejects_malformed_explicit_json_input(tmp_path):
     executor = WorkflowExecutor(registry, store, llm)
     try:
         created = await executor.create_run(
-            "compact_sample",
-            params={"context": '{"bad": '},
+            "compress_sample",
+            params={"manual_source_text": '{"bad": '},
             endpoint="node-a",
         )
         snapshot = await executor.advance(created["run"]["run_id"])
 
         assert llm.prompts == []
         assert snapshot["run"]["status"] == "failed"
-        assert "compaction_input_shape_invalid" in snapshot["steps"][0]["error"]
+        assert "compression_input_shape_invalid" in snapshot["steps"][0]["error"]
     finally:
         await store.close()
 
 
 @pytest.mark.asyncio
-async def test_compact_context_calls_llm_above_trigger_and_preserves_quality_prompt(
+async def test_compress_source_calls_llm_above_trigger_and_preserves_quality_prompt(
     tmp_path,
 ):
-    write_compact_context_workflow(
-        tmp_path / "compact.yaml",
+    write_compress_source_workflow(
+        tmp_path / "compress.yaml",
         trigger=500,
         chunk=400,
         target=300,
@@ -1010,11 +1010,11 @@ async def test_compact_context_calls_llm_above_trigger_and_preserves_quality_pro
     registry.load()
     store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
     await store.initialize()
-    compact = (
+    compress = (
         '"ACME Cooling Vest" 2025 42% https://example.gov/study example.gov '
         "ACME Independent Review OSHA outdoor workers evidence caveat."
     )
-    llm = SequenceLLMClient([compact] * 12)
+    llm = SequenceLLMClient([compress] * 12)
     executor = WorkflowExecutor(registry, store, llm)
     source = (
         '"ACME Cooling Vest" showed 42% reduction in 2025 '
@@ -1024,7 +1024,7 @@ async def test_compact_context_calls_llm_above_trigger_and_preserves_quality_pro
     ) * 4
     try:
         created = await executor.create_run(
-            "compact_sample", params={"context": source}, endpoint="node-a"
+            "compress_sample", params={"manual_source_text": source}, endpoint="node-a"
         )
         snapshot = await executor.advance(created["run"]["run_id"])
 
@@ -1035,7 +1035,7 @@ async def test_compact_context_calls_llm_above_trigger_and_preserves_quality_pro
         output = snapshot["steps"][0]["output_json"]
         assert snapshot["run"]["status"] == "completed"
         assert len(llm.prompts) >= output["json"]["chunks"]
-        assert output["json"]["compacted"] is True
+        assert output["json"]["compressed"] is True
         assert output["json"]["warnings"] == []
         assert "https://example.gov/study" in output["text"]
     finally:
@@ -1043,9 +1043,9 @@ async def test_compact_context_calls_llm_above_trigger_and_preserves_quality_pro
 
 
 @pytest.mark.asyncio
-async def test_compact_context_repairs_malformed_structured_output(tmp_path):
-    write_compact_context_workflow(
-        tmp_path / "compact.yaml",
+async def test_compress_source_repairs_malformed_structured_output(tmp_path):
+    write_compress_source_workflow(
+        tmp_path / "compress.yaml",
         output_format="json",
         trigger=240,
         chunk=240,
@@ -1064,8 +1064,8 @@ async def test_compact_context_repairs_malformed_structured_output(tmp_path):
     executor = WorkflowExecutor(registry, store, llm)
     try:
         created = await executor.create_run(
-            "compact_sample",
-            params={"context": ("alpha beta evidence. " * 20)},
+            "compress_sample",
+            params={"manual_source_text": ("alpha beta evidence. " * 20)},
             endpoint="node-a",
         )
         snapshot = await executor.advance(created["run"]["run_id"])
@@ -1073,15 +1073,15 @@ async def test_compact_context_repairs_malformed_structured_output(tmp_path):
         output = snapshot["steps"][0]["output_json"]
         assert snapshot["run"]["status"] == "completed"
         assert "output_repaired" in output["json"]["warnings"]
-        assert output["json"]["compact_output"]["summary"] == "x"
+        assert output["json"]["compressed_output"]["summary"] == "x"
     finally:
         await store.close()
 
 
 @pytest.mark.asyncio
-async def test_compact_context_fails_when_repaired_output_still_over_budget(tmp_path):
-    write_compact_context_workflow(
-        tmp_path / "compact.yaml",
+async def test_compress_source_fails_when_repaired_output_still_over_budget(tmp_path):
+    write_compress_source_workflow(
+        tmp_path / "compress.yaml",
         trigger=240,
         chunk=240,
         target=100,
@@ -1095,22 +1095,22 @@ async def test_compact_context_fails_when_repaired_output_still_over_budget(tmp_
     executor = WorkflowExecutor(registry, store, llm)
     try:
         created = await executor.create_run(
-            "compact_sample",
-            params={"context": ("alpha beta evidence. " * 20)},
+            "compress_sample",
+            params={"manual_source_text": ("alpha beta evidence. " * 20)},
             endpoint="node-a",
         )
         snapshot = await executor.advance(created["run"]["run_id"])
 
         assert snapshot["run"]["status"] == "failed"
-        assert "compaction_output_over_budget" in snapshot["steps"][0]["error"]
+        assert "compression_output_over_budget" in snapshot["steps"][0]["error"]
     finally:
         await store.close()
 
 
 @pytest.mark.asyncio
-async def test_compact_context_reduces_multi_chunk_summaries(tmp_path):
-    write_compact_context_workflow(
-        tmp_path / "compact.yaml",
+async def test_compress_source_reduces_multi_chunk_summaries(tmp_path):
+    write_compress_source_workflow(
+        tmp_path / "compress.yaml",
         trigger=240,
         chunk=240,
         target=90,
@@ -1127,21 +1127,21 @@ async def test_compact_context_reduces_multi_chunk_summaries(tmp_path):
             "beta evidence summary " * 4,
             "gamma evidence summary " * 4,
             "delta evidence summary " * 4,
-            *("alpha beta gamma compact evidence." for _ in range(8)),
+            *("alpha beta gamma compress evidence." for _ in range(8)),
         ]
     )
     executor = WorkflowExecutor(registry, store, llm)
     try:
         created = await executor.create_run(
-            "compact_sample",
-            params={"context": ("alpha beta gamma evidence. " * 30)},
+            "compress_sample",
+            params={"manual_source_text": ("alpha beta gamma evidence. " * 30)},
             endpoint="node-a",
         )
         snapshot = await executor.advance(created["run"]["run_id"])
 
         output = snapshot["steps"][0]["output_json"]
         assert snapshot["run"]["status"] == "completed"
-        assert "compact evidence" in output["text"]
+        assert "compress evidence" in output["text"]
         assert output["json"]["rounds"] >= 1
         assert len(llm.prompts) > output["json"]["chunks"]
     finally:

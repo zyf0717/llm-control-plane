@@ -6,25 +6,25 @@ import pytest
 from src.dashboard import utils
 
 
-def test_load_rag_endpoint_config_reads_config(tmp_path, monkeypatch):
+def test_load_retrieval_endpoint_config_reads_config(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         """
-rag:
+retrieval:
   default_endpoint: "http://localhost:8100/api/retrieve/context"
   endpoints:
     - name: "localhost:8100"
       retrieve_url: "http://localhost:8100/api/retrieve/context"
       health_url: "http://localhost:8100/api/health"
-    - name: "rag.internal:8200"
-      retrieve_url: "http://rag.internal:8200/api/retrieve/context"
-      health_url: "http://rag.internal:8200/api/health"
+    - name: "retrieval.internal:8200"
+      retrieve_url: "http://retrieval.internal:8200/api/retrieve/context"
+      health_url: "http://retrieval.internal:8200/api/health"
 """.strip(),
         encoding="utf-8",
     )
     monkeypatch.setattr(utils, "CONFIG_PATH", config_path)
 
-    endpoints, default_endpoint = utils.load_rag_endpoint_config()
+    endpoints, default_endpoint = utils.load_retrieval_endpoint_config()
 
     assert endpoints == [
         {
@@ -33,9 +33,9 @@ rag:
             "health_url": "http://localhost:8100/api/health",
         },
         {
-            "name": "rag.internal:8200",
-            "retrieve_url": "http://rag.internal:8200/api/retrieve/context",
-            "health_url": "http://rag.internal:8200/api/health",
+            "name": "retrieval.internal:8200",
+            "retrieve_url": "http://retrieval.internal:8200/api/retrieve/context",
+            "health_url": "http://retrieval.internal:8200/api/health",
         },
     ]
     assert default_endpoint == "http://localhost:8100/api/retrieve/context"
@@ -51,21 +51,21 @@ def test_read_trace_events_filters_and_returns_newest_first(tmp_path):
         {
             "timestamp": "2026-06-09T00:00:00+00:00",
             "request_id": "trace-old",
-            "convo_id": "convo-a",
+            "conversation_id": "conversation-a",
             "endpoint": "primary",
             "status_code": 200,
         },
         {
             "timestamp": "2026-06-09T00:01:00+00:00",
             "request_id": "trace-mid",
-            "convo_id": "convo-b",
+            "conversation_id": "conversation-b",
             "endpoint": "secondary",
             "status_code": 200,
         },
         {
             "timestamp": "2026-06-09T00:02:00+00:00",
             "request_id": "trace-new",
-            "convo_id": "convo-a",
+            "conversation_id": "conversation-a",
             "endpoint": "primary",
             "status_code": 500,
         },
@@ -89,7 +89,7 @@ def test_read_trace_events_filters_and_returns_newest_first(tmp_path):
     ]
     assert utils.read_trace_events(
         trace_path=trace_path,
-        convo_id="convo-a",
+        conversation_id="conversation-a",
         endpoint="primary",
         max_events=10,
     ) == [events[2], events[0]]
@@ -100,12 +100,12 @@ def test_read_trace_events_filters_and_returns_newest_first(tmp_path):
     ) == [events[1]]
 
 
-def test_load_rag_endpoint_config_falls_back_to_default(tmp_path, monkeypatch):
+def test_load_retrieval_endpoint_config_falls_back_to_default(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
-    config_path.write_text("rag: {}", encoding="utf-8")
+    config_path.write_text("retrieval: {}", encoding="utf-8")
     monkeypatch.setattr(utils, "CONFIG_PATH", config_path)
 
-    endpoints, default_endpoint = utils.load_rag_endpoint_config()
+    endpoints, default_endpoint = utils.load_retrieval_endpoint_config()
 
     assert endpoints == [
         {
@@ -148,19 +148,19 @@ search:
     ]
 
 
-def test_load_query_refiner_max_context_chars_reads_config(tmp_path, monkeypatch):
+def test_load_query_refiner_max_source_chars_reads_config(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        "search: {query_refiner_max_context_chars: 24}",
+        "search: {query_refiner_max_source_chars: 24}",
         encoding="utf-8",
     )
     monkeypatch.setattr(utils, "CONFIG_PATH", config_path)
 
-    assert utils.load_query_refiner_max_context_chars() == 24
+    assert utils.load_query_refiner_max_source_chars() == 24
 
 
-def test_trim_search_context_preserves_tail():
-    trimmed = utils.trim_search_context("abcdef", 4)
+def test_trim_search_source_text_preserves_tail():
+    trimmed = utils.trim_search_source_text("abcdef", 4)
 
     assert trimmed == "cdef"
 
@@ -183,7 +183,7 @@ def test_fetch_available_search_providers_returns_none_when_search_disabled(
 @pytest.mark.asyncio
 async def test_fetch_search_results_posts_to_proxy(monkeypatch):
     monkeypatch.setattr(utils, "PROXY_BASE_URL", "http://proxy.local")
-    monkeypatch.setattr(utils, "load_query_refiner_max_context_chars", lambda: 12000)
+    monkeypatch.setattr(utils, "load_query_refiner_max_source_chars", lambda: 12000)
 
     response = Mock()
     response.raise_for_status = Mock()
@@ -213,13 +213,13 @@ async def test_fetch_search_results_posts_to_proxy(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_fetch_convo_state_posts_to_proxy(monkeypatch):
+async def test_fetch_conversation_control_state_posts_to_proxy(monkeypatch):
     monkeypatch.setattr(utils, "PROXY_BASE_URL", "http://proxy.local")
 
     response = Mock()
     response.raise_for_status = Mock()
     response.json.return_value = {
-        "convo_id": "convo-1",
+        "conversation_id": "conversation-1",
         "route_endpoint": "primary",
         "reasoning_effort": "high",
     }
@@ -229,23 +229,23 @@ async def test_fetch_convo_state_posts_to_proxy(monkeypatch):
         mock_client_class.return_value.__aenter__.return_value = mock_client
         mock_client.post.return_value = response
 
-        payload = await utils.fetch_convo_state("convo-1")
+        payload = await utils.fetch_conversation_control_state("conversation-1")
 
     assert payload == {
-        "convo_id": "convo-1",
+        "conversation_id": "conversation-1",
         "route_endpoint": "primary",
         "reasoning_effort": "high",
     }
     mock_client.post.assert_awaited_once_with(
         "http://proxy.local/conversations/state",
-        json={"convo_id": "convo-1"},
+        json={"conversation_id": "conversation-1"},
     )
 
 
 @pytest.mark.asyncio
 async def test_fetch_search_results_posts_trimmed_context(monkeypatch):
     monkeypatch.setattr(utils, "PROXY_BASE_URL", "http://proxy.local")
-    monkeypatch.setattr(utils, "load_query_refiner_max_context_chars", lambda: 12)
+    monkeypatch.setattr(utils, "load_query_refiner_max_source_chars", lambda: 12)
 
     response = Mock()
     response.raise_for_status = Mock()
@@ -260,20 +260,20 @@ async def test_fetch_search_results_posts_trimmed_context(monkeypatch):
             query="Ada Lovelace",
             provider="duckduckgo_html",
             count=5,
-            context="0123456789abcdef",
+            source_text="0123456789abcdef",
         )
 
     sent = mock_client.post.await_args.kwargs["json"]
-    assert sent["context"] == "456789abcdef"
+    assert sent["source_text"] == "456789abcdef"
 
 
 @pytest.mark.asyncio
-async def test_fetch_available_rag_endpoints_keeps_unhealthy_configured_options(
+async def test_fetch_available_retrieval_endpoints_keeps_unhealthy_configured_options(
     monkeypatch,
 ):
     monkeypatch.setattr(
         utils,
-        "load_rag_endpoint_config",
+        "load_retrieval_endpoint_config",
         lambda: (
             [
                 {
@@ -305,23 +305,23 @@ async def test_fetch_available_rag_endpoints_keeps_unhealthy_configured_options(
 
         mock_client.get.side_effect = mock_get
 
-        choices, selected = await utils.fetch_available_rag_endpoints()
+        choices, selected = await utils.fetch_available_retrieval_endpoints()
 
     assert choices == {
-        utils.NONE_RAG_OPTION_VALUE: "None",
+        utils.NONE_RETRIEVAL_OPTION_VALUE: "None",
         "http://healthy/api/retrieve/context": "healthy (http://healthy/api/retrieve/context)",
         "http://down/api/retrieve/context": "down (http://down/api/retrieve/context)",
     }
-    assert selected == utils.NONE_RAG_OPTION_VALUE
+    assert selected == utils.NONE_RETRIEVAL_OPTION_VALUE
 
 
 @pytest.mark.asyncio
-async def test_fetch_available_rag_endpoints_does_not_auto_select_configured_default(
+async def test_fetch_available_retrieval_endpoints_does_not_auto_select_configured_default(
     monkeypatch,
 ):
     monkeypatch.setattr(
         utils,
-        "load_rag_endpoint_config",
+        "load_retrieval_endpoint_config",
         lambda: (
             [
                 {
@@ -339,13 +339,13 @@ async def test_fetch_available_rag_endpoints_does_not_auto_select_configured_def
         mock_client_class.return_value.__aenter__.return_value = mock_client
         mock_client.get.side_effect = RuntimeError("unreachable")
 
-        choices, selected = await utils.fetch_available_rag_endpoints()
+        choices, selected = await utils.fetch_available_retrieval_endpoints()
 
     assert choices == {
-        utils.NONE_RAG_OPTION_VALUE: "None",
+        utils.NONE_RETRIEVAL_OPTION_VALUE: "None",
         "http://down/api/retrieve/context": "down (http://down/api/retrieve/context)",
     }
-    assert selected == utils.NONE_RAG_OPTION_VALUE
+    assert selected == utils.NONE_RETRIEVAL_OPTION_VALUE
 
 
 def test_create_endpoint_display_choices_keeps_evo_x2_routes_distinct():
@@ -369,10 +369,10 @@ def test_create_endpoint_display_choices_keeps_evo_x2_routes_distinct():
     assert mapping == choices
 
 
-def test_create_history_select_choices_uses_convo_id_as_value():
+def test_create_history_select_choices_uses_conversation_id_as_value():
     conversations = [
         {
-            "convo_id": "c3630b242ac7",
+            "conversation_id": "c3630b242ac7",
             "last_updated": "2026-05-21T05:48:40+00:00",
         }
     ]

@@ -1,7 +1,7 @@
-id: contextual_search
-name: Contextual Search
+id: threaded_search
+name: Threaded Search
 version: 0.1.0
-description: Use conversation context to plan targeted searches, dispatch them, then answer the latest prompt.
+description: Use thread briefing to plan targeted searches, dispatch them, then answer the latest prompt.
 
 params_schema:
   type: object
@@ -9,19 +9,17 @@ params_schema:
   properties:
     latest_user_prompt:
       type: string
-    conversation_context:
+    thread_briefing:
       type: string
-    compacted_thread_state:
+    thread_state_text:
       type: string
-    recent_conversation_tail:
+    recent_conversation_messages:
       type: string
-    server_conversation_context:
-      type: string
-    context_state:
+    thread_metadata:
       type: object
-    context:
+    manual_source_text:
       type: string
-    uploaded_context:
+    uploaded_source_text:
       type: string
 
 defaults:
@@ -38,34 +36,34 @@ steps:
       Latest user prompt:
       {{ params.latest_user_prompt }}
 
-      Compacted prior thread state:
-      {{ params.compacted_thread_state }}
+      Prior thread context:
+      {{ params.thread_state_text }}
 
-      Recent raw conversation tail:
-      {{ params.recent_conversation_tail }}
+      Recent conversation context:
+      {{ params.recent_conversation_messages }}
 
       Additional context:
-      {{ params.conversation_context }}
-      {{ params.context }}
-      {{ params.uploaded_context }}
+      {{ params.thread_briefing }}
+      {{ params.manual_source_text }}
+      {{ params.uploaded_source_text }}
 
       Infer the user's actual information need from the latest turn in the
-      full conversation context. Decide exactly what should be searched before
+      full thread context. Decide exactly what should be searched before
       any web lookup happens.
 
       Return strict JSON only:
       {
-        "rerank_query": "one concise context-resolved information need for ranking candidate documents",
+        "rerank_query": "one concise thread-resolved information need for ranking candidate documents",
         "queries": [
           "concise web search query for the primary information need",
           "concise web search query for a materially different evidence angle"
         ],
-        "reason": "why these searches answer the latest prompt in context",
+        "reason": "why these searches answer the latest prompt with the thread context",
         "source_preferences": ["preferred primary source domains or source types"]
       }
 
       Query rules:
-      - `rerank_query` must resolve pronouns, ellipses, and references from conversation context.
+      - `rerank_query` must resolve pronouns, ellipses, and references from thread context.
       - `rerank_query` should describe the evidence needed to answer the user; do not use search operators.
       - Return 1 to 5 queries in "queries".
       - Use multiple queries only when they target materially different source angles.
@@ -106,30 +104,30 @@ steps:
         max_attempts: 2
         repair: true
 
-  - id: search_results
-    name: Search results
+  - id: search_evidence
+    name: Search evidence
     kind: search
-    search_count: 10
+    search_count: 5
     use_query_refiner: false
     depends_on: [plan_search_queries]
     prompt: |
       {{ outputs.search_plan.json.queries }}
-    output_key: search_results
+    output_key: search_evidence
 
   - id: rerank_results
     name: Rerank results
     kind: rerank
-    rerank_top_k: 10
-    depends_on: [search_results]
-    rerank_context: |
+    rerank_top_k: 5
+    depends_on: [search_evidence]
+    rerank_source_text: |
       Latest user prompt:
       {{ params.latest_user_prompt }}
 
-      Compacted prior thread state:
-      {{ params.compacted_thread_state }}
+      Prior thread context:
+      {{ params.thread_state_text }}
 
-      Recent raw conversation tail:
-      {{ params.recent_conversation_tail }}
+      Recent conversation context:
+      {{ params.recent_conversation_messages }}
 
       Search plan reason:
       {{ outputs.search_plan.json.reason }}
@@ -138,7 +136,7 @@ steps:
       {{ outputs.search_plan.json.source_preferences }}
     prompt: |
       {{ outputs.search_plan.json.rerank_query }}
-    output_key: search_results
+    output_key: search_evidence
 
   - id: consolidate_reply
     name: Consolidate reply
@@ -149,24 +147,24 @@ steps:
       Latest user prompt:
       {{ params.latest_user_prompt }}
 
-      Compacted prior thread state:
-      {{ params.compacted_thread_state }}
+      Prior thread context:
+      {{ params.thread_state_text }}
 
-      Recent raw conversation tail:
-      {{ params.recent_conversation_tail }}
+      Recent conversation context:
+      {{ params.recent_conversation_messages }}
 
       Additional context:
-      {{ params.conversation_context }}
-      {{ params.context }}
-      {{ params.uploaded_context }}
+      {{ params.thread_briefing }}
+      {{ params.manual_source_text }}
+      {{ params.uploaded_source_text }}
 
       Search plan:
       {{ outputs.search_plan.text }}
 
-      Search results:
-      {{ outputs.search_results.text }}
+      Search context:
+      {{ outputs.search_evidence.text }}
 
-      Answer the latest user prompt directly. Use the conversation context to
-      preserve intent and constraints, and use the search results for factual
+      Answer the latest user prompt directly. Use the thread context to
+      preserve intent and constraints, and use the search context for factual
       grounding. Surface material uncertainty or missing evidence clearly.
     output_key: reply

@@ -1,7 +1,7 @@
 id: implementation_plan
 name: Implementation Plan
 version: 0.2.0
-description: Produce a staged implementation plan from search, optional RAG, and supplied context.
+description: Produce a staged implementation plan from search, optional Retrieval, and supplied source text.
 
 params_schema:
   type: object
@@ -9,17 +9,17 @@ params_schema:
   properties:
     goal:
       type: string
-    compacted_thread_state:
+    thread_state_text:
       type: string
-    recent_conversation_tail:
+    recent_conversation_messages:
       type: string
-    server_conversation_context:
+    thread_briefing:
       type: string
-    context_state:
+    thread_metadata:
       type: object
-    context:
+    manual_source_text:
       type: string
-    uploaded_context:
+    uploaded_source_text:
       type: string
 
 defaults:
@@ -27,70 +27,70 @@ defaults:
   stream: false
 
 steps:
-  - id: search_context
-    name: Search context
+  - id: search_evidence
+    name: Search evidence
     kind: search
     use_query_refiner: true
     prompt: |
       {{ params.goal }}
 
-      Compacted prior thread state:
-      {{ params.compacted_thread_state }}
+      Prior thread context:
+      {{ params.thread_state_text }}
 
-      Recent raw conversation tail:
-      {{ params.recent_conversation_tail }}
+      Recent conversation context:
+      {{ params.recent_conversation_messages }}
 
       Additional context:
-      {{ params.context }}
-      {{ params.uploaded_context }}
-    output_key: search_context
+      {{ params.manual_source_text }}
+      {{ params.uploaded_source_text }}
+    output_key: search_evidence
 
-  - id: rerank_search_context
-    name: Rerank search context
+  - id: rerank_search_evidence
+    name: Rerank search evidence
     kind: rerank
-    depends_on: [search_context]
-    rerank_context: |
+    depends_on: [search_evidence]
+    rerank_source_text: |
       Goal:
       {{ params.goal }}
 
-      Compacted prior thread state:
-      {{ params.compacted_thread_state }}
+      Prior thread context:
+      {{ params.thread_state_text }}
 
-      Recent raw conversation tail:
-      {{ params.recent_conversation_tail }}
+      Recent conversation context:
+      {{ params.recent_conversation_messages }}
 
       Manual context:
-      {{ params.context }}
+      {{ params.manual_source_text }}
 
       Uploaded context:
-      {{ params.uploaded_context }}
+      {{ params.uploaded_source_text }}
     prompt: |
       {{ params.goal }}
-    output_key: search_context
+    output_key: search_evidence
 
   - id: target_assessment
     name: Target assessment
     kind: llm
     chat_visibility: intermediate
-    depends_on: [rerank_search_context]
+    depends_on: [rerank_search_evidence]
     prompt: |
       Goal:
       {{ params.goal }}
 
-      Compacted prior thread state:
-      {{ params.compacted_thread_state }}
+      Prior thread context:
+      {{ params.thread_state_text }}
 
-      Recent raw conversation tail:
-      {{ params.recent_conversation_tail }}
+      Recent conversation context:
+      {{ params.recent_conversation_messages }}
 
       Manual context:
-      {{ params.context }}
+      {{ params.manual_source_text }}
 
       Uploaded context:
-      {{ params.uploaded_context }}
+      {{ params.uploaded_source_text }}
 
       Search context:
-      {{ outputs.search_context.text }}
+      {{ outputs.search_evidence.text }}
 
       Identify the target state, constraints, non-goals, risks, and missing information.
     output_key: target_assessment

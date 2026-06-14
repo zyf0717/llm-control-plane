@@ -80,7 +80,7 @@ def test_format_step_timeline_renders_horizontal_step_boxes():
                     "workflow_id": "implementation_plan",
                     "status": "failed",
                     "current_step_id": "failed_step",
-                    "convo_id": "wf_123_convo",
+                    "conversation_id": "wf_123_conversation",
                     "updated_at": "2026-06-12T00:00:00+00:00",
                 },
                 "steps": [
@@ -131,7 +131,7 @@ def test_format_step_timeline_uses_warning_color_for_fallback_steps():
     rendered = str(
         format_step_timeline(
             {
-                "run": {"run_id": "wf_fallback", "workflow_id": "contextual_search"},
+                "run": {"run_id": "wf_fallback", "workflow_id": "threaded_search"},
                 "steps": [
                     {
                         "step_id": "rerank_results",
@@ -235,10 +235,10 @@ def test_format_step_timeline_renders_empty_current_step_as_placeholder():
             {
                 "run": {
                     "run_id": "wf_80bce9409eec",
-                    "workflow_id": "contextual_search",
+                    "workflow_id": "threaded_search",
                     "status": "pending",
                     "current_step_id": "",
-                    "convo_id": "wf_80bce9409eec_convo",
+                    "conversation_id": "wf_80bce9409eec_conversation",
                     "updated_at": "2026-06-12T03:34:02.297810+00:00",
                     "completed_at": None,
                 },
@@ -251,4 +251,4 @@ def test_format_step_timeline_renders_empty_current_step_as_placeholder():
     assert "Current step:" in rendered
     assert "<code>-</code>" in rendered
     assert "Conversation:" in rendered
-    assert "wf_80bce9409eec_convo" in rendered
+    assert "wf_80bce9409eec_conversation" in rendered

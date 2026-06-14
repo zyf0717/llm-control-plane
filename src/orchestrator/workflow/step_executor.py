@@ -6,22 +6,22 @@ import logging
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Protocol
 
-from .compaction import (
-    build_compaction_prompt,
-    build_compaction_repair_prompt,
-    check_compaction_input_payload,
-    check_compaction_output_payload,
-    chunk_compaction_units,
+from .compression import (
+    build_compression_prompt,
+    build_compression_repair_prompt,
+    check_compression_input_payload,
+    check_compression_output_payload,
+    chunk_compression_units,
     chunk_text_by_budget,
-    compaction_needs_reduce,
-    compaction_output_payload,
-    compaction_source_excerpt,
-    compaction_units,
+    compression_needs_reduce,
+    compression_output_payload,
+    compression_source_excerpt,
+    compression_units,
     estimate_tokens,
-    extract_compaction_anchors,
-    parse_compaction_input,
-    top_compaction_evidence,
-    validate_compaction_output_text,
+    extract_compression_anchors,
+    parse_compression_input,
+    top_compression_evidence,
+    validate_compression_output_text,
 )
 from .models import WorkflowRun, WorkflowSpec, WorkflowStepSpec
 from .search_results import (
@@ -53,11 +53,11 @@ class WorkflowLLMClient(Protocol):
         *,
         endpoint: str,
         prompt: str,
-        convo_id: str,
+        conversation_id: str,
         reasoning_effort: str | None = None,
-        rag_endpoint: str | None = None,
+        retrieval_endpoint: str | None = None,
         max_tokens: int | None = None,
-        skip_history: bool = False,
+        skip_conversation: bool = False,
     ) -> dict[str, Any]:
         ...
 
@@ -66,11 +66,11 @@ class WorkflowLLMClient(Protocol):
         *,
         endpoint: str,
         prompt: str,
-        convo_id: str,
+        conversation_id: str,
         reasoning_effort: str | None = None,
-        rag_endpoint: str | None = None,
+        retrieval_endpoint: str | None = None,
         max_tokens: int | None = None,
-        skip_history: bool = False,
+        skip_conversation: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
         ...
 
@@ -91,7 +91,7 @@ class WorkflowSearchClient(Protocol):
         *,
         query: str,
         results: list[dict[str, Any]],
-        context: str | None = None,
+        source_text: str | None = None,
         top_k: int | None = None,
     ) -> dict[str, Any]:
         ...
@@ -126,8 +126,8 @@ class WorkflowStepExecutor:
             )
 
         prompt = render_template(step.prompt or "", step_input)
-        if step.kind == "compact_context":
-            return await self._execute_compact_context_step(
+        if step.kind == "compress_source":
+            return await self._execute_compress_source_step(
                 run=run,
                 spec=spec,
                 step=step,
@@ -192,9 +192,9 @@ class WorkflowStepExecutor:
         async for chunk in stream_complete(
             endpoint=endpoint,
             prompt=_prompt_with_contract(prompt, step),
-            convo_id=run.convo_id,
+            conversation_id=run.conversation_id,
             reasoning_effort=reasoning_effort,
-            rag_endpoint=run.rag_endpoint or step.rag_endpoint or spec.defaults.rag_endpoint,
+            retrieval_endpoint=run.retrieval_endpoint or step.retrieval_endpoint or spec.defaults.retrieval_endpoint,
             max_tokens=step.max_tokens or spec.defaults.max_tokens,
         ):
             if not isinstance(chunk, dict):
@@ -299,9 +299,9 @@ class WorkflowStepExecutor:
         if source_results and not query:
             raise ValueError("workflow rerank step produced no query")
 
-        rerank_context = (
-            render_template(step.rerank_context, step_input)
-            if step.rerank_context
+        rerank_source_text = (
+            render_template(step.rerank_source_text, step_input)
+            if step.rerank_source_text
             else None
         )
         if not source_results:
@@ -326,13 +326,13 @@ class WorkflowStepExecutor:
                 source=source,
                 source_results=source_results,
                 query=query,
-                rerank_context=rerank_context,
+                rerank_source_text=rerank_source_text,
             )
 
         result["workflow_rerank"] = {
             "source_output": source_key,
             "query": query,
-            "context_provided": bool(rerank_context),
+            "source_text_provided": bool(rerank_source_text),
             "path": reranking_path(result),
         }
         if not source_results:
@@ -352,7 +352,7 @@ class WorkflowStepExecutor:
         source: dict[str, Any],
         source_results: list[dict[str, Any]],
         query: str,
-        rerank_context: str | None,
+        rerank_source_text: str | None,
     ) -> dict[str, Any]:
         rerank_results = (
             getattr(self.search_client, "rerank_results", None)
@@ -380,18 +380,18 @@ class WorkflowStepExecutor:
 
         logger.info(
             "workflow rerank requested: run_id=%s workflow_id=%s step_id=%s "
-            "source_output=%s results=%d context=%s",
+            "source_output=%s results=%d source_text=%s",
             run.run_id,
             run.workflow_id,
             step.id,
             source_key,
             len(source_results),
-            bool(rerank_context),
+            bool(rerank_source_text),
         )
         reranked = await rerank_results(
             query=query,
             results=source_results,
-            context=rerank_context,
+            source_text=rerank_source_text,
             top_k=step.rerank_top_k,
         )
         result = merge_reranked_search_result(source, reranked)
@@ -409,7 +409,7 @@ class WorkflowStepExecutor:
         )
         return result
 
-    async def _execute_compact_context_step(
+    async def _execute_compress_source_step(
         self,
         *,
         run: WorkflowRun,
@@ -419,26 +419,26 @@ class WorkflowStepExecutor:
         step_input: dict[str, Any],
     ) -> WorkflowStepExecution:
         source_text = str(source or "")
-        source_format, parsed_source = parse_compaction_input(source_text, step)
-        normalized_units = compaction_units(source_text, source_format, parsed_source)
+        source_format, parsed_source = parse_compression_input(source_text, step)
+        normalized_units = compression_units(source_text, source_format, parsed_source)
         normalized_source = "\n\n".join(normalized_units).strip() or source_text
         goal = (
-            render_template(step.compaction_goal, step_input)
-            if step.compaction_goal
+            render_template(step.compression_goal, step_input)
+            if step.compression_goal
             else ""
         ).strip() or (
             "Preserve user intent, constraints, claims, concept relationships, "
             "high-value evidence snippets, source references, contradictions, "
             "and uncertainty."
         )
-        anchors = extract_compaction_anchors(normalized_source)
-        evidence = top_compaction_evidence(normalized_source, anchors, goal)
+        anchors = extract_compression_anchors(normalized_source)
+        evidence = top_compression_evidence(normalized_source, anchors, goal)
         warnings: list[str] = []
         source_chars = len(normalized_source)
         source_tokens = estimate_tokens(normalized_source)
 
-        if source_chars < step.compaction_trigger_chars:
-            checked = await self._check_compaction_output(
+        if source_chars < step.compression_trigger_chars:
+            checked = await self._check_compression_output(
                 run=run,
                 spec=spec,
                 step=step,
@@ -450,11 +450,11 @@ class WorkflowStepExecutor:
                 phase="pass_through",
             )
             warnings.extend(checked["warnings"])
-            output = compaction_output_payload(
+            output = compression_output_payload(
                 text=checked["text"],
                 parsed_output=checked.get("parsed_output"),
                 step=step,
-                compacted=False,
+                compressed=False,
                 source_format=source_format,
                 source_chars=source_chars,
                 source_tokens=source_tokens,
@@ -466,15 +466,15 @@ class WorkflowStepExecutor:
                 warnings=warnings,
                 method="pass_through",
             )
-            check_compaction_output_payload(output, step)
+            check_compression_output_payload(output, step)
             return WorkflowStepExecution(
                 output=output,
                 artifact_text=checked["text"] or None,
             )
 
-        chunks = chunk_compaction_units(normalized_units, step.compaction_chunk_chars)
+        chunks = chunk_compression_units(normalized_units, step.compression_chunk_chars)
         if not chunks and normalized_source.strip():
-            raise ValueError("compaction_input_over_budget: no compactable input chunks")
+            raise ValueError("compression_input_over_budget: no compressible input chunks")
 
         reasoning_effort = (
             step.reasoning_effort or run.reasoning_effort or spec.defaults.reasoning_effort
@@ -482,7 +482,7 @@ class WorkflowStepExecutor:
         summaries: list[str] = []
         request_bytes: list[int] = []
         for index, chunk in enumerate(chunks, start=1):
-            checked, request_byte_count = await self._compact_chunk(
+            checked, request_byte_count = await self._compress_chunk(
                 run=run,
                 spec=spec,
                 step=step,
@@ -500,11 +500,11 @@ class WorkflowStepExecutor:
             summaries.append(checked["text"])
 
         rounds = 0
-        while compaction_needs_reduce(summaries, step):
-            if rounds >= step.compaction_max_rounds:
+        while compression_needs_reduce(summaries, step):
+            if rounds >= step.compression_max_rounds:
                 break
             rounds += 1
-            summaries = await self._reduce_compaction_summaries(
+            summaries = await self._reduce_compression_summaries(
                 run=run,
                 spec=spec,
                 step=step,
@@ -518,14 +518,14 @@ class WorkflowStepExecutor:
                 warnings=warnings,
             )
 
-        if step.compaction_output_format in {"json", "yaml"} and len(summaries) != 1:
+        if step.compression_output_format in {"json", "yaml"} and len(summaries) != 1:
             raise ValueError(
-                "compaction_output_shape_invalid: structured compaction did not "
+                "compression_output_shape_invalid: structured compression did not "
                 "reduce to one output"
             )
 
         final_text = "\n\n".join(summary for summary in summaries if summary.strip())
-        checked = await self._check_compaction_output(
+        checked = await self._check_compression_output(
             run=run,
             spec=spec,
             step=step,
@@ -538,14 +538,14 @@ class WorkflowStepExecutor:
         )
         warnings.extend(checked["warnings"])
         final_text = checked["text"]
-        if len(final_text) > step.compaction_target_chars:
+        if len(final_text) > step.compression_target_chars:
             warnings.append("target_exceeded")
 
-        output = compaction_output_payload(
+        output = compression_output_payload(
             text=final_text,
             parsed_output=checked.get("parsed_output"),
             step=step,
-            compacted=True,
+            compressed=True,
             source_format=source_format,
             source_chars=source_chars,
             source_tokens=source_tokens,
@@ -555,12 +555,12 @@ class WorkflowStepExecutor:
             evidence=evidence,
             anchors=anchors,
             warnings=warnings,
-            method="llm_compaction",
+            method="llm_compression",
         )
-        check_compaction_output_payload(output, step)
+        check_compression_output_payload(output, step)
         return WorkflowStepExecution(output=output, artifact_text=final_text or None)
 
-    async def _compact_chunk(
+    async def _compress_chunk(
         self,
         *,
         run: WorkflowRun,
@@ -576,8 +576,8 @@ class WorkflowStepExecutor:
         chunk_count: int,
         round_index: int | None = None,
     ) -> tuple[dict[str, Any], int]:
-        chunk_anchors = extract_compaction_anchors(chunk) or anchors
-        prompt = build_compaction_prompt(
+        chunk_anchors = extract_compression_anchors(chunk) or anchors
+        prompt = build_compression_prompt(
             source=chunk,
             goal=goal,
             anchors=chunk_anchors,
@@ -588,17 +588,17 @@ class WorkflowStepExecutor:
             chunk_count=chunk_count,
             round_index=round_index,
         )
-        request_bytes = check_compaction_input_payload(prompt, chunk, step)
+        request_bytes = check_compression_input_payload(prompt, chunk, step)
         result = await self.llm_client.complete(
             endpoint=str(run.endpoint or ""),
             prompt=prompt,
-            convo_id=run.convo_id,
+            conversation_id=run.conversation_id,
             reasoning_effort=reasoning_effort,
-            rag_endpoint=run.rag_endpoint or step.rag_endpoint or spec.defaults.rag_endpoint,
+            retrieval_endpoint=run.retrieval_endpoint or step.retrieval_endpoint or spec.defaults.retrieval_endpoint,
             max_tokens=step.max_tokens or spec.defaults.max_tokens,
-            skip_history=True,
+            skip_conversation=True,
         )
-        checked = await self._check_compaction_output(
+        checked = await self._check_compression_output(
             run=run,
             spec=spec,
             step=step,
@@ -611,7 +611,7 @@ class WorkflowStepExecutor:
         )
         return checked, request_bytes
 
-    async def _reduce_compaction_summaries(
+    async def _reduce_compression_summaries(
         self,
         *,
         run: WorkflowRun,
@@ -627,10 +627,10 @@ class WorkflowStepExecutor:
         warnings: list[str],
     ) -> list[str]:
         combined = "\n\n".join(summary for summary in summaries if summary.strip())
-        reduce_chunks = chunk_text_by_budget(combined, step.compaction_chunk_chars)
+        reduce_chunks = chunk_text_by_budget(combined, step.compression_chunk_chars)
         next_summaries: list[str] = []
         for index, chunk in enumerate(reduce_chunks, start=1):
-            checked, request_byte_count = await self._compact_chunk(
+            checked, request_byte_count = await self._compress_chunk(
                 run=run,
                 spec=spec,
                 step=step,
@@ -649,7 +649,7 @@ class WorkflowStepExecutor:
             next_summaries.append(checked["text"])
         return next_summaries
 
-    async def _check_compaction_output(
+    async def _check_compression_output(
         self,
         *,
         run: WorkflowRun,
@@ -663,13 +663,13 @@ class WorkflowStepExecutor:
         phase: str,
     ) -> dict[str, Any]:
         warnings: list[str] = []
-        checked = validate_compaction_output_text(text, step, anchors)
+        checked = validate_compression_output_text(text, step, anchors)
         if checked["valid"]:
             return {**checked, "warnings": warnings}
         if not allow_repair:
             raise ValueError(checked["error"])
 
-        prompt = build_compaction_repair_prompt(
+        prompt = build_compression_repair_prompt(
             text=text,
             error=str(checked["error"]),
             source_text=source_text,
@@ -678,8 +678,8 @@ class WorkflowStepExecutor:
             step=step,
             phase=phase,
         )
-        check_compaction_input_payload(
-            prompt, compaction_source_excerpt(source_text, step), step
+        check_compression_input_payload(
+            prompt, compression_source_excerpt(source_text, step), step
         )
         reasoning_effort = (
             step.reasoning_effort or run.reasoning_effort or spec.defaults.reasoning_effort
@@ -687,13 +687,13 @@ class WorkflowStepExecutor:
         result = await self.llm_client.complete(
             endpoint=str(run.endpoint or ""),
             prompt=prompt,
-            convo_id=run.convo_id,
+            conversation_id=run.conversation_id,
             reasoning_effort=reasoning_effort,
-            rag_endpoint=run.rag_endpoint or step.rag_endpoint or spec.defaults.rag_endpoint,
+            retrieval_endpoint=run.retrieval_endpoint or step.retrieval_endpoint or spec.defaults.retrieval_endpoint,
             max_tokens=step.max_tokens or spec.defaults.max_tokens,
-            skip_history=True,
+            skip_conversation=True,
         )
-        repaired = validate_compaction_output_text(
+        repaired = validate_compression_output_text(
             str(result.get("text") or ""), step, anchors
         )
         if not repaired["valid"]:
@@ -713,9 +713,9 @@ class WorkflowStepExecutor:
         result = await self.llm_client.complete(
             endpoint=str(run.endpoint or ""),
             prompt=_prompt_with_contract(prompt, step),
-            convo_id=run.convo_id,
+            conversation_id=run.conversation_id,
             reasoning_effort=reasoning_effort,
-            rag_endpoint=run.rag_endpoint or step.rag_endpoint or spec.defaults.rag_endpoint,
+            retrieval_endpoint=run.retrieval_endpoint or step.retrieval_endpoint or spec.defaults.retrieval_endpoint,
             max_tokens=step.max_tokens or spec.defaults.max_tokens,
         )
         text = str(result.get("text") or "")
@@ -777,10 +777,10 @@ class WorkflowStepExecutor:
             result = await self.llm_client.complete(
                 endpoint=str(run.endpoint or ""),
                 prompt=retry_prompt,
-                convo_id=run.convo_id,
+                conversation_id=run.conversation_id,
                 reasoning_effort=reasoning_effort,
-                rag_endpoint=(
-                    run.rag_endpoint or step.rag_endpoint or spec.defaults.rag_endpoint
+                retrieval_endpoint=(
+                    run.retrieval_endpoint or step.retrieval_endpoint or spec.defaults.retrieval_endpoint
                 ),
                 max_tokens=step.max_tokens or spec.defaults.max_tokens,
             )

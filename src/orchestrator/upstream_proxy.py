@@ -29,7 +29,7 @@ class ProxyHandler:
         request: Request,
         target_url: str,
         body: Dict,
-        convo_id: Optional[str],
+        conversation_id: Optional[str],
         extra_headers: Dict = None,
         trace: RequestTrace = None,
     ) -> StreamingResponse:
@@ -90,7 +90,7 @@ class ProxyHandler:
                 await emit(create_error_sse_message("error", detail=str(e)))
             finally:
                 await RequestProcessor.finalize_stream_response(
-                    convo_id, acc.text(), trace
+                    conversation_id, acc.text(), trace
                 )
                 if downstream_open:
                     await chunks.put(None)
@@ -109,7 +109,7 @@ class ProxyHandler:
                 downstream_open = False
 
         response_headers = HeaderManager.create_response_headers(
-            convo_id=convo_id, for_streaming=True
+            conversation_id=conversation_id, for_streaming=True
         )
         if extra_headers:
             response_headers.update(extra_headers)
@@ -129,7 +129,7 @@ class ProxyHandler:
         request: Request,
         target_url: str,
         body: Dict,
-        convo_id: Optional[str],
+        conversation_id: Optional[str],
         extra_headers: Dict = None,
         trace: RequestTrace = None,
     ) -> Response:
@@ -146,7 +146,7 @@ class ProxyHandler:
                     resp_json = resp.json()
                     processed_resp = process_non_stream_response(resp_json)
 
-                    # Extract assistant text for history (from processed response)
+                    # Extract assistant text for conversation (from processed response)
                     assistant_text = extract_assistant_text(processed_resp)
 
                     if "model" in processed_resp:
@@ -160,14 +160,14 @@ class ProxyHandler:
                     assistant_text = None
                     resp_content = resp.content
 
-                history_outcome = await RequestProcessor.update_history(
-                    convo_id, assistant_text
+                conversation_outcome = await RequestProcessor.update_conversation(
+                    conversation_id, assistant_text
                 )
                 if trace:
-                    trace.history.update(history_outcome)
+                    trace.conversation.update(conversation_outcome)
 
                 response_headers = HeaderManager.create_response_headers(
-                    dict(resp.headers), convo_id
+                    dict(resp.headers), conversation_id
                 )
                 if extra_headers:
                     response_headers.update(extra_headers)
@@ -202,11 +202,11 @@ async def proxy_request(
 ) -> Response:
     """Main proxy handler with canonical conversation-state pinning."""
     endpoint_key = RequestProcessor._endpoint_key(path)
-    convo_id = RequestProcessor._normalize_convo_id(
-        request.headers.get("X-Convo-ID")
+    conversation_id = RequestProcessor._normalize_conversation_id(
+        request.headers.get("X-Conversation-ID")
     )
-    skip_history = RequestProcessor._truthy_header(
-        request.headers.get("X-LLMCP-Skip-History")
+    skip_conversation = RequestProcessor._truthy_header(
+        request.headers.get("X-LLMCP-Skip-Conversation")
     )
     requested_reasoning = RequestProcessor._normalize_reasoning_effort(
         request.headers.get("X-Reasoning-Effort")
@@ -221,9 +221,9 @@ async def proxy_request(
     state_headers: Dict[str, str] = {}
     effective_reasoning = requested_reasoning
 
-    if convo_id and not skip_history:
-        state_update = await services.history_store.update_conversation_state(
-            convo_id,
+    if conversation_id and not skip_conversation:
+        state_update = await services.conversation_store.update_conversation_control_state(
+            conversation_id,
             route_endpoint=endpoint_key,
             reasoning_effort=requested_reasoning,
             valid_route_endpoints=valid_endpoints,
@@ -238,7 +238,7 @@ async def proxy_request(
             ):
                 endpoint_key = str(conflicts["route_endpoint"])
                 path = endpoint_key
-                state = await services.history_store.get_conversation_state(convo_id)
+                state = await services.conversation_store.get_conversation_control_state(conversation_id)
                 state_headers["X-Route-Pinned"] = "true"
             else:
                 raise HTTPException(
@@ -276,18 +276,18 @@ async def proxy_request(
         if effective_reasoning:
             state_headers["X-Reasoning-Effort"] = effective_reasoning
 
-    body, rag_headers = await RequestProcessor.prepare_request(
+    body, retrieval_headers = await RequestProcessor.prepare_request(
         request,
         effective_reasoning_effort=effective_reasoning,
-        persist_history=not skip_history,
-        context_mode="none" if skip_history else None,
+        persist_conversation=not skip_conversation,
+        history_mode="none" if skip_conversation else None,
     )
     is_streaming = body.get("stream", False) or request.query_params.get("stream") in {
         "true",
         "1",
     }
-    response_convo_id = None if skip_history else convo_id
-    trace = RequestTrace(convo_id=response_convo_id, endpoint=endpoint_key)
+    response_conversation_id = None if skip_conversation else conversation_id
+    trace = RequestTrace(conversation_id=response_conversation_id, endpoint=endpoint_key)
 
     target_url = RequestProcessor.get_endpoint_url(endpoint_key)
     if not target_url:
@@ -299,13 +299,13 @@ async def proxy_request(
 
     endpoint_config = RequestProcessor.get_endpoint_config(endpoint_key)
     slot_headers = await RequestProcessor.apply_slot_affinity(
-        body, None if skip_history else convo_id, endpoint_config
+        body, None if skip_conversation else conversation_id, endpoint_config
     )
 
-    combined_headers = dict(rag_headers)
+    combined_headers = dict(retrieval_headers)
     combined_headers.update(state_headers)
-    if skip_history:
-        combined_headers["X-History-Skipped"] = "true"
+    if skip_conversation:
+        combined_headers["X-Conversation-Skipped"] = "true"
     if extra_headers:
         combined_headers.update(extra_headers)
     if state_headers.get("X-Route-Pin-Stale") == "true":
@@ -323,10 +323,10 @@ async def proxy_request(
             request,
             target_url,
             body,
-            response_convo_id,
+            response_conversation_id,
             combined_headers,
             trace,
         )
     return await ProxyHandler.non_stream_response(
-        request, target_url, body, response_convo_id, combined_headers, trace
+        request, target_url, body, response_conversation_id, combined_headers, trace
     )

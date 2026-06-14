@@ -1,17 +1,17 @@
 import json
 
 from src.logging_config import LOG_DIR_ENV
-from src.search.safety import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER
+from src.search.safety import EPHEMERAL_WEB_SEARCH_EVIDENCE_MARKER
 from src.orchestrator.trace import RequestTrace
 
 
 def test_request_trace_emits_sanitized_jsonl(monkeypatch, tmp_path):
     monkeypatch.setenv(LOG_DIR_ENV, str(tmp_path))
-    trace = RequestTrace(convo_id="convo-1", endpoint="primary")
+    trace = RequestTrace(conversation_id="conversation-1", endpoint="primary")
     trace.capture_headers(
         {
             "X-Route-Decision": "primary",
-            "X-RAG-Injected": "true",
+            "X-Retrieval-Injected": "true",
             "X-Upstream-Slot-ID": "2",
             "Authorization": "secret-token",
         }
@@ -22,7 +22,7 @@ def test_request_trace_emits_sanitized_jsonl(monkeypatch, tmp_path):
                 {
                     "role": "user",
                     "content": (
-                        f"{EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER}\n"
+                        f"{EPHEMERAL_WEB_SEARCH_EVIDENCE_MARKER}\n"
                         '{"provider":"duckduckgo_html","query":"secret prompt",'
                         '"results":[{"title":"secret result"}],"degraded":true,'
                         '"warnings":["secret warning"]}'
@@ -40,10 +40,10 @@ def test_request_trace_emits_sanitized_jsonl(monkeypatch, tmp_path):
     payload = json.loads(lines[0])
     serialized = json.dumps(payload)
     assert payload["request_id"] == trace.request_id
-    assert payload["convo_id"] == "convo-1"
+    assert payload["conversation_id"] == "conversation-1"
     assert payload["endpoint"] == "primary"
     assert payload["route"] == {"decision": "primary"}
-    assert payload["rag"] == {"injected": "true"}
+    assert payload["retrieval"] == {"injected": "true"}
     assert payload["slot"] == {"id": "2"}
     assert payload["search"] == {
         "injected": "true",

@@ -16,11 +16,11 @@ async def test_workflow_store_round_trip_snapshot(tmp_path):
             workflow_id="sample",
             workflow_version="0.1.0",
             status="pending",
-            convo_id="wf_test_convo",
+            conversation_id="wf_test_conversation",
             params={"goal": "ship"},
             endpoint="node-a",
             reasoning_effort="high",
-            rag_endpoint="http://rag/api/retrieve/context",
+            retrieval_endpoint="http://retrieval/api/retrieve/context",
             search_provider="duckduckgo_html",
             current_step_id=None,
             created_at="2026-01-01T00:00:00+00:00",
@@ -38,7 +38,7 @@ async def test_workflow_store_round_trip_snapshot(tmp_path):
         snapshot = await store.snapshot("wf_test")
 
         assert snapshot["run"]["run_id"] == "wf_test"
-        assert snapshot["run"]["rag_endpoint"] == "http://rag/api/retrieve/context"
+        assert snapshot["run"]["retrieval_endpoint"] == "http://retrieval/api/retrieve/context"
         assert snapshot["run"]["search_provider"] == "duckduckgo_html"
         assert snapshot["steps"][0]["status"] == "completed"
         assert snapshot["steps"][0]["output_json"]["text"] == "done"
@@ -57,11 +57,11 @@ async def test_workflow_store_retry_requires_failed_step(tmp_path):
             workflow_id="sample",
             workflow_version="0.1.0",
             status="pending",
-            convo_id="wf_test_convo",
+            conversation_id="wf_test_conversation",
             params={},
             endpoint=None,
             reasoning_effort=None,
-            rag_endpoint=None,
+            retrieval_endpoint=None,
             search_provider=None,
             current_step_id=None,
             created_at="2026-01-01T00:00:00+00:00",
@@ -84,7 +84,7 @@ async def test_workflow_store_retry_requires_failed_step(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_workflow_store_migrates_run_context_columns(tmp_path):
+async def test_workflow_store_adds_current_run_columns(tmp_path):
     db_path = tmp_path / "workflow.sqlite3"
     conn = sqlite3.connect(db_path)
     conn.execute(
@@ -94,7 +94,7 @@ async def test_workflow_store_migrates_run_context_columns(tmp_path):
             workflow_id TEXT NOT NULL,
             workflow_version TEXT NOT NULL,
             status TEXT NOT NULL,
-            convo_id TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
             params_json TEXT NOT NULL,
             endpoint TEXT,
             reasoning_effort TEXT,
@@ -117,8 +117,80 @@ async def test_workflow_store_migrates_run_context_columns(tmp_path):
         columns = {row[1] for row in await cursor.fetchall()}
         await cursor.close()
 
-        assert "rag_endpoint" in columns
+        assert "retrieval_endpoint" in columns
         assert "search_provider" in columns
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_workflow_store_drops_legacy_run_schema(tmp_path):
+    db_path = tmp_path / "workflow.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE workflow_runs (
+            run_id TEXT PRIMARY KEY,
+            workflow_id TEXT NOT NULL,
+            workflow_version TEXT NOT NULL,
+            status TEXT NOT NULL,
+            convo_id TEXT NOT NULL,
+            params_json TEXT NOT NULL,
+            endpoint TEXT,
+            reasoning_effort TEXT,
+            rag_endpoint TEXT,
+            current_step_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE workflow_step_runs (
+            run_id TEXT NOT NULL,
+            step_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            input_json TEXT NOT NULL DEFAULT '{}',
+            PRIMARY KEY (run_id, step_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO workflow_runs (
+            run_id, workflow_id, workflow_version, status, convo_id,
+            params_json, created_at, updated_at
+        ) VALUES (
+            'wf_old', 'old', '0.1.0', 'pending', 'conversation-old',
+            '{}', '2026-01-01', '2026-01-01'
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO workflow_step_runs (run_id, step_id, status)
+        VALUES ('wf_old', 'step', 'pending')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    store = SQLiteWorkflowStore(db_path)
+    await store.initialize()
+    try:
+        cursor = await store._require_connection().execute(
+            "PRAGMA table_info(workflow_runs)"
+        )
+        columns = {row[1] for row in await cursor.fetchall()}
+        await cursor.close()
+
+        assert "conversation_id" in columns
+        assert "convo_id" not in columns
+        assert "retrieval_endpoint" in columns
+        assert "rag_endpoint" not in columns
+        assert await store.list_runs() == []
     finally:
         await store.close()
 
@@ -133,11 +205,11 @@ async def test_workflow_store_clear_runs_deletes_runs_steps_and_artifacts(tmp_pa
             workflow_id="sample",
             workflow_version="0.1.0",
             status="pending",
-            convo_id="wf_test_convo",
+            conversation_id="wf_test_conversation",
             params={},
             endpoint="node-a",
             reasoning_effort=None,
-            rag_endpoint=None,
+            retrieval_endpoint=None,
             search_provider=None,
             current_step_id=None,
             created_at="2026-01-01T00:00:00+00:00",

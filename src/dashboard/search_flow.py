@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from src.search.safety import EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER
+from src.search.safety import EPHEMERAL_WEB_SEARCH_EVIDENCE_MARKER
 
 from .prompt_state import normalize_system_prompt
 from .utils import format_search_provider_label
@@ -33,22 +33,22 @@ def build_search_success_state(search_response: Dict[str, Any]) -> Dict[str, Any
         "warnings": warnings,
         "results": results,
         "result_count": len(results),
-        "wrapped_results": (
-            search_response.get("wrapped_results")
-            if isinstance(search_response.get("wrapped_results"), str)
+        "search_evidence": (
+            search_response.get("search_evidence")
+            if isinstance(search_response.get("search_evidence"), str)
             else None
         ),
         "show_preface": True,
     }
 
 
-def build_query_refiner_context(
+def build_query_refiner_source_text(
     *,
     system_prompt: Optional[str],
     history: Any,
     user_input: str,
 ) -> str:
-    """Build compact source context for search query refinement."""
+    """Build compact source text for search query refinement."""
     sections = []
     prompt = normalize_system_prompt(system_prompt)
     if prompt:
@@ -82,22 +82,22 @@ def build_search_failure_state(provider_id: str, error: Any) -> Dict[str, Any]:
         "warnings": [f"search request failed: {str(error)}"],
         "results": [],
         "result_count": 0,
-        "wrapped_results": None,
+        "search_evidence": None,
         "show_preface": False,
     }
 
 
-def _format_search_context(search_state: Dict[str, Any]) -> Optional[str]:
-    """Render turn-local search context for model consumption, not history."""
+def _format_search_evidence(search_state: Dict[str, Any]) -> Optional[str]:
+    """Render turn-local search evidence for model consumption, not conversation."""
     results = search_state.get("results")
     if not isinstance(results, list) or not results:
         return None
 
-    wrapped_results = search_state.get("wrapped_results")
-    if not isinstance(wrapped_results, str) or not wrapped_results.strip():
+    search_evidence = search_state.get("search_evidence")
+    if not isinstance(search_evidence, str) or not search_evidence.strip():
         return None
 
-    return "\n".join([EPHEMERAL_WEB_SEARCH_CONTEXT_MARKER, wrapped_results.strip()])
+    return "\n".join([EPHEMERAL_WEB_SEARCH_EVIDENCE_MARKER, search_evidence.strip()])
 
 
 def build_search_turn_messages(
@@ -107,7 +107,7 @@ def build_search_turn_messages(
     if not isinstance(search_state, dict):
         return []
 
-    content = _format_search_context(search_state)
+    content = _format_search_evidence(search_state)
     if not content:
         return []
 

@@ -12,16 +12,16 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HISTORY_DB_PATH = Path("var/history.sqlite3")
+DEFAULT_CONVERSATION_DB_PATH = Path("var/conversations.sqlite3")
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _empty_state(convo_id: str) -> Dict[str, object]:
+def _empty_state(conversation_id: str) -> Dict[str, object]:
     return {
-        "convo_id": convo_id,
+        "conversation_id": conversation_id,
         "route_endpoint": None,
         "reasoning_effort": None,
         "slots": {},
@@ -29,8 +29,8 @@ def _empty_state(convo_id: str) -> Dict[str, object]:
     }
 
 
-def _normalize_state(row: Optional[Dict[str, object]], convo_id: str) -> Dict[str, object]:
-    state = _empty_state(convo_id)
+def _normalize_state(row: Optional[Dict[str, object]], conversation_id: str) -> Dict[str, object]:
+    state = _empty_state(conversation_id)
     if not row:
         return state
 
@@ -40,7 +40,7 @@ def _normalize_state(row: Optional[Dict[str, object]], convo_id: str) -> Dict[st
     return state
 
 
-class HistoryStore(ABC):
+class ConversationStore(ABC):
     backend_name = "unknown"
 
     @abstractmethod
@@ -52,13 +52,13 @@ class HistoryStore(ABC):
         """Release any backing-store resources."""
 
     @abstractmethod
-    async def get_conversation(self, convo_id: str) -> Optional[List[Dict]]:
+    async def get_conversation(self, conversation_id: str) -> Optional[List[Dict]]:
         """Return the stored conversation or None when it does not exist."""
 
     @abstractmethod
     async def get_conversation_message_records(
         self,
-        convo_id: str,
+        conversation_id: str,
         *,
         after_id: Optional[int] = None,
         limit: Optional[int] = None,
@@ -68,44 +68,44 @@ class HistoryStore(ABC):
 
     @abstractmethod
     async def get_latest_conversation_message_id(
-        self, convo_id: str
+        self, conversation_id: str
     ) -> Optional[int]:
         """Return the latest durable row ID for a conversation."""
 
     @abstractmethod
-    async def append_messages(self, convo_id: str, messages: List[Dict]) -> None:
+    async def append_messages(self, conversation_id: str, messages: List[Dict]) -> None:
         """Append messages to a stored conversation."""
 
     @abstractmethod
-    async def get_compacted_conversation_state(
-        self, convo_id: str
+    async def get_thread_state(
+        self, conversation_id: str
     ) -> Optional[Dict]:
-        """Return the compacted conversation projection, if present."""
+        """Return the derived thread state for a conversation, if present."""
 
     @abstractmethod
-    async def upsert_compacted_conversation_state(
+    async def upsert_thread_state(
         self,
-        convo_id: str,
+        conversation_id: str,
         *,
         covered_message_id: int,
         state_text: str,
         state_json: Optional[Dict] = None,
         metadata_json: Optional[Dict] = None,
     ) -> Dict:
-        """Insert or update the compacted conversation projection."""
+        """Insert or update the derived thread state for a conversation."""
 
     @abstractmethod
     async def list_conversations(self) -> List[Dict[str, object]]:
         """Return conversation metadata sorted by most recently updated first."""
 
     @abstractmethod
-    async def get_conversation_state(self, convo_id: str) -> Dict[str, object]:
+    async def get_conversation_control_state(self, conversation_id: str) -> Dict[str, object]:
         """Return route/reasoning/slot metadata for a conversation."""
 
     @abstractmethod
-    async def update_conversation_state(
+    async def update_conversation_control_state(
         self,
-        convo_id: str,
+        conversation_id: str,
         *,
         route_endpoint: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
@@ -117,21 +117,21 @@ class HistoryStore(ABC):
         """Atomically pin compatible route/reasoning metadata."""
 
     @abstractmethod
-    async def set_conversation_slot(
-        self, convo_id: str, endpoint: str, slot_id: int
+    async def set_conversation_control_slot(
+        self, conversation_id: str, endpoint: str, slot_id: int
     ) -> Dict[str, object]:
         """Persist a best-effort upstream slot mapping."""
 
 
-class MemoryHistoryStore(HistoryStore):
+class MemoryConversationStore(ConversationStore):
     backend_name = "memory"
 
     def __init__(self):
         self.conversations: Dict[str, List[Dict]] = {}
         self.conversation_records: Dict[str, List[Dict]] = {}
         self.updated_at: Dict[str, str] = {}
-        self.conversation_states: Dict[str, Dict[str, object]] = {}
-        self.compacted_conversation_states: Dict[str, Dict] = {}
+        self.conversation_control_states: Dict[str, Dict[str, object]] = {}
+        self.thread_states: Dict[str, Dict] = {}
         self._next_message_id = 1
         self._state_lock = asyncio.Lock()
 
@@ -141,19 +141,19 @@ class MemoryHistoryStore(HistoryStore):
     async def close(self) -> None:
         return None
 
-    async def get_conversation(self, convo_id: str) -> Optional[List[Dict]]:
-        messages = self.conversations.get(convo_id)
+    async def get_conversation(self, conversation_id: str) -> Optional[List[Dict]]:
+        messages = self.conversations.get(conversation_id)
         return deepcopy(messages) if messages is not None else None
 
     async def get_conversation_message_records(
         self,
-        convo_id: str,
+        conversation_id: str,
         *,
         after_id: Optional[int] = None,
         limit: Optional[int] = None,
         newest_first: bool = False,
     ) -> List[Dict]:
-        records = self._records_for_conversation(convo_id)
+        records = self._records_for_conversation(conversation_id)
         if after_id is not None:
             records = [record for record in records if int(record["id"]) > after_id]
         records = sorted(
@@ -166,44 +166,44 @@ class MemoryHistoryStore(HistoryStore):
         return deepcopy(records)
 
     async def get_latest_conversation_message_id(
-        self, convo_id: str
+        self, conversation_id: str
     ) -> Optional[int]:
-        records = self._records_for_conversation(convo_id)
+        records = self._records_for_conversation(conversation_id)
         if not records:
             return None
         return max(int(record["id"]) for record in records)
 
-    async def append_messages(self, convo_id: str, messages: List[Dict]) -> None:
+    async def append_messages(self, conversation_id: str, messages: List[Dict]) -> None:
         if not messages:
             return
-        if convo_id not in self.conversations:
-            self.conversations[convo_id] = []
-        if convo_id not in self.conversation_records:
-            self.conversation_records[convo_id] = []
+        if conversation_id not in self.conversations:
+            self.conversations[conversation_id] = []
+        if conversation_id not in self.conversation_records:
+            self.conversation_records[conversation_id] = []
         created_at = _utc_now()
         copied_messages = deepcopy(messages)
-        self.conversations[convo_id].extend(copied_messages)
+        self.conversations[conversation_id].extend(copied_messages)
         for message in copied_messages:
-            self.conversation_records[convo_id].append(
+            self.conversation_records[conversation_id].append(
                 {
                     "id": self._next_message_id,
-                    "convo_id": convo_id,
+                    "conversation_id": conversation_id,
                     "message": deepcopy(message),
                     "created_at": created_at,
                 }
             )
             self._next_message_id += 1
-        self.updated_at[convo_id] = created_at
+        self.updated_at[conversation_id] = created_at
 
-    async def get_compacted_conversation_state(
-        self, convo_id: str
+    async def get_thread_state(
+        self, conversation_id: str
     ) -> Optional[Dict]:
-        state = self.compacted_conversation_states.get(convo_id)
+        state = self.thread_states.get(conversation_id)
         return deepcopy(state) if state is not None else None
 
-    async def upsert_compacted_conversation_state(
+    async def upsert_thread_state(
         self,
-        convo_id: str,
+        conversation_id: str,
         *,
         covered_message_id: int,
         state_text: str,
@@ -211,9 +211,9 @@ class MemoryHistoryStore(HistoryStore):
         metadata_json: Optional[Dict] = None,
     ) -> Dict:
         now = _utc_now()
-        existing = self.compacted_conversation_states.get(convo_id) or {}
+        existing = self.thread_states.get(conversation_id) or {}
         state = {
-            "convo_id": convo_id,
+            "conversation_id": conversation_id,
             "covered_message_id": int(covered_message_id),
             "state_text": str(state_text or ""),
             "state_json": deepcopy(state_json) if isinstance(state_json, dict) else None,
@@ -223,18 +223,18 @@ class MemoryHistoryStore(HistoryStore):
             "created_at": existing.get("created_at") or now,
             "updated_at": now,
         }
-        self.compacted_conversation_states[convo_id] = deepcopy(state)
+        self.thread_states[conversation_id] = deepcopy(state)
         return deepcopy(state)
 
     async def list_conversations(self) -> List[Dict[str, object]]:
         conversations = []
-        for convo_id, messages in self.conversations.items():
-            last_updated = self.updated_at.get(convo_id)
+        for conversation_id, messages in self.conversations.items():
+            last_updated = self.updated_at.get(conversation_id)
             if not last_updated:
                 continue
             conversations.append(
                 {
-                    "convo_id": convo_id,
+                    "conversation_id": conversation_id,
                     "last_updated": last_updated,
                     "message_count": len(messages),
                 }
@@ -246,13 +246,13 @@ class MemoryHistoryStore(HistoryStore):
             reverse=True,
         )
 
-    async def get_conversation_state(self, convo_id: str) -> Dict[str, object]:
+    async def get_conversation_control_state(self, conversation_id: str) -> Dict[str, object]:
         async with self._state_lock:
-            return _normalize_state(self.conversation_states.get(convo_id), convo_id)
+            return _normalize_state(self.conversation_control_states.get(conversation_id), conversation_id)
 
-    async def update_conversation_state(
+    async def update_conversation_control_state(
         self,
-        convo_id: str,
+        conversation_id: str,
         *,
         route_endpoint: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
@@ -262,7 +262,7 @@ class MemoryHistoryStore(HistoryStore):
         allow_reasoning_switch: bool = False,
     ) -> Dict[str, object]:
         async with self._state_lock:
-            state = _normalize_state(self.conversation_states.get(convo_id), convo_id)
+            state = _normalize_state(self.conversation_control_states.get(conversation_id), conversation_id)
             result = self._apply_state_update(
                 state,
                 route_endpoint=route_endpoint,
@@ -273,20 +273,20 @@ class MemoryHistoryStore(HistoryStore):
                 allow_reasoning_switch=allow_reasoning_switch,
             )
             if not result.get("conflict"):
-                self.conversation_states[convo_id] = deepcopy(result["state"])
+                self.conversation_control_states[conversation_id] = deepcopy(result["state"])
             return result
 
-    async def set_conversation_slot(
-        self, convo_id: str, endpoint: str, slot_id: int
+    async def set_conversation_control_slot(
+        self, conversation_id: str, endpoint: str, slot_id: int
     ) -> Dict[str, object]:
         async with self._state_lock:
-            state = _normalize_state(self.conversation_states.get(convo_id), convo_id)
+            state = _normalize_state(self.conversation_control_states.get(conversation_id), conversation_id)
             slots = dict(state.get("slots") or {})
             slots[endpoint] = int(slot_id)
             state["slots"] = slots
             state["updated_at"] = _utc_now()
-            self.conversation_states[convo_id] = deepcopy(state)
-            return _normalize_state(state, convo_id)
+            self.conversation_control_states[conversation_id] = deepcopy(state)
+            return _normalize_state(state, conversation_id)
 
     @staticmethod
     def _apply_state_update(
@@ -299,7 +299,7 @@ class MemoryHistoryStore(HistoryStore):
         allow_route_switch: bool,
         allow_reasoning_switch: bool,
     ) -> Dict[str, object]:
-        updated = _normalize_state(state, str(state.get("convo_id") or ""))
+        updated = _normalize_state(state, str(state.get("conversation_id") or ""))
         current_route = str(updated.get("route_endpoint") or "").strip() or None
         current_reasoning = str(updated.get("reasoning_effort") or "").strip() or None
         valid_routes = (
@@ -367,20 +367,20 @@ class MemoryHistoryStore(HistoryStore):
         self.conversations.clear()
         self.conversation_records.clear()
         self.updated_at.clear()
-        self.conversation_states.clear()
-        self.compacted_conversation_states.clear()
+        self.conversation_control_states.clear()
+        self.thread_states.clear()
         self._next_message_id = 1
 
-    def _records_for_conversation(self, convo_id: str) -> List[Dict]:
-        records = self.conversation_records.get(convo_id)
+    def _records_for_conversation(self, conversation_id: str) -> List[Dict]:
+        records = self.conversation_records.get(conversation_id)
         if records is not None:
             return deepcopy(records)
-        messages = self.conversations.get(convo_id) or []
-        timestamp = self.updated_at.get(convo_id) or _utc_now()
+        messages = self.conversations.get(conversation_id) or []
+        timestamp = self.updated_at.get(conversation_id) or _utc_now()
         return [
             {
                 "id": index,
-                "convo_id": convo_id,
+                "conversation_id": conversation_id,
                 "message": deepcopy(message),
                 "created_at": timestamp,
             }
@@ -388,7 +388,7 @@ class MemoryHistoryStore(HistoryStore):
         ]
 
 
-class SQLiteHistoryStore(HistoryStore):
+class SQLiteConversationStore(ConversationStore):
     backend_name = "sqlite"
 
     def __init__(self, db_path: Path | str):
@@ -400,21 +400,22 @@ class SQLiteHistoryStore(HistoryStore):
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = await aiosqlite.connect(str(self.db_path))
         await self._conn.execute("PRAGMA journal_mode=WAL")
+        await self._drop_legacy_schema_if_needed()
         await self._conn.execute("""
             CREATE TABLE IF NOT EXISTS conversation_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                convo_id TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
                 message_json TEXT NOT NULL,
                 created_at TEXT NOT NULL
             )
             """)
         await self._conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_conversation_messages_convo_id_id
-            ON conversation_messages (convo_id, id)
+            CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation_id_id
+            ON conversation_messages (conversation_id, id)
             """)
         await self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS conversation_state (
-                convo_id TEXT PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS conversation_control_state (
+                conversation_id TEXT PRIMARY KEY,
                 route_endpoint TEXT,
                 reasoning_effort TEXT,
                 slots_json TEXT NOT NULL DEFAULT '{}',
@@ -422,8 +423,8 @@ class SQLiteHistoryStore(HistoryStore):
             )
             """)
         await self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS compacted_conversation_state (
-                convo_id TEXT PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS thread_state (
+                conversation_id TEXT PRIMARY KEY,
                 covered_message_id INTEGER NOT NULL DEFAULT 0,
                 state_text TEXT NOT NULL DEFAULT '',
                 state_json TEXT,
@@ -433,8 +434,8 @@ class SQLiteHistoryStore(HistoryStore):
             )
             """)
         await self._conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_compacted_conversation_state_updated
-            ON compacted_conversation_state (updated_at DESC)
+            CREATE INDEX IF NOT EXISTS idx_thread_state_updated
+            ON thread_state (updated_at DESC)
             """)
         await self._conn.commit()
 
@@ -443,16 +444,16 @@ class SQLiteHistoryStore(HistoryStore):
             await self._conn.close()
             self._conn = None
 
-    async def get_conversation(self, convo_id: str) -> Optional[List[Dict]]:
+    async def get_conversation(self, conversation_id: str) -> Optional[List[Dict]]:
         conn = self._require_connection()
         cursor = await conn.execute(
             """
             SELECT message_json
             FROM conversation_messages
-            WHERE convo_id = ?
+            WHERE conversation_id = ?
             ORDER BY id ASC
             """,
-            (convo_id,),
+            (conversation_id,),
         )
         rows = await cursor.fetchall()
         await cursor.close()
@@ -462,15 +463,15 @@ class SQLiteHistoryStore(HistoryStore):
 
     async def get_conversation_message_records(
         self,
-        convo_id: str,
+        conversation_id: str,
         *,
         after_id: Optional[int] = None,
         limit: Optional[int] = None,
         newest_first: bool = False,
     ) -> List[Dict]:
         conn = self._require_connection()
-        filters = ["convo_id = ?"]
-        params: list[object] = [convo_id]
+        filters = ["conversation_id = ?"]
+        params: list[object] = [conversation_id]
         if after_id is not None:
             filters.append("id > ?")
             params.append(int(after_id))
@@ -481,7 +482,7 @@ class SQLiteHistoryStore(HistoryStore):
             params.append(max(0, int(limit)))
         cursor = await conn.execute(
             f"""
-            SELECT id, convo_id, message_json, created_at
+            SELECT id, conversation_id, message_json, created_at
             FROM conversation_messages
             WHERE {' AND '.join(filters)}
             ORDER BY id {order}
@@ -494,7 +495,7 @@ class SQLiteHistoryStore(HistoryStore):
         return [
             {
                 "id": int(row[0]),
-                "convo_id": row[1],
+                "conversation_id": row[1],
                 "message": json.loads(row[2]),
                 "created_at": row[3],
             }
@@ -502,16 +503,16 @@ class SQLiteHistoryStore(HistoryStore):
         ]
 
     async def get_latest_conversation_message_id(
-        self, convo_id: str
+        self, conversation_id: str
     ) -> Optional[int]:
         conn = self._require_connection()
         cursor = await conn.execute(
             """
             SELECT MAX(id)
             FROM conversation_messages
-            WHERE convo_id = ?
+            WHERE conversation_id = ?
             """,
-            (convo_id,),
+            (conversation_id,),
         )
         row = await cursor.fetchone()
         await cursor.close()
@@ -519,14 +520,14 @@ class SQLiteHistoryStore(HistoryStore):
             return None
         return int(row[0])
 
-    async def append_messages(self, convo_id: str, messages: List[Dict]) -> None:
+    async def append_messages(self, conversation_id: str, messages: List[Dict]) -> None:
         if not messages:
             return
 
         conn = self._require_connection()
         created_at = _utc_now()
         payloads = [
-            (convo_id, json.dumps(message), created_at)
+            (conversation_id, json.dumps(message), created_at)
             for message in deepcopy(messages)
         ]
         async with self._write_lock:
@@ -534,7 +535,7 @@ class SQLiteHistoryStore(HistoryStore):
             try:
                 await conn.executemany(
                     """
-                    INSERT INTO conversation_messages (convo_id, message_json, created_at)
+                    INSERT INTO conversation_messages (conversation_id, message_json, created_at)
                     VALUES (?, ?, ?)
                     """,
                     payloads,
@@ -544,26 +545,26 @@ class SQLiteHistoryStore(HistoryStore):
                 await conn.rollback()
                 raise
 
-    async def get_compacted_conversation_state(
-        self, convo_id: str
+    async def get_thread_state(
+        self, conversation_id: str
     ) -> Optional[Dict]:
         conn = self._require_connection()
         cursor = await conn.execute(
             """
-            SELECT convo_id, covered_message_id, state_text, state_json,
+            SELECT conversation_id, covered_message_id, state_text, state_json,
                    metadata_json, created_at, updated_at
-            FROM compacted_conversation_state
-            WHERE convo_id = ?
+            FROM thread_state
+            WHERE conversation_id = ?
             """,
-            (convo_id,),
+            (conversation_id,),
         )
         row = await cursor.fetchone()
         await cursor.close()
-        return self._row_to_compacted_state(row)
+        return self._row_to_thread_state(row)
 
-    async def upsert_compacted_conversation_state(
+    async def upsert_thread_state(
         self,
-        convo_id: str,
+        conversation_id: str,
         *,
         covered_message_id: int,
         state_text: str,
@@ -583,12 +584,12 @@ class SQLiteHistoryStore(HistoryStore):
             try:
                 await conn.execute(
                     """
-                    INSERT INTO compacted_conversation_state (
-                        convo_id, covered_message_id, state_text, state_json,
+                    INSERT INTO thread_state (
+                        conversation_id, covered_message_id, state_text, state_json,
                         metadata_json, created_at, updated_at
                     )
                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(convo_id) DO UPDATE SET
+                    ON CONFLICT(conversation_id) DO UPDATE SET
                         covered_message_id = excluded.covered_message_id,
                         state_text = excluded.state_text,
                         state_json = excluded.state_json,
@@ -596,7 +597,7 @@ class SQLiteHistoryStore(HistoryStore):
                         updated_at = excluded.updated_at
                     """,
                     (
-                        convo_id,
+                        conversation_id,
                         int(covered_message_id),
                         str(state_text or ""),
                         state_json_text,
@@ -609,47 +610,47 @@ class SQLiteHistoryStore(HistoryStore):
             except BaseException:
                 await conn.rollback()
                 raise
-        state = await self.get_compacted_conversation_state(convo_id)
+        state = await self.get_thread_state(conversation_id)
         if state is None:
-            raise RuntimeError(f"failed to persist compacted state: {convo_id}")
+            raise RuntimeError(f"failed to persist thread state: {conversation_id}")
         return state
 
     async def list_conversations(self) -> List[Dict[str, object]]:
         conn = self._require_connection()
         cursor = await conn.execute("""
-            SELECT convo_id, MAX(created_at) AS last_updated, COUNT(*) AS message_count
+            SELECT conversation_id, MAX(created_at) AS last_updated, COUNT(*) AS message_count
             FROM conversation_messages
-            GROUP BY convo_id
-            ORDER BY last_updated DESC, convo_id ASC
+            GROUP BY conversation_id
+            ORDER BY last_updated DESC, conversation_id ASC
             """)
         rows = await cursor.fetchall()
         await cursor.close()
         return [
             {
-                "convo_id": row[0],
+                "conversation_id": row[0],
                 "last_updated": row[1],
                 "message_count": row[2],
             }
             for row in rows
         ]
 
-    async def get_conversation_state(self, convo_id: str) -> Dict[str, object]:
+    async def get_conversation_control_state(self, conversation_id: str) -> Dict[str, object]:
         conn = self._require_connection()
         cursor = await conn.execute(
             """
-            SELECT convo_id, route_endpoint, reasoning_effort, slots_json, updated_at
-            FROM conversation_state
-            WHERE convo_id = ?
+            SELECT conversation_id, route_endpoint, reasoning_effort, slots_json, updated_at
+            FROM conversation_control_state
+            WHERE conversation_id = ?
             """,
-            (convo_id,),
+            (conversation_id,),
         )
         row = await cursor.fetchone()
         await cursor.close()
-        return self._row_to_state(row, convo_id)
+        return self._row_to_state(row, conversation_id)
 
-    async def update_conversation_state(
+    async def update_conversation_control_state(
         self,
-        convo_id: str,
+        conversation_id: str,
         *,
         route_endpoint: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
@@ -664,16 +665,16 @@ class SQLiteHistoryStore(HistoryStore):
             try:
                 cursor = await conn.execute(
                     """
-                    SELECT convo_id, route_endpoint, reasoning_effort, slots_json, updated_at
-                    FROM conversation_state
-                    WHERE convo_id = ?
+                    SELECT conversation_id, route_endpoint, reasoning_effort, slots_json, updated_at
+                    FROM conversation_control_state
+                    WHERE conversation_id = ?
                     """,
-                    (convo_id,),
+                    (conversation_id,),
                 )
                 row = await cursor.fetchone()
                 await cursor.close()
-                state = self._row_to_state(row, convo_id)
-                result = MemoryHistoryStore._apply_state_update(
+                state = self._row_to_state(row, conversation_id)
+                result = MemoryConversationStore._apply_state_update(
                     state,
                     route_endpoint=route_endpoint,
                     reasoning_effort=reasoning_effort,
@@ -693,8 +694,8 @@ class SQLiteHistoryStore(HistoryStore):
                 await conn.rollback()
                 raise
 
-    async def set_conversation_slot(
-        self, convo_id: str, endpoint: str, slot_id: int
+    async def set_conversation_control_slot(
+        self, conversation_id: str, endpoint: str, slot_id: int
     ) -> Dict[str, object]:
         conn = self._require_connection()
         async with self._write_lock:
@@ -702,15 +703,15 @@ class SQLiteHistoryStore(HistoryStore):
             try:
                 cursor = await conn.execute(
                     """
-                    SELECT convo_id, route_endpoint, reasoning_effort, slots_json, updated_at
-                    FROM conversation_state
-                    WHERE convo_id = ?
+                    SELECT conversation_id, route_endpoint, reasoning_effort, slots_json, updated_at
+                    FROM conversation_control_state
+                    WHERE conversation_id = ?
                     """,
-                    (convo_id,),
+                    (conversation_id,),
                 )
                 row = await cursor.fetchone()
                 await cursor.close()
-                state = self._row_to_state(row, convo_id)
+                state = self._row_to_state(row, conversation_id)
                 slots = dict(state.get("slots") or {})
                 slots[endpoint] = int(slot_id)
                 state["slots"] = slots
@@ -727,23 +728,59 @@ class SQLiteHistoryStore(HistoryStore):
             await conn.rollback()
         await conn.execute("BEGIN IMMEDIATE")
 
+    async def _drop_legacy_schema_if_needed(self) -> None:
+        conn = self._require_connection()
+        cursor = await conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+        tables = {str(row[0]) for row in await cursor.fetchall()}
+        await cursor.close()
+
+        legacy_tables = {
+            "conversation_state",
+            "compacted_conversation_state",
+        } & tables
+        legacy_columns = False
+        if "conversation_messages" in tables:
+            cursor = await conn.execute("PRAGMA table_info(conversation_messages)")
+            columns = {str(row[1]) for row in await cursor.fetchall()}
+            await cursor.close()
+            legacy_columns = "convo_id" in columns
+
+        if not legacy_tables and not legacy_columns:
+            return
+
+        logger.warning(
+            "Legacy conversation schema detected at %s; dropping conversation tables",
+            self.db_path,
+        )
+        for table in (
+            "thread_state",
+            "compacted_conversation_state",
+            "conversation_control_state",
+            "conversation_state",
+            "conversation_messages",
+        ):
+            await conn.execute(f"DROP TABLE IF EXISTS {table}")
+        await conn.commit()
+
     async def _write_state(
         self, conn: aiosqlite.Connection, state: Dict[str, object]
     ) -> None:
         await conn.execute(
             """
-            INSERT INTO conversation_state (
-                convo_id, route_endpoint, reasoning_effort, slots_json, updated_at
+            INSERT INTO conversation_control_state (
+                conversation_id, route_endpoint, reasoning_effort, slots_json, updated_at
             )
             VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(convo_id) DO UPDATE SET
+            ON CONFLICT(conversation_id) DO UPDATE SET
                 route_endpoint = excluded.route_endpoint,
                 reasoning_effort = excluded.reasoning_effort,
                 slots_json = excluded.slots_json,
                 updated_at = excluded.updated_at
             """,
             (
-                state["convo_id"],
+                state["conversation_id"],
                 state.get("route_endpoint"),
                 state.get("reasoning_effort"),
                 json.dumps(state.get("slots") or {}),
@@ -752,26 +789,26 @@ class SQLiteHistoryStore(HistoryStore):
         )
 
     @staticmethod
-    def _row_to_state(row, convo_id: str) -> Dict[str, object]:
+    def _row_to_state(row, conversation_id: str) -> Dict[str, object]:
         if not row:
-            return _empty_state(convo_id)
+            return _empty_state(conversation_id)
         try:
             slots = json.loads(row[3] or "{}")
         except json.JSONDecodeError:
             slots = {}
         return _normalize_state(
             {
-                "convo_id": row[0],
+                "conversation_id": row[0],
                 "route_endpoint": row[1],
                 "reasoning_effort": row[2],
                 "slots": slots,
                 "updated_at": row[4],
             },
-            convo_id,
+            conversation_id,
         )
 
     @staticmethod
-    def _row_to_compacted_state(row) -> Optional[Dict]:
+    def _row_to_thread_state(row) -> Optional[Dict]:
         if not row:
             return None
         try:
@@ -783,7 +820,7 @@ class SQLiteHistoryStore(HistoryStore):
         except json.JSONDecodeError:
             metadata_json = {}
         return {
-            "convo_id": row[0],
+            "conversation_id": row[0],
             "covered_message_id": int(row[1]),
             "state_text": row[2] or "",
             "state_json": state_json if isinstance(state_json, dict) else None,
@@ -794,11 +831,15 @@ class SQLiteHistoryStore(HistoryStore):
 
     def _require_connection(self) -> aiosqlite.Connection:
         if self._conn is None:
-            raise RuntimeError("SQLiteHistoryStore is not initialized")
+            raise RuntimeError("SQLiteConversationStore is not initialized")
         return self._conn
 
 
-def build_history_store_from_env() -> HistoryStore:
-    raw_db_path = os.getenv("HISTORY_DB_PATH")
-    db_path = Path(raw_db_path.strip()) if raw_db_path and raw_db_path.strip() else DEFAULT_HISTORY_DB_PATH
-    return SQLiteHistoryStore(db_path)
+def build_conversation_store_from_env() -> ConversationStore:
+    raw_db_path = os.getenv("CONVERSATION_DB_PATH")
+    db_path = (
+        Path(raw_db_path.strip())
+        if raw_db_path and raw_db_path.strip()
+        else DEFAULT_CONVERSATION_DB_PATH
+    )
+    return SQLiteConversationStore(db_path)

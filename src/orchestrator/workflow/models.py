@@ -4,30 +4,30 @@ from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
 
-WorkflowStepKind = Literal["llm", "search", "rerank", "manual", "compact_context"]
+WorkflowStepKind = Literal["llm", "search", "rerank", "manual", "compress_source"]
 WorkflowChatVisibility = Literal["hidden", "intermediate", "final"]
 WorkflowOutputFormat = Literal["json", "yaml", "text"]
-WorkflowCompactionInputFormat = Literal["auto", "text", "json", "yaml"]
-WorkflowCompactionOutputFormat = Literal["text", "json", "yaml"]
+WorkflowCompressionInputFormat = Literal["auto", "text", "json", "yaml"]
+WorkflowCompressionOutputFormat = Literal["text", "json", "yaml"]
 WorkflowRunStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 WorkflowStepStatus = Literal["pending", "running", "completed", "failed", "skipped"]
 
 
-COMPACTION_DEFAULT_TRIGGER_CHARS = 48_000
-COMPACTION_DEFAULT_CHUNK_CHARS = 32_000
-COMPACTION_DEFAULT_TARGET_CHARS = 16_000
-COMPACTION_DEFAULT_MAX_OUTPUT_CHARS = 20_000
-COMPACTION_DEFAULT_MAX_OUTPUT_JSON_BYTES = 256_000
-COMPACTION_DEFAULT_MAX_ROUNDS = 3
-COMPACTION_DEFAULT_INPUT_FORMAT = "auto"
-COMPACTION_DEFAULT_OUTPUT_FORMAT = "text"
-COMPACTION_DEFAULT_GOAL = (
+COMPRESSION_DEFAULT_TRIGGER_CHARS = 48_000
+COMPRESSION_DEFAULT_CHUNK_CHARS = 32_000
+COMPRESSION_DEFAULT_TARGET_CHARS = 16_000
+COMPRESSION_DEFAULT_MAX_OUTPUT_CHARS = 20_000
+COMPRESSION_DEFAULT_MAX_OUTPUT_JSON_BYTES = 256_000
+COMPRESSION_DEFAULT_MAX_ROUNDS = 3
+COMPRESSION_DEFAULT_INPUT_FORMAT = "auto"
+COMPRESSION_DEFAULT_OUTPUT_FORMAT = "text"
+COMPRESSION_DEFAULT_GOAL = (
     "Preserve user intent, constraints, claims, concept relationships, "
     "high-value evidence snippets, source references, contradictions, and uncertainty."
 )
 
 
-def _builtin_compaction_contract(
+def _builtin_compression_contract(
     output_format: WorkflowOutputFormat,
 ) -> "WorkflowOutputContract":
     return WorkflowOutputContract(
@@ -70,7 +70,7 @@ def _builtin_compaction_contract(
 @dataclass(slots=True)
 class WorkflowDefaults:
     reasoning_effort: str | None = None
-    rag_endpoint: str | None = None
+    retrieval_endpoint: str | None = None
     search_provider: str | None = None
     stream: bool = False
     max_tokens: int | None = None
@@ -80,7 +80,7 @@ class WorkflowDefaults:
         data = data if isinstance(data, dict) else {}
         return cls(
             reasoning_effort=_optional_str(data.get("reasoning_effort")),
-            rag_endpoint=_optional_str(data.get("rag_endpoint")),
+            retrieval_endpoint=_optional_str(data.get("retrieval_endpoint")),
             search_provider=_optional_str(data.get("search_provider")),
             stream=bool(data.get("stream", False)),
             max_tokens=_optional_int(data.get("max_tokens")),
@@ -142,22 +142,22 @@ class WorkflowStepSpec:
     output_key: str | None = None
     output_contract: WorkflowOutputContract | None = None
     reasoning_effort: str | None = None
-    rag_endpoint: str | None = None
+    retrieval_endpoint: str | None = None
     search_provider: str | None = None
     search_count: int | None = None
     use_query_refiner: bool | None = None
-    rerank_context: str | None = None
+    rerank_source_text: str | None = None
     rerank_top_k: int | None = None
     max_tokens: int | None = None
-    compaction_trigger_chars: int = COMPACTION_DEFAULT_TRIGGER_CHARS
-    compaction_chunk_chars: int = COMPACTION_DEFAULT_CHUNK_CHARS
-    compaction_target_chars: int = COMPACTION_DEFAULT_TARGET_CHARS
-    compaction_max_output_chars: int = COMPACTION_DEFAULT_MAX_OUTPUT_CHARS
-    compaction_max_output_json_bytes: int = COMPACTION_DEFAULT_MAX_OUTPUT_JSON_BYTES
-    compaction_max_rounds: int = COMPACTION_DEFAULT_MAX_ROUNDS
-    compaction_input_format: WorkflowCompactionInputFormat = COMPACTION_DEFAULT_INPUT_FORMAT
-    compaction_output_format: WorkflowCompactionOutputFormat = COMPACTION_DEFAULT_OUTPUT_FORMAT
-    compaction_goal: str | None = None
+    compression_trigger_chars: int = COMPRESSION_DEFAULT_TRIGGER_CHARS
+    compression_chunk_chars: int = COMPRESSION_DEFAULT_CHUNK_CHARS
+    compression_target_chars: int = COMPRESSION_DEFAULT_TARGET_CHARS
+    compression_max_output_chars: int = COMPRESSION_DEFAULT_MAX_OUTPUT_CHARS
+    compression_max_output_json_bytes: int = COMPRESSION_DEFAULT_MAX_OUTPUT_JSON_BYTES
+    compression_max_rounds: int = COMPRESSION_DEFAULT_MAX_ROUNDS
+    compression_input_format: WorkflowCompressionInputFormat = COMPRESSION_DEFAULT_INPUT_FORMAT
+    compression_output_format: WorkflowCompressionOutputFormat = COMPRESSION_DEFAULT_OUTPUT_FORMAT
+    compression_goal: str | None = None
     chat_visibility: WorkflowChatVisibility = "hidden"
     chat_stream: bool | None = None
 
@@ -168,16 +168,28 @@ class WorkflowStepSpec:
 
         step_id = _required_str(data, "id", "workflow step")
         kind = _required_str(data, "kind", f"workflow step {step_id}")
-        if kind not in {"llm", "search", "rerank", "manual", "compact_context"}:
+        if kind not in {"llm", "search", "rerank", "manual", "compress_source"}:
             raise ValueError(f"workflow step {step_id} has unsupported kind: {kind}")
         if "use_reranker" in data:
             raise ValueError(
                 f"workflow step {step_id} use_reranker is no longer supported; "
                 "add an explicit rerank step"
             )
-        if "rerank_context" in data and kind != "rerank":
+        if "rerank_context" in data:
             raise ValueError(
-                f"workflow step {step_id} rerank_context is only supported on rerank steps"
+                f"workflow step {step_id} rerank_context is no longer supported; "
+                "use rerank_source_text"
+            )
+        if "compact_context" in data or any(
+            str(key).startswith("compaction_") for key in data
+        ):
+            raise ValueError(
+                f"workflow step {step_id} compaction fields are no longer supported; "
+                "use compress_source and compression_*"
+            )
+        if "rerank_source_text" in data and kind != "rerank":
+            raise ValueError(
+                f"workflow step {step_id} rerank_source_text is only supported on rerank steps"
             )
 
         depends_on = data.get("depends_on", [])
@@ -201,37 +213,37 @@ class WorkflowStepSpec:
                 step_id=step_id,
             )
 
-        compaction_input_format = (
-            _optional_str(data.get("compaction_input_format"))
-            or COMPACTION_DEFAULT_INPUT_FORMAT
+        compression_input_format = (
+            _optional_str(data.get("compression_input_format"))
+            or COMPRESSION_DEFAULT_INPUT_FORMAT
         )
-        if compaction_input_format not in {"auto", "text", "json", "yaml"}:
+        if compression_input_format not in {"auto", "text", "json", "yaml"}:
             raise ValueError(
-                f"workflow step {step_id} compaction_input_format is unsupported: "
-                f"{compaction_input_format}"
+                f"workflow step {step_id} compression_input_format is unsupported: "
+                f"{compression_input_format}"
             )
-        compaction_output_format = (
-            _optional_str(data.get("compaction_output_format"))
-            or COMPACTION_DEFAULT_OUTPUT_FORMAT
+        compression_output_format = (
+            _optional_str(data.get("compression_output_format"))
+            or COMPRESSION_DEFAULT_OUTPUT_FORMAT
         )
-        if compaction_output_format not in {"text", "json", "yaml"}:
+        if compression_output_format not in {"text", "json", "yaml"}:
             raise ValueError(
-                f"workflow step {step_id} compaction_output_format is unsupported: "
-                f"{compaction_output_format}"
+                f"workflow step {step_id} compression_output_format is unsupported: "
+                f"{compression_output_format}"
             )
-        if kind == "compact_context":
-            _validate_compaction_budgets(data, step_id=step_id)
+        if kind == "compress_source":
+            _validate_compression_budgets(data, step_id=step_id)
             if (
                 output_contract is not None
-                and output_contract.format != compaction_output_format
+                and output_contract.format != compression_output_format
             ):
                 raise ValueError(
                     f"workflow step {step_id} output_contract.format must match "
-                    "compaction_output_format"
+                    "compression_output_format"
                 )
-            if compaction_output_format in {"json", "yaml"} and output_contract is None:
-                output_contract = _builtin_compaction_contract(
-                    compaction_output_format  # type: ignore[arg-type]
+            if compression_output_format in {"json", "yaml"} and output_contract is None:
+                output_contract = _builtin_compression_contract(
+                    compression_output_format  # type: ignore[arg-type]
                 )
 
         chat_visibility = _optional_str(data.get("chat_visibility")) or "hidden"
@@ -250,36 +262,36 @@ class WorkflowStepSpec:
             output_key=_optional_str(data.get("output_key")),
             output_contract=output_contract,
             reasoning_effort=_optional_str(data.get("reasoning_effort")),
-            rag_endpoint=_optional_str(data.get("rag_endpoint")),
+            retrieval_endpoint=_optional_str(data.get("retrieval_endpoint")),
             search_provider=_optional_str(data.get("search_provider")),
             search_count=_optional_int(data.get("search_count")),
             use_query_refiner=_optional_bool(data.get("use_query_refiner")),
-            rerank_context=_optional_str(data.get("rerank_context")),
+            rerank_source_text=_optional_str(data.get("rerank_source_text")),
             rerank_top_k=_optional_int(data.get("rerank_top_k")),
             max_tokens=_optional_int(data.get("max_tokens")),
-            compaction_trigger_chars=_compaction_budget_value(
-                data, "compaction_trigger_chars", COMPACTION_DEFAULT_TRIGGER_CHARS
+            compression_trigger_chars=_compression_budget_value(
+                data, "compression_trigger_chars", COMPRESSION_DEFAULT_TRIGGER_CHARS
             ),
-            compaction_chunk_chars=_compaction_budget_value(
-                data, "compaction_chunk_chars", COMPACTION_DEFAULT_CHUNK_CHARS
+            compression_chunk_chars=_compression_budget_value(
+                data, "compression_chunk_chars", COMPRESSION_DEFAULT_CHUNK_CHARS
             ),
-            compaction_target_chars=_compaction_budget_value(
-                data, "compaction_target_chars", COMPACTION_DEFAULT_TARGET_CHARS
+            compression_target_chars=_compression_budget_value(
+                data, "compression_target_chars", COMPRESSION_DEFAULT_TARGET_CHARS
             ),
-            compaction_max_output_chars=_compaction_budget_value(
-                data, "compaction_max_output_chars", COMPACTION_DEFAULT_MAX_OUTPUT_CHARS
+            compression_max_output_chars=_compression_budget_value(
+                data, "compression_max_output_chars", COMPRESSION_DEFAULT_MAX_OUTPUT_CHARS
             ),
-            compaction_max_output_json_bytes=_compaction_budget_value(
+            compression_max_output_json_bytes=_compression_budget_value(
                 data,
-                "compaction_max_output_json_bytes",
-                COMPACTION_DEFAULT_MAX_OUTPUT_JSON_BYTES,
+                "compression_max_output_json_bytes",
+                COMPRESSION_DEFAULT_MAX_OUTPUT_JSON_BYTES,
             ),
-            compaction_max_rounds=_compaction_budget_value(
-                data, "compaction_max_rounds", COMPACTION_DEFAULT_MAX_ROUNDS
+            compression_max_rounds=_compression_budget_value(
+                data, "compression_max_rounds", COMPRESSION_DEFAULT_MAX_ROUNDS
             ),
-            compaction_input_format=compaction_input_format,  # type: ignore[arg-type]
-            compaction_output_format=compaction_output_format,  # type: ignore[arg-type]
-            compaction_goal=_optional_str(data.get("compaction_goal")),
+            compression_input_format=compression_input_format,  # type: ignore[arg-type]
+            compression_output_format=compression_output_format,  # type: ignore[arg-type]
+            compression_goal=_optional_str(data.get("compression_goal")),
             chat_visibility=chat_visibility,  # type: ignore[arg-type]
             chat_stream=_optional_bool(data.get("chat_stream")),
         )
@@ -346,11 +358,11 @@ class WorkflowRun:
     workflow_id: str
     workflow_version: str
     status: WorkflowRunStatus
-    convo_id: str
+    conversation_id: str
     params: dict[str, Any]
     endpoint: str | None
     reasoning_effort: str | None
-    rag_endpoint: str | None
+    retrieval_endpoint: str | None
     search_provider: str | None
     current_step_id: str | None
     created_at: str
@@ -406,60 +418,60 @@ def _optional_bool(value: Any) -> bool | None:
     raise ValueError(f"expected boolean, got {value!r}")
 
 
-def _compaction_budget_value(
+def _compression_budget_value(
     data: dict[str, Any], field: str, default: int
 ) -> int:
     value = _optional_int(data.get(field))
     return default if value is None else value
 
 
-def _validate_compaction_budgets(data: dict[str, Any], *, step_id: str) -> None:
-    trigger = _compaction_budget_value(
-        data, "compaction_trigger_chars", COMPACTION_DEFAULT_TRIGGER_CHARS
+def _validate_compression_budgets(data: dict[str, Any], *, step_id: str) -> None:
+    trigger = _compression_budget_value(
+        data, "compression_trigger_chars", COMPRESSION_DEFAULT_TRIGGER_CHARS
     )
-    chunk = _compaction_budget_value(
-        data, "compaction_chunk_chars", COMPACTION_DEFAULT_CHUNK_CHARS
+    chunk = _compression_budget_value(
+        data, "compression_chunk_chars", COMPRESSION_DEFAULT_CHUNK_CHARS
     )
-    target = _compaction_budget_value(
-        data, "compaction_target_chars", COMPACTION_DEFAULT_TARGET_CHARS
+    target = _compression_budget_value(
+        data, "compression_target_chars", COMPRESSION_DEFAULT_TARGET_CHARS
     )
-    max_output = _compaction_budget_value(
-        data, "compaction_max_output_chars", COMPACTION_DEFAULT_MAX_OUTPUT_CHARS
+    max_output = _compression_budget_value(
+        data, "compression_max_output_chars", COMPRESSION_DEFAULT_MAX_OUTPUT_CHARS
     )
-    max_json = _compaction_budget_value(
+    max_json = _compression_budget_value(
         data,
-        "compaction_max_output_json_bytes",
-        COMPACTION_DEFAULT_MAX_OUTPUT_JSON_BYTES,
+        "compression_max_output_json_bytes",
+        COMPRESSION_DEFAULT_MAX_OUTPUT_JSON_BYTES,
     )
-    max_rounds = _compaction_budget_value(
-        data, "compaction_max_rounds", COMPACTION_DEFAULT_MAX_ROUNDS
+    max_rounds = _compression_budget_value(
+        data, "compression_max_rounds", COMPRESSION_DEFAULT_MAX_ROUNDS
     )
     values = {
-        "compaction_trigger_chars": trigger,
-        "compaction_chunk_chars": chunk,
-        "compaction_target_chars": target,
-        "compaction_max_output_chars": max_output,
-        "compaction_max_output_json_bytes": max_json,
-        "compaction_max_rounds": max_rounds,
+        "compression_trigger_chars": trigger,
+        "compression_chunk_chars": chunk,
+        "compression_target_chars": target,
+        "compression_max_output_chars": max_output,
+        "compression_max_output_json_bytes": max_json,
+        "compression_max_rounds": max_rounds,
     }
     for name, value in values.items():
         if value <= 0:
             raise ValueError(f"workflow step {step_id} {name} must be positive")
     if not target <= max_output < trigger:
         raise ValueError(
-            f"workflow step {step_id} compaction budgets must satisfy "
-            "compaction_target_chars <= compaction_max_output_chars < "
-            "compaction_trigger_chars"
+            f"workflow step {step_id} compression budgets must satisfy "
+            "compression_target_chars <= compression_max_output_chars < "
+            "compression_trigger_chars"
         )
     if chunk > trigger:
         raise ValueError(
-            f"workflow step {step_id} compaction_chunk_chars must be <= "
-            "compaction_trigger_chars"
+            f"workflow step {step_id} compression_chunk_chars must be <= "
+            "compression_trigger_chars"
         )
 
 
-def _required_str(data: dict[str, Any], field: str, context: str) -> str:
+def _required_str(data: dict[str, Any], field: str, location: str) -> str:
     value = _optional_str(data.get(field))
     if not value:
-        raise ValueError(f"{context} missing required field: {field}")
+        raise ValueError(f"{location} missing required field: {field}")
     return value

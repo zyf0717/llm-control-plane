@@ -44,13 +44,26 @@ async def search_web(request: Request):
 
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Invalid JSON object")
+    rejected_fields = {
+        "context",
+        "rerank_context",
+        "rerankContext",
+        "sourceText",
+        "rerankSourceText",
+    } & set(body)
+    if rejected_fields:
+        fields = ", ".join(sorted(rejected_fields))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported search field(s): {fields}",
+        )
 
     try:
         args = SearchArgs(
             query=str(body.get("query", "")).strip(),
             count=body.get("count"),
             provider=str(body.get("provider", "auto") or "auto"),
-            context=body.get("context"),
+            source_text=body.get("source_text"),
             language=body.get("language"),
             region=body.get("region"),
             safe_search=body.get("safeSearch") or body.get("safe_search"),
@@ -67,7 +80,7 @@ async def search_web(request: Request):
                 camel_key="useReranker",
                 default=False,
             ),
-            rerank_context=body.get("rerank_context") or body.get("rerankContext"),
+            rerank_source_text=body.get("rerank_source_text"),
         )
         response = await services.search_service.search(args)
     except ValueError as exc:
@@ -77,5 +90,5 @@ async def search_web(request: Request):
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
     payload = response.to_dict()
-    payload["wrapped_results"] = wrap_search_results(response)
+    payload["search_evidence"] = wrap_search_results(response)
     return payload

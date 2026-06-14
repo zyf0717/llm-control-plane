@@ -6,11 +6,11 @@ from typing import Any, Callable
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from ..conversation_context import (
-    build_conversation_context_bundle,
-    enrich_workflow_params_with_context_bundle,
+from ..thread_briefing import (
+    build_thread_briefing_bundle,
+    enrich_workflow_params_with_thread_bundle,
 )
-from ..history_store import HistoryStore
+from ..conversation_store import ConversationStore
 from .executor import WorkflowExecutor
 from .registry import WorkflowRegistry
 from .store import SQLiteWorkflowStore
@@ -21,7 +21,7 @@ def create_workflow_router(
     registry_getter: Callable[[], WorkflowRegistry],
     store_getter: Callable[[], SQLiteWorkflowStore],
     executor_getter: Callable[[], WorkflowExecutor],
-    history_store_getter: Callable[[], HistoryStore] | None = None,
+    conversation_store_getter: Callable[[], ConversationStore] | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -41,61 +41,66 @@ def create_workflow_router(
     async def create_run(workflow_id: str, request: Request):
         body = await _json_body(request)
         params = _dict_or_empty(body.get("params"))
-        context_mode = str(body.get("context_mode") or "").strip().lower()
-        if context_mode and context_mode not in {"full", "compacted", "none"}:
+        if "context_mode" in body:
             raise HTTPException(
                 status_code=400,
-                detail=f"unsupported context mode: {context_mode}",
+                detail="context_mode is no longer supported; use history_mode",
             )
-        if context_mode == "compacted":
-            if history_store_getter is None:
+        history_mode = str(body.get("history_mode") or "").strip().lower()
+        if history_mode and history_mode not in {"conversation", "thread", "none"}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unsupported history mode: {history_mode}",
+            )
+        if history_mode == "thread":
+            if conversation_store_getter is None:
                 raise HTTPException(
                     status_code=400,
-                    detail="workflow compacted context is not configured",
+                    detail="workflow thread briefing is not configured",
                 )
-            source_convo_id = _optional_str(body.get("source_convo_id"))
-            if not source_convo_id:
+            source_conversation_id = _optional_str(body.get("source_conversation_id"))
+            if not source_conversation_id:
                 raise HTTPException(
                     status_code=400,
-                    detail="source_convo_id is required for compacted workflow context",
+                    detail="source_conversation_id is required for workflow thread mode",
                 )
-            recent_tail_messages = _optional_int(body.get("recent_tail_messages")) or 20
+            recent_message_count = _optional_int(body.get("recent_message_count")) or 20
             endpoint = _optional_str(body.get("endpoint"))
-            if _truthy(body.get("refresh_compacted_context")):
-                from ..conversation_compaction import (
-                    maybe_refresh_compacted_conversation_state,
+            if _truthy(body.get("refresh_thread_state")):
+                from ..thread_state_refresh import (
+                    maybe_refresh_thread_state,
                 )
 
                 if not endpoint:
                     raise HTTPException(
                         status_code=400,
-                        detail="endpoint is required to refresh compacted context",
+                        detail="endpoint is required to refresh thread state",
                     )
                 try:
-                    await maybe_refresh_compacted_conversation_state(
-                        history_store=history_store_getter(),
+                    await maybe_refresh_thread_state(
+                        conversation_store=conversation_store_getter(),
                         llm_client=executor_getter().llm_client,
-                        source_convo_id=source_convo_id,
+                        source_conversation_id=source_conversation_id,
                         endpoint=endpoint,
                         reasoning_effort=_optional_str(body.get("reasoning_effort")),
                         force=False,
                     )
                 except Exception as exc:
                     raise HTTPException(status_code=500, detail=str(exc)) from exc
-            bundle = await build_conversation_context_bundle(
-                history_store_getter(),
-                source_convo_id=source_convo_id,
-                recent_tail_messages=recent_tail_messages,
+            bundle = await build_thread_briefing_bundle(
+                conversation_store_getter(),
+                source_conversation_id=source_conversation_id,
+                recent_message_count=recent_message_count,
             )
-            params = enrich_workflow_params_with_context_bundle(params, bundle)
+            params = enrich_workflow_params_with_thread_bundle(params, bundle)
         try:
             snapshot = await executor_getter().create_run(
                 workflow_id,
                 params=params,
-                convo_id=_optional_str(body.get("convo_id")),
+                conversation_id=_optional_str(body.get("conversation_id")),
                 endpoint=_optional_str(body.get("endpoint")),
                 reasoning_effort=_optional_str(body.get("reasoning_effort")),
-                rag_endpoint=_optional_str(body.get("rag_endpoint")),
+                retrieval_endpoint=_optional_str(body.get("retrieval_endpoint")),
                 search_provider=_optional_str(body.get("search_provider")),
             )
         except KeyError as exc:
@@ -107,7 +112,7 @@ def create_workflow_router(
             "run_id": run["run_id"],
             "workflow_id": run["workflow_id"],
             "status": run["status"],
-            "convo_id": run["convo_id"],
+            "conversation_id": run["conversation_id"],
             "snapshot": snapshot,
         }
 
