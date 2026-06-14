@@ -4,11 +4,67 @@ from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
 
-WorkflowStepKind = Literal["llm", "search", "rerank", "manual"]
+WorkflowStepKind = Literal["llm", "search", "rerank", "manual", "compact_context"]
 WorkflowChatVisibility = Literal["hidden", "intermediate", "final"]
 WorkflowOutputFormat = Literal["json", "yaml", "text"]
+WorkflowCompactionInputFormat = Literal["auto", "text", "json", "yaml"]
+WorkflowCompactionOutputFormat = Literal["text", "json", "yaml"]
 WorkflowRunStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 WorkflowStepStatus = Literal["pending", "running", "completed", "failed", "skipped"]
+
+
+COMPACTION_DEFAULT_TRIGGER_CHARS = 48_000
+COMPACTION_DEFAULT_CHUNK_CHARS = 32_000
+COMPACTION_DEFAULT_TARGET_CHARS = 16_000
+COMPACTION_DEFAULT_MAX_OUTPUT_CHARS = 20_000
+COMPACTION_DEFAULT_MAX_OUTPUT_JSON_BYTES = 256_000
+COMPACTION_DEFAULT_MAX_ROUNDS = 3
+COMPACTION_DEFAULT_INPUT_FORMAT = "auto"
+COMPACTION_DEFAULT_OUTPUT_FORMAT = "text"
+COMPACTION_DEFAULT_GOAL = (
+    "Preserve user intent, constraints, claims, concept relationships, "
+    "high-value evidence snippets, source references, contradictions, and uncertainty."
+)
+
+
+def _builtin_compaction_contract(
+    output_format: WorkflowOutputFormat,
+) -> "WorkflowOutputContract":
+    return WorkflowOutputContract(
+        format=output_format,
+        required=True,
+        schema={
+            "type": "object",
+            "additionalProperties": True,
+            "required": [
+                "summary",
+                "preserved_keywords",
+                "evidence_snippets",
+                "uncertainties",
+                "source_refs",
+            ],
+            "properties": {
+                "summary": {"type": "string", "minLength": 1},
+                "preserved_keywords": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                },
+                "evidence_snippets": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                },
+                "uncertainties": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                },
+                "source_refs": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                },
+            },
+        },
+        on_invalid={"action": "repair", "max_attempts": 1, "repair": True},
+    )
 
 
 @dataclass(slots=True)
@@ -93,6 +149,15 @@ class WorkflowStepSpec:
     rerank_context: str | None = None
     rerank_top_k: int | None = None
     max_tokens: int | None = None
+    compaction_trigger_chars: int = COMPACTION_DEFAULT_TRIGGER_CHARS
+    compaction_chunk_chars: int = COMPACTION_DEFAULT_CHUNK_CHARS
+    compaction_target_chars: int = COMPACTION_DEFAULT_TARGET_CHARS
+    compaction_max_output_chars: int = COMPACTION_DEFAULT_MAX_OUTPUT_CHARS
+    compaction_max_output_json_bytes: int = COMPACTION_DEFAULT_MAX_OUTPUT_JSON_BYTES
+    compaction_max_rounds: int = COMPACTION_DEFAULT_MAX_ROUNDS
+    compaction_input_format: WorkflowCompactionInputFormat = COMPACTION_DEFAULT_INPUT_FORMAT
+    compaction_output_format: WorkflowCompactionOutputFormat = COMPACTION_DEFAULT_OUTPUT_FORMAT
+    compaction_goal: str | None = None
     chat_visibility: WorkflowChatVisibility = "hidden"
     chat_stream: bool | None = None
 
@@ -103,7 +168,7 @@ class WorkflowStepSpec:
 
         step_id = _required_str(data, "id", "workflow step")
         kind = _required_str(data, "kind", f"workflow step {step_id}")
-        if kind not in {"llm", "search", "rerank", "manual"}:
+        if kind not in {"llm", "search", "rerank", "manual", "compact_context"}:
             raise ValueError(f"workflow step {step_id} has unsupported kind: {kind}")
         if "use_reranker" in data:
             raise ValueError(
@@ -136,6 +201,39 @@ class WorkflowStepSpec:
                 step_id=step_id,
             )
 
+        compaction_input_format = (
+            _optional_str(data.get("compaction_input_format"))
+            or COMPACTION_DEFAULT_INPUT_FORMAT
+        )
+        if compaction_input_format not in {"auto", "text", "json", "yaml"}:
+            raise ValueError(
+                f"workflow step {step_id} compaction_input_format is unsupported: "
+                f"{compaction_input_format}"
+            )
+        compaction_output_format = (
+            _optional_str(data.get("compaction_output_format"))
+            or COMPACTION_DEFAULT_OUTPUT_FORMAT
+        )
+        if compaction_output_format not in {"text", "json", "yaml"}:
+            raise ValueError(
+                f"workflow step {step_id} compaction_output_format is unsupported: "
+                f"{compaction_output_format}"
+            )
+        if kind == "compact_context":
+            _validate_compaction_budgets(data, step_id=step_id)
+            if (
+                output_contract is not None
+                and output_contract.format != compaction_output_format
+            ):
+                raise ValueError(
+                    f"workflow step {step_id} output_contract.format must match "
+                    "compaction_output_format"
+                )
+            if compaction_output_format in {"json", "yaml"} and output_contract is None:
+                output_contract = _builtin_compaction_contract(
+                    compaction_output_format  # type: ignore[arg-type]
+                )
+
         chat_visibility = _optional_str(data.get("chat_visibility")) or "hidden"
         if chat_visibility not in {"hidden", "intermediate", "final"}:
             raise ValueError(
@@ -159,6 +257,29 @@ class WorkflowStepSpec:
             rerank_context=_optional_str(data.get("rerank_context")),
             rerank_top_k=_optional_int(data.get("rerank_top_k")),
             max_tokens=_optional_int(data.get("max_tokens")),
+            compaction_trigger_chars=_compaction_budget_value(
+                data, "compaction_trigger_chars", COMPACTION_DEFAULT_TRIGGER_CHARS
+            ),
+            compaction_chunk_chars=_compaction_budget_value(
+                data, "compaction_chunk_chars", COMPACTION_DEFAULT_CHUNK_CHARS
+            ),
+            compaction_target_chars=_compaction_budget_value(
+                data, "compaction_target_chars", COMPACTION_DEFAULT_TARGET_CHARS
+            ),
+            compaction_max_output_chars=_compaction_budget_value(
+                data, "compaction_max_output_chars", COMPACTION_DEFAULT_MAX_OUTPUT_CHARS
+            ),
+            compaction_max_output_json_bytes=_compaction_budget_value(
+                data,
+                "compaction_max_output_json_bytes",
+                COMPACTION_DEFAULT_MAX_OUTPUT_JSON_BYTES,
+            ),
+            compaction_max_rounds=_compaction_budget_value(
+                data, "compaction_max_rounds", COMPACTION_DEFAULT_MAX_ROUNDS
+            ),
+            compaction_input_format=compaction_input_format,  # type: ignore[arg-type]
+            compaction_output_format=compaction_output_format,  # type: ignore[arg-type]
+            compaction_goal=_optional_str(data.get("compaction_goal")),
             chat_visibility=chat_visibility,  # type: ignore[arg-type]
             chat_stream=_optional_bool(data.get("chat_stream")),
         )
@@ -283,6 +404,58 @@ def _optional_bool(value: Any) -> bool | None:
         if normalized in {"false", "0", "no", "off"}:
             return False
     raise ValueError(f"expected boolean, got {value!r}")
+
+
+def _compaction_budget_value(
+    data: dict[str, Any], field: str, default: int
+) -> int:
+    value = _optional_int(data.get(field))
+    return default if value is None else value
+
+
+def _validate_compaction_budgets(data: dict[str, Any], *, step_id: str) -> None:
+    trigger = _compaction_budget_value(
+        data, "compaction_trigger_chars", COMPACTION_DEFAULT_TRIGGER_CHARS
+    )
+    chunk = _compaction_budget_value(
+        data, "compaction_chunk_chars", COMPACTION_DEFAULT_CHUNK_CHARS
+    )
+    target = _compaction_budget_value(
+        data, "compaction_target_chars", COMPACTION_DEFAULT_TARGET_CHARS
+    )
+    max_output = _compaction_budget_value(
+        data, "compaction_max_output_chars", COMPACTION_DEFAULT_MAX_OUTPUT_CHARS
+    )
+    max_json = _compaction_budget_value(
+        data,
+        "compaction_max_output_json_bytes",
+        COMPACTION_DEFAULT_MAX_OUTPUT_JSON_BYTES,
+    )
+    max_rounds = _compaction_budget_value(
+        data, "compaction_max_rounds", COMPACTION_DEFAULT_MAX_ROUNDS
+    )
+    values = {
+        "compaction_trigger_chars": trigger,
+        "compaction_chunk_chars": chunk,
+        "compaction_target_chars": target,
+        "compaction_max_output_chars": max_output,
+        "compaction_max_output_json_bytes": max_json,
+        "compaction_max_rounds": max_rounds,
+    }
+    for name, value in values.items():
+        if value <= 0:
+            raise ValueError(f"workflow step {step_id} {name} must be positive")
+    if not target <= max_output < trigger:
+        raise ValueError(
+            f"workflow step {step_id} compaction budgets must satisfy "
+            "compaction_target_chars <= compaction_max_output_chars < "
+            "compaction_trigger_chars"
+        )
+    if chunk > trigger:
+        raise ValueError(
+            f"workflow step {step_id} compaction_chunk_chars must be <= "
+            "compaction_trigger_chars"
+        )
 
 
 def _required_str(data: dict[str, Any], field: str, context: str) -> str:

@@ -426,6 +426,47 @@ steps:
     )
 
 
+def write_compact_context_workflow(
+    path: Path,
+    *,
+    input_format: str = "auto",
+    output_format: str = "text",
+    trigger: int = 1000,
+    chunk: int = 800,
+    target: int = 400,
+    max_output: int = 600,
+    max_json_bytes: int = 12000,
+    max_rounds: int = 2,
+    output_contract: str = "",
+) -> None:
+    path.write_text(
+        f"""
+id: compact_sample
+name: Compact Sample
+version: 0.1.0
+params_schema:
+  type: object
+  required: [context]
+steps:
+  - id: compact
+    kind: compact_context
+    prompt: "{{{{ params.context }}}}"
+    output_key: compacted
+    compaction_input_format: {input_format}
+    compaction_output_format: {output_format}
+    compaction_trigger_chars: {trigger}
+    compaction_chunk_chars: {chunk}
+    compaction_target_chars: {target}
+    compaction_max_output_chars: {max_output}
+    compaction_max_output_json_bytes: {max_json_bytes}
+    compaction_max_rounds: {max_rounds}
+    compaction_goal: Preserve evidence, source refs, and concept logic.
+{output_contract}
+""",
+        encoding="utf-8",
+    )
+
+
 @pytest.mark.asyncio
 async def test_executor_advances_steps_with_previous_outputs(tmp_path):
     write_workflow(tmp_path / "sample.yaml")
@@ -868,6 +909,241 @@ async def test_multi_query_workflow_reranks_merged_results_when_available(tmp_pa
             "query two",
             "query one",
         ]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_compact_context_passes_through_below_trigger_without_llm(tmp_path):
+    write_compact_context_workflow(tmp_path / "compact.yaml", trigger=1000)
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    llm = FakeLLMClient()
+    executor = WorkflowExecutor(registry, store, llm)
+    try:
+        created = await executor.create_run(
+            "compact_sample",
+            params={"context": "short context with useful evidence"},
+            endpoint="node-a",
+        )
+        snapshot = await executor.advance(created["run"]["run_id"])
+
+        output = snapshot["steps"][0]["output_json"]
+        assert llm.prompts == []
+        assert output["text"] == "short context with useful evidence"
+        assert output["json"]["compacted"] is False
+        assert output["json"]["method"] == "pass_through"
+        assert output["metadata"]["kind"] == "compact_context"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_compact_context_pass_through_enforces_output_payload_cap(tmp_path):
+    write_compact_context_workflow(
+        tmp_path / "compact.yaml",
+        trigger=1000,
+        max_json_bytes=120,
+    )
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    llm = FakeLLMClient()
+    executor = WorkflowExecutor(registry, store, llm)
+    try:
+        created = await executor.create_run(
+            "compact_sample",
+            params={"context": "short"},
+            endpoint="node-a",
+        )
+        snapshot = await executor.advance(created["run"]["run_id"])
+
+        assert llm.prompts == []
+        assert snapshot["run"]["status"] == "failed"
+        assert "compaction_output_over_budget" in snapshot["steps"][0]["error"]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_compact_context_rejects_malformed_explicit_json_input(tmp_path):
+    write_compact_context_workflow(
+        tmp_path / "compact.yaml",
+        input_format="json",
+    )
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    llm = FakeLLMClient()
+    executor = WorkflowExecutor(registry, store, llm)
+    try:
+        created = await executor.create_run(
+            "compact_sample",
+            params={"context": '{"bad": '},
+            endpoint="node-a",
+        )
+        snapshot = await executor.advance(created["run"]["run_id"])
+
+        assert llm.prompts == []
+        assert snapshot["run"]["status"] == "failed"
+        assert "compaction_input_shape_invalid" in snapshot["steps"][0]["error"]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_compact_context_calls_llm_above_trigger_and_preserves_quality_prompt(
+    tmp_path,
+):
+    write_compact_context_workflow(
+        tmp_path / "compact.yaml",
+        trigger=500,
+        chunk=400,
+        target=300,
+        max_output=450,
+    )
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    compact = (
+        '"ACME Cooling Vest" 2025 42% https://example.gov/study example.gov '
+        "ACME Independent Review OSHA outdoor workers evidence caveat."
+    )
+    llm = SequenceLLMClient([compact] * 12)
+    executor = WorkflowExecutor(registry, store, llm)
+    source = (
+        '"ACME Cooling Vest" showed 42% reduction in 2025 '
+        "https://example.gov/study with independent evidence.\n\n"
+        "Independent Review connected the finding to OSHA outdoor workers guidance "
+        "and noted caveats. "
+    ) * 4
+    try:
+        created = await executor.create_run(
+            "compact_sample", params={"context": source}, endpoint="node-a"
+        )
+        snapshot = await executor.advance(created["run"]["run_id"])
+
+        first_prompt = llm.prompts[0]["prompt"]
+        assert "claim -> evidence -> caveat -> source_ref" in first_prompt
+        assert "untrusted evidence" in first_prompt
+        assert "Highest-value evidence candidates" in first_prompt
+        output = snapshot["steps"][0]["output_json"]
+        assert snapshot["run"]["status"] == "completed"
+        assert len(llm.prompts) >= output["json"]["chunks"]
+        assert output["json"]["compacted"] is True
+        assert output["json"]["warnings"] == []
+        assert "https://example.gov/study" in output["text"]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_compact_context_repairs_malformed_structured_output(tmp_path):
+    write_compact_context_workflow(
+        tmp_path / "compact.yaml",
+        output_format="json",
+        trigger=240,
+        chunk=240,
+        target=180,
+        max_output=220,
+    )
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    valid = (
+        '{"summary":"x","preserved_keywords":[],"evidence_snippets":[],'
+        '"uncertainties":[],"source_refs":[]}'
+    )
+    llm = SequenceLLMClient(["not-json", valid, *([valid] * 8)])
+    executor = WorkflowExecutor(registry, store, llm)
+    try:
+        created = await executor.create_run(
+            "compact_sample",
+            params={"context": ("alpha beta evidence. " * 20)},
+            endpoint="node-a",
+        )
+        snapshot = await executor.advance(created["run"]["run_id"])
+
+        output = snapshot["steps"][0]["output_json"]
+        assert snapshot["run"]["status"] == "completed"
+        assert "output_repaired" in output["json"]["warnings"]
+        assert output["json"]["compact_output"]["summary"] == "x"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_compact_context_fails_when_repaired_output_still_over_budget(tmp_path):
+    write_compact_context_workflow(
+        tmp_path / "compact.yaml",
+        trigger=240,
+        chunk=240,
+        target=100,
+        max_output=120,
+    )
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    llm = SequenceLLMClient(["x" * 200, "y" * 200])
+    executor = WorkflowExecutor(registry, store, llm)
+    try:
+        created = await executor.create_run(
+            "compact_sample",
+            params={"context": ("alpha beta evidence. " * 20)},
+            endpoint="node-a",
+        )
+        snapshot = await executor.advance(created["run"]["run_id"])
+
+        assert snapshot["run"]["status"] == "failed"
+        assert "compaction_output_over_budget" in snapshot["steps"][0]["error"]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_compact_context_reduces_multi_chunk_summaries(tmp_path):
+    write_compact_context_workflow(
+        tmp_path / "compact.yaml",
+        trigger=240,
+        chunk=240,
+        target=90,
+        max_output=160,
+        max_rounds=2,
+    )
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    llm = SequenceLLMClient(
+        [
+            "alpha evidence summary " * 4,
+            "beta evidence summary " * 4,
+            "gamma evidence summary " * 4,
+            "delta evidence summary " * 4,
+            *("alpha beta gamma compact evidence." for _ in range(8)),
+        ]
+    )
+    executor = WorkflowExecutor(registry, store, llm)
+    try:
+        created = await executor.create_run(
+            "compact_sample",
+            params={"context": ("alpha beta gamma evidence. " * 30)},
+            endpoint="node-a",
+        )
+        snapshot = await executor.advance(created["run"]["run_id"])
+
+        output = snapshot["steps"][0]["output_json"]
+        assert snapshot["run"]["status"] == "completed"
+        assert "compact evidence" in output["text"]
+        assert output["json"]["rounds"] >= 1
+        assert len(llm.prompts) > output["json"]["chunks"]
     finally:
         await store.close()
 

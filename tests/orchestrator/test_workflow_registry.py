@@ -195,6 +195,148 @@ def test_registry_loads_rerank_steps(tmp_path):
     assert rerank_step.rerank_context == "Goal: {{ params.goal }}"
 
 
+def test_registry_loads_compact_context_steps(tmp_path):
+    write_workflow(
+        tmp_path / "sample.yaml",
+        body=minimal_workflow(
+            steps="""
+  - id: compact
+    name: Compact
+    kind: compact_context
+    prompt: "{{ params.context }}"
+    output_key: compacted
+    compaction_trigger_chars: 1000
+    compaction_chunk_chars: 800
+    compaction_target_chars: 400
+    compaction_max_output_chars: 600
+    compaction_max_output_json_bytes: 12000
+    compaction_max_rounds: 2
+    compaction_input_format: auto
+    compaction_output_format: text
+    compaction_goal: Preserve evidence.
+"""
+        ),
+    )
+
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+
+    step = registry.get("sample").steps[0]
+    assert step.kind == "compact_context"
+    assert step.compaction_trigger_chars == 1000
+    assert step.compaction_chunk_chars == 800
+    assert step.compaction_target_chars == 400
+    assert step.compaction_max_output_chars == 600
+    assert step.compaction_max_output_json_bytes == 12000
+    assert step.compaction_max_rounds == 2
+    assert step.compaction_input_format == "auto"
+    assert step.compaction_output_format == "text"
+    assert step.compaction_goal == "Preserve evidence."
+
+
+def test_registry_rejects_invalid_compaction_budgets(tmp_path):
+    write_workflow(
+        tmp_path / "sample.yaml",
+        body=minimal_workflow(
+            steps="""
+  - id: compact
+    kind: compact_context
+    prompt: hello
+    compaction_trigger_chars: 100
+    compaction_chunk_chars: 80
+    compaction_target_chars: 90
+    compaction_max_output_chars: 120
+"""
+        ),
+    )
+
+    with pytest.raises(ValueError, match="compaction budgets"):
+        WorkflowRegistry(tmp_path).load()
+
+
+def test_registry_rejects_zero_compaction_budgets(tmp_path):
+    write_workflow(
+        tmp_path / "sample.yaml",
+        body=minimal_workflow(
+            steps="""
+  - id: compact
+    kind: compact_context
+    prompt: hello
+    compaction_max_rounds: 0
+"""
+        ),
+    )
+
+    with pytest.raises(ValueError, match="compaction_max_rounds must be positive"):
+        WorkflowRegistry(tmp_path).load()
+
+
+def test_registry_rejects_invalid_compaction_formats(tmp_path):
+    write_workflow(
+        tmp_path / "sample.yaml",
+        body=minimal_workflow(
+            steps="""
+  - id: compact
+    kind: compact_context
+    prompt: hello
+    compaction_input_format: xml
+"""
+        ),
+    )
+
+    with pytest.raises(ValueError, match="compaction_input_format"):
+        WorkflowRegistry(tmp_path).load()
+
+
+def test_registry_supplies_builtin_compaction_contract_for_structured_output(tmp_path):
+    write_workflow(
+        tmp_path / "sample.yaml",
+        body=minimal_workflow(
+            steps="""
+  - id: compact
+    kind: compact_context
+    prompt: hello
+    compaction_output_format: json
+"""
+        ),
+    )
+
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+
+    contract = registry.get("sample").steps[0].output_contract
+    assert contract is not None
+    assert contract.format == "json"
+    assert contract.required is True
+    assert contract.schema is not None
+    assert contract.schema["required"] == [
+        "summary",
+        "preserved_keywords",
+        "evidence_snippets",
+        "uncertainties",
+        "source_refs",
+    ]
+
+
+def test_registry_rejects_compaction_contract_format_mismatch(tmp_path):
+    write_workflow(
+        tmp_path / "sample.yaml",
+        body=minimal_workflow(
+            steps="""
+  - id: compact
+    kind: compact_context
+    prompt: hello
+    compaction_output_format: json
+    output_contract:
+      format: yaml
+"""
+        ),
+    )
+
+    with pytest.raises(ValueError, match="output_contract.format"):
+        WorkflowRegistry(tmp_path).load()
+
+
 def test_registry_defaults_chat_visibility_to_hidden(tmp_path):
     write_workflow(
         tmp_path / "sample.yaml",
