@@ -261,6 +261,70 @@ app_ui = ui.page_fluid(
             }
         }
 
+        function dashboardChatTabActive(chat) {
+            const tabPane = chat.closest(".tab-pane");
+            if (tabPane) return tabPane.classList.contains("active");
+            return Boolean(chat.offsetParent);
+        }
+
+        function setDashboardChatStreamAutoScroll(stream, enabled) {
+            if (enabled) {
+                if (!stream.hasAttribute("auto-scroll")) {
+                    stream.setAttribute("auto-scroll", "");
+                }
+            } else {
+                if (stream.hasAttribute("auto-scroll")) {
+                    stream.removeAttribute("auto-scroll");
+                }
+            }
+        }
+
+        function syncDashboardChatStreamAutoScroll() {
+            const chat = document.getElementById("chat");
+            if (!chat) return;
+            const enabled = dashboardChatTabActive(chat);
+            chat.querySelectorAll("shiny-chat-message shiny-markdown-stream").forEach(function(stream) {
+                setDashboardChatStreamAutoScroll(stream, enabled);
+            });
+        }
+
+        function initDashboardChatStreamAutoScrollGuard() {
+            const chat = document.getElementById("chat");
+            if (!chat || chat.dataset.dashboardAutoScrollGuard === "true") return;
+            chat.dataset.dashboardAutoScrollGuard = "true";
+
+            const syncSoon = function() {
+                window.requestAnimationFrame(syncDashboardChatStreamAutoScroll);
+            };
+
+            const chatObserver = new MutationObserver(syncSoon);
+            chatObserver.observe(chat, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ["auto-scroll"],
+            });
+
+            const tabPane = chat.closest(".tab-pane");
+            if (tabPane) {
+                const tabObserver = new MutationObserver(syncSoon);
+                tabObserver.observe(tabPane, {
+                    attributes: true,
+                    attributeFilter: ["class"],
+                });
+            }
+
+            document.addEventListener("shown.bs.tab", syncSoon);
+            document.addEventListener("hidden.bs.tab", syncSoon);
+            syncSoon();
+        }
+
+        if (document.readyState === "loading") {
+            document.addEventListener("DOMContentLoaded", initDashboardChatStreamAutoScrollGuard);
+        } else {
+            initDashboardChatStreamAutoScrollGuard();
+        }
+
         Shiny.addCustomMessageHandler("workflowRoutingState", function(message) {
             const active = Boolean(message && message.active);
             const searchProviderEnabled = Boolean(
@@ -403,10 +467,12 @@ app_ui = ui.page_fluid(
                 ),
                 fillable=True,
             ),
+            value="single_node",
         ),
         ui.nav_panel(
             "Multi-Node",
             ui.div("Multi-node UI coming soon!"),
+            value="multi_node",
         ),
         ui.nav_panel(
             "Workflows",
@@ -512,6 +578,7 @@ app_ui = ui.page_fluid(
                 ),
                 col_widths=[3, 9],
             ),
+            value="workflows",
         ),
         ui.nav_panel(
             "Conversation History",
@@ -527,6 +594,7 @@ app_ui = ui.page_fluid(
                 col_widths=[3, 2],
             ),
             ui.output_ui("historyBox"),
+            value="history",
         ),
         ui.nav_panel(
             "Traces",
@@ -563,7 +631,10 @@ app_ui = ui.page_fluid(
                 col_widths=[3, 3, 3, 1, 2],
             ),
             ui.output_ui("traceBox"),
+            value="traces",
         ),
+        id="dashboardNav",
+        selected="single_node",
         title="LLM Control Plane",
     ),
     theme=shinyswatch.theme.flatly,
