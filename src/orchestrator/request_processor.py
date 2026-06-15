@@ -175,6 +175,30 @@ class RequestProcessor:
         ]
 
     @staticmethod
+    def public_conversation_history(messages: List[Dict]) -> List[Dict[str, str]]:
+        """Return the dashboard-safe transcript: user turns and final assistant text."""
+        public_messages: List[Dict[str, str]] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            if RequestProcessor._is_ephemeral_conversation_message(message):
+                continue
+
+            role = str(message.get("role") or "").strip()
+            content = message.get("content")
+            if role not in {"user", "assistant"} or not isinstance(content, str):
+                continue
+            if role == "assistant" and (
+                message.get("tool_calls") or message.get("function_call")
+            ):
+                continue
+
+            text = content.strip()
+            if text:
+                public_messages.append({"role": role, "content": text})
+        return public_messages
+
+    @staticmethod
     def _is_full_conversation_replay(stored: List[Dict], incoming: List[Dict]) -> bool:
         """Detect clients replaying the full server-persisted conversation prefix."""
         if not stored or len(incoming) < len(stored):

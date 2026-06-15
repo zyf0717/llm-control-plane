@@ -697,6 +697,7 @@ async def test_llm_structured_output_repairs_then_retries_within_budget(tmp_path
         assert output["metadata"]["structured_output"]["repair_used"] is True
         assert "Previous output:" in llm.prompts[1]["prompt"]
         assert "previous response was invalid" in llm.prompts[2]["prompt"]
+        assert all(prompt["skip_conversation"] is True for prompt in llm.prompts)
     finally:
         await store.close()
 
@@ -1196,6 +1197,7 @@ async def test_streaming_llm_step_accumulates_output_and_emits_deltas(tmp_path):
         snapshot = events[-1]["snapshot"]
         assert snapshot["run"]["status"] == "completed"
         assert snapshot["steps"][0]["output_json"]["text"] == "stream answer"
+        assert llm.prompts[0]["skip_conversation"] is True
     finally:
         await store.close()
 

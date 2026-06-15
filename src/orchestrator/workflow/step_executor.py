@@ -196,6 +196,7 @@ class WorkflowStepExecutor:
             reasoning_effort=reasoning_effort,
             retrieval_endpoint=run.retrieval_endpoint or step.retrieval_endpoint or spec.defaults.retrieval_endpoint,
             max_tokens=step.max_tokens or spec.defaults.max_tokens,
+            skip_conversation=True,
         ):
             if not isinstance(chunk, dict):
                 continue
@@ -717,6 +718,7 @@ class WorkflowStepExecutor:
             reasoning_effort=reasoning_effort,
             retrieval_endpoint=run.retrieval_endpoint or step.retrieval_endpoint or spec.defaults.retrieval_endpoint,
             max_tokens=step.max_tokens or spec.defaults.max_tokens,
+            skip_conversation=True,
         )
         text = str(result.get("text") or "")
         metadata = dict(result.get("metadata") or {})
@@ -783,6 +785,7 @@ class WorkflowStepExecutor:
                     run.retrieval_endpoint or step.retrieval_endpoint or spec.defaults.retrieval_endpoint
                 ),
                 max_tokens=step.max_tokens or spec.defaults.max_tokens,
+                skip_conversation=True,
             )
             attempts += 1
             text = str(result.get("text") or "")

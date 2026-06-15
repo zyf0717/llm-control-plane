@@ -514,7 +514,7 @@ app_ui = ui.page_fluid(
             ),
         ),
         ui.nav_panel(
-            "History",
+            "Conversation History",
             input_action_row(
                 ui.input_select(
                     "historyConversationSelector",

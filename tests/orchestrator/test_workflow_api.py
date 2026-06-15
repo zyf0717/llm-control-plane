@@ -16,6 +16,15 @@ class FakeLLMClient:
         return {"text": "ok", "metadata": {"endpoint": kwargs["endpoint"]}}
 
 
+class RecordingLLMClient(FakeLLMClient):
+    def __init__(self):
+        self.calls = []
+
+    async def complete(self, **kwargs):
+        self.calls.append(kwargs)
+        return await super().complete(**kwargs)
+
+
 def write_workflow(path: Path) -> None:
     path.write_text(
         """
@@ -101,6 +110,39 @@ def test_workflow_api_create_advance_and_get(tmp_path):
         get_response = client.get(f"/workflow-runs/{run_id}")
         assert get_response.status_code == 200
         assert get_response.json()["steps"][0]["output_json"]["text"] == "ok"
+
+
+def test_workflow_llm_steps_skip_durable_conversation_history(tmp_path):
+    write_workflow(tmp_path / "sample.yaml")
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    llm_client = RecordingLLMClient()
+
+    with TestClient(app) as client:
+        client.portal.call(store.initialize)
+        proxy_module.set_workflow_components(
+            registry=registry,
+            store=store,
+            executor=WorkflowExecutor(registry, store, llm_client),
+        )
+
+        create_response = client.post(
+            "/workflows/sample/runs",
+            json={
+                "params": {"goal": "ship"},
+                "endpoint": "node-a",
+                "conversation_id": "dashboard-conversation",
+            },
+        )
+        assert create_response.status_code == 200
+        run_id = create_response.json()["run_id"]
+
+        advance_response = client.post(f"/workflow-runs/{run_id}/advance")
+
+    assert advance_response.status_code == 200
+    assert llm_client.calls
+    assert all(call["skip_conversation"] is True for call in llm_client.calls)
 
 
 def test_workflow_api_validates_required_params(tmp_path):

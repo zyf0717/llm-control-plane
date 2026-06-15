@@ -378,6 +378,22 @@ async def fetch_conversation_history(conversation_id):
         return {}
 
 
+async def append_conversation_messages(conversation_id, messages):
+    """Append dashboard-owned public transcript messages."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{PROXY_BASE_URL}/conversations/append",
+                json={"conversation_id": conversation_id, "messages": messages},
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data if isinstance(data, dict) else {}
+    except Exception as e:
+        logger.warning("Failed to append conversation messages: %s", e)
+        return {}
+
+
 async def fetch_conversation_control_state(conversation_id):
     """Fetch persisted proxy route/reasoning state for a conversation."""
     try:

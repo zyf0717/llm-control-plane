@@ -161,7 +161,7 @@ async def retrieve_conversation(request: Request):
                 detail=f"Conversation '{conversation_id}' not found",
             )
 
-        return RequestProcessor._filter_ephemeral_evidence_messages(conversation)
+        return RequestProcessor.public_conversation_history(conversation)
 
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="Invalid JSON") from exc
@@ -169,6 +169,37 @@ async def retrieve_conversation(request: Request):
         raise
     except Exception as exc:
         services.logger.error("Error retrieving conversation: %s", exc)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+
+
+@app.post("/conversations/append")
+async def append_conversation(request: Request):
+    """Append dashboard-owned public transcript messages."""
+    try:
+        body = await request.json()
+        conversation_id = body.get("conversation_id")
+        messages = body.get("messages")
+
+        if not conversation_id:
+            raise HTTPException(status_code=400, detail="Missing conversation_id")
+        if not isinstance(messages, list):
+            raise HTTPException(status_code=400, detail="Missing messages")
+
+        public_messages = RequestProcessor.public_conversation_history(messages)
+        if not public_messages:
+            raise HTTPException(status_code=400, detail="No public messages to append")
+
+        await services.conversation_store.append_messages(
+            str(conversation_id), public_messages
+        )
+        return {"appended": len(public_messages)}
+
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        services.logger.error("Error appending conversation: %s", exc)
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 

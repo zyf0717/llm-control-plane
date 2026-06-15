@@ -39,6 +39,7 @@ from .search_flow import (
 )
 from .trace_formatters import format_trace_summary
 from .utils import (
+    append_conversation_messages,
     create_history_select_choices,
     create_endpoint_display_choices,
     fetch_conversation_summaries,
@@ -1452,6 +1453,12 @@ def server(input, output, session):
                 if not run_id:
                     raise ValueError("workflow API did not return run_id")
 
+                if conversation_id:
+                    await append_conversation_messages(
+                        conversation_id,
+                        [{"role": "user", "content": latest_user_prompt}],
+                    )
+
                 workflow_status_message.set(f"Created run {run_id}.")
                 selected_workflow_run_id.set(run_id)
                 await update_workflow_run_selector()
@@ -1477,7 +1484,11 @@ def server(input, output, session):
                     await update_workflow_run_selector()
                     await reactive.flush()
 
+                final_text_parts: list[str] = []
+                final_text_persisted = False
+
                 async def workflow_response_stream():
+                    nonlocal final_text_persisted
                     rendered_final = False
                     open_intermediate_step = ""
                     final_reasoning_open = False
@@ -1539,6 +1550,7 @@ def server(input, output, session):
                                     if final_reasoning_open:
                                         yield await close_final_reasoning()
                                     rendered_final = True
+                                    final_text_parts.append(content)
                                     yield content
                             continue
 
@@ -1561,6 +1573,7 @@ def server(input, output, session):
                                 if final_reasoning_open:
                                     yield await close_final_reasoning()
                                 rendered_final = True
+                                final_text_parts.append(content)
                                 yield content
                             continue
 
@@ -1597,7 +1610,24 @@ def server(input, output, session):
                                 run_info.set(workflow_chat_run_info(final_snapshot))
                                 if not rendered_final:
                                     rendered_final = True
-                                    yield workflow_chat_response_text(final_snapshot)
+                                    final_text = workflow_chat_response_text(final_snapshot)
+                                    final_text_parts.append(final_text)
+                                    yield final_text
+                                if (
+                                    conversation_id
+                                    and final_text_parts
+                                    and not final_text_persisted
+                                ):
+                                    await append_conversation_messages(
+                                        conversation_id,
+                                        [
+                                            {
+                                                "role": "assistant",
+                                                "content": "".join(final_text_parts),
+                                            }
+                                        ],
+                                    )
+                                    final_text_persisted = True
                             return
 
                 await chat.append_message_stream(workflow_response_stream())

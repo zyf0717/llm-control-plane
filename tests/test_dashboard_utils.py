@@ -243,6 +243,29 @@ async def test_fetch_conversation_control_state_posts_to_proxy(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_append_conversation_messages_posts_public_transcript(monkeypatch):
+    monkeypatch.setattr(utils, "PROXY_BASE_URL", "http://proxy.local")
+
+    response = Mock()
+    response.raise_for_status = Mock()
+    response.json.return_value = {"appended": 1}
+    messages = [{"role": "assistant", "content": "Final answer"}]
+
+    with patch("httpx.AsyncClient") as mock_client_class:
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        mock_client.post.return_value = response
+
+        payload = await utils.append_conversation_messages("conversation-1", messages)
+
+    assert payload == {"appended": 1}
+    mock_client.post.assert_awaited_once_with(
+        "http://proxy.local/conversations/append",
+        json={"conversation_id": "conversation-1", "messages": messages},
+    )
+
+
+@pytest.mark.asyncio
 async def test_fetch_search_results_posts_trimmed_context(monkeypatch):
     monkeypatch.setattr(utils, "PROXY_BASE_URL", "http://proxy.local")
     monkeypatch.setattr(utils, "load_query_refiner_max_source_chars", lambda: 12)

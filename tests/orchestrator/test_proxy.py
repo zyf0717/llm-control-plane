@@ -1039,6 +1039,118 @@ class TestConversationHistoryEndpoint:
         assert response.status_code == 200
         assert response.json() == [{"role": "user", "content": "Prior question"}]
 
+    def test_retrieve_conversation_returns_public_transcript_only(
+        self, client, memory_conversation_store
+    ):
+        memory_conversation_store.conversations = {
+            "session-raw": [
+                {"role": "system", "content": "Reasoning: high"},
+                {"role": "user", "content": "Question", "reasoning": "hidden"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"id": "call-1"}],
+                },
+                {
+                    "role": "assistant",
+                    "content": "tool planning",
+                    "function_call": {"name": "search"},
+                },
+                {"role": "developer", "content": "internal instruction"},
+                {"role": "tool", "content": "tool output"},
+                {
+                    "role": "assistant",
+                    "content": "Final answer",
+                    "reasoning": "private chain",
+                    "metadata": {"workflow_id": "wf"},
+                },
+            ]
+        }
+        memory_conversation_store.updated_at = {
+            "session-raw": "2026-06-07T00:00:00+00:00"
+        }
+
+        response = client.post(
+            "/conversations/retrieve", json={"conversation_id": "session-raw"}
+        )
+
+        assert response.status_code == 200
+        assert response.json() == [
+            {"role": "user", "content": "Question"},
+            {"role": "assistant", "content": "Final answer"},
+        ]
+        assert asyncio.run(
+            memory_conversation_store.get_conversation("session-raw")
+        ) == memory_conversation_store.conversations["session-raw"]
+
+    def test_append_conversation_accepts_public_messages_only(
+        self, client, memory_conversation_store
+    ):
+        response = client.post(
+            "/conversations/append",
+            json={
+                "conversation_id": "session-append",
+                "messages": [
+                    {"role": "system", "content": "Reasoning: high"},
+                    {"role": "user", "content": "Question"},
+                    {"role": "assistant", "content": "Final", "reasoning": "hidden"},
+                    {"role": "tool", "content": "tool output"},
+                ],
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"appended": 2}
+        assert asyncio.run(
+            memory_conversation_store.get_conversation("session-append")
+        ) == [
+            {"role": "user", "content": "Question"},
+            {"role": "assistant", "content": "Final"},
+        ]
+
+    def test_append_conversation_rejects_non_transcript_messages(self, client):
+        response = client.post(
+            "/conversations/append",
+            json={
+                "conversation_id": "session-empty",
+                "messages": [
+                    {"role": "system", "content": "Reasoning: high"},
+                    {"role": "tool", "content": "tool output"},
+                    {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
+                ],
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "No public messages to append"
+
+    def test_append_then_retrieve_returns_user_and_final_assistant_only(self, client):
+        append_response = client.post(
+            "/conversations/append",
+            json={
+                "conversation_id": "session-public",
+                "messages": [
+                    {"role": "user", "content": "Question"},
+                    {
+                        "role": "assistant",
+                        "content": "Final answer",
+                        "reasoning": "hidden",
+                        "metadata": {"workflow_id": "wf_123"},
+                    },
+                ],
+            },
+        )
+        retrieve_response = client.post(
+            "/conversations/retrieve", json={"conversation_id": "session-public"}
+        )
+
+        assert append_response.status_code == 200
+        assert retrieve_response.status_code == 200
+        assert retrieve_response.json() == [
+            {"role": "user", "content": "Question"},
+            {"role": "assistant", "content": "Final answer"},
+        ]
+
     def test_retrieve_conversation_control_state_returns_reasoning_and_route(
         self, client, memory_conversation_store
     ):
