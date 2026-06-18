@@ -3,7 +3,7 @@ import time
 import uuid
 from copy import deepcopy
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, AsyncIterable, AsyncIterator, Callable, Dict, Optional
 
 import shinyswatch
 from dotenv import load_dotenv
@@ -87,6 +87,22 @@ DEFAULT_WORKFLOW_DISPATCH_ID = ""
 WORKFLOW_DISPATCH_NONE_LABEL = "None"
 THREADED_SEARCH_WORKFLOW_ID = "threaded_search"
 ENDED_WORKFLOW_RUN_STATUSES = {"completed", "failed", "cancelled"}
+
+
+def elapsed_seconds_since(started_at: float, *, now: float | None = None) -> float:
+    current = time.perf_counter() if now is None else float(now)
+    return max(0.0, current - float(started_at))
+
+
+async def stream_with_finalizer(
+    stream: AsyncIterable[str],
+    finalizer: Callable[[], None],
+) -> AsyncIterator[str]:
+    try:
+        async for chunk in stream:
+            yield chunk
+    finally:
+        finalizer()
 
 
 def resolve_endpoint_display_selection(
@@ -1329,8 +1345,10 @@ def server(input, output, session):
 
     chat = ui.Chat(id="chat")
 
-    @chat.on_user_submit
-    async def _handle_chat_input(user_input: str):
+    async def _handle_chat_input_impl(
+        user_input: str,
+        finalize_runtime: Callable[[], None],
+    ) -> bool:
         current_endpoints = available_endpoints.get()
         current_run_info = run_info.get() or {}
         selected_endpoint_key = current_endpoint_key()
@@ -1413,8 +1431,8 @@ def server(input, output, session):
         )
 
         if workflow_dispatch_id:
-            started_at = time.time()
             send_button_state.set("busy")
+            runtime_deferred = False
             try:
                 endpoint_for_workflow = str(actual_endpoint_key or "").strip()
                 if not endpoint_for_workflow:
@@ -1644,7 +1662,10 @@ def server(input, output, session):
                                     final_text_persisted = True
                             return
 
-                await chat.append_message_stream(workflow_response_stream())
+                await chat.append_message_stream(
+                    stream_with_finalizer(workflow_response_stream(), finalize_runtime)
+                )
+                runtime_deferred = True
                 if conversation_id and not bool(prompt_state.get("started")):
                     apply_system_prompt_view(
                         set_system_prompt_state(
@@ -1663,9 +1684,8 @@ def server(input, output, session):
                     {"role": "assistant", "content": f"Error: {message}"}
                 )
             finally:
-                last_runtime.set(time.time() - started_at)
                 send_button_state.set("ready")
-            return
+            return runtime_deferred
 
         search_state = None
         selected_search_provider = str(
@@ -1725,9 +1745,10 @@ def server(input, output, session):
             retrieval_endpoint=retrieval_endpoint if retrieval_endpoint else None,
             on_metadata=publish_run_info,
             on_send_button_state=send_button_state.set,
-            on_runtime=last_runtime.set,
         )
-        await chat.append_message_stream(response_stream)
+        await chat.append_message_stream(
+            stream_with_finalizer(response_stream, finalize_runtime)
+        )
 
         if conversation_id and not bool(prompt_state.get("started")):
             apply_system_prompt_view(
@@ -1740,6 +1761,27 @@ def server(input, output, session):
                     locked=False,
                 )
             )
+        return True
+
+    @chat.on_user_submit
+    async def _handle_chat_input(user_input: str):
+        task_started_at = time.perf_counter()
+        last_runtime.set(None)
+        runtime_finalized = False
+
+        def finalize_runtime() -> None:
+            nonlocal runtime_finalized
+            if runtime_finalized:
+                return
+            runtime_finalized = True
+            last_runtime.set(elapsed_seconds_since(task_started_at))
+
+        runtime_deferred = False
+        try:
+            runtime_deferred = await _handle_chat_input_impl(user_input, finalize_runtime)
+        finally:
+            if not runtime_deferred:
+                finalize_runtime()
 
     @reactive.Effect
     @reactive.event(input.send)

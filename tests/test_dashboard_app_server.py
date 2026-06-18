@@ -1,3 +1,6 @@
+import pytest
+
+from src.dashboard.app_server import elapsed_seconds_since, stream_with_finalizer
 from src.dashboard.prompt_state import (
     RETRIEVAL_CITATION_SUFFIX,
     append_managed_retrieval_suffix,
@@ -5,6 +8,29 @@ from src.dashboard.prompt_state import (
     extract_first_system_prompt,
     first_turn_system_prompt_to_send,
 )
+
+
+def test_elapsed_seconds_since_uses_non_negative_monotonic_delta():
+    assert elapsed_seconds_since(10.0, now=12.25) == 2.25
+    assert elapsed_seconds_since(10.0, now=9.5) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_stream_with_finalizer_runs_after_stream_is_consumed():
+    finalized = []
+
+    async def source():
+        yield "hello"
+        assert finalized == []
+        yield " world"
+
+    chunks = [
+        chunk
+        async for chunk in stream_with_finalizer(source(), lambda: finalized.append(True))
+    ]
+
+    assert chunks == ["hello", " world"]
+    assert finalized == [True]
 
 
 def test_append_managed_retrieval_suffix_appends_once():

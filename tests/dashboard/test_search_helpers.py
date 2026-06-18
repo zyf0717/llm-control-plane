@@ -17,6 +17,7 @@ from src.dashboard.app_server import (
     workflow_run_in_progress,
     workflow_snapshot_with_next_pending_running,
 )
+from src.dashboard.formatters import format_response_info, format_timings_info
 from src.dashboard.search_flow import (
     build_query_refiner_source_text,
     build_search_failure_state,
@@ -41,6 +42,41 @@ from src.dashboard.workflow_server_helpers import (
     workflow_chat_response_text,
 )
 from src.search.safety import EPHEMERAL_WEB_SEARCH_EVIDENCE_MARKER
+
+
+def _fmt(value):
+    return str(value)
+
+
+def test_format_response_info_adds_draft_acceptance_rate_to_stats():
+    sections = format_response_info(
+        {"stats": {"draft_n": 184, "draft_n_accepted": 139}},
+        _fmt,
+    )
+
+    assert sections == [
+        "**Stats**<br>draft_n: 184<br>draft_n_accepted: 139"
+        "<br>draft_acceptance_rate: 75.54%"
+    ]
+
+
+def test_format_response_info_skips_draft_acceptance_rate_without_valid_total():
+    assert format_response_info(
+        {"stats": {"draft_n": 0, "draft_n_accepted": 0}},
+        _fmt,
+    ) == ["**Stats**<br>draft_n: 0<br>draft_n_accepted: 0"]
+
+
+def test_format_timings_info_adds_draft_acceptance_rate_to_timings():
+    sections = format_timings_info(
+        {"timings": {"draft_n": 172, "draft_n_accepted": 142}},
+        _fmt,
+    )
+
+    assert sections == [
+        "**Timings**<br>draft_n: 172<br>draft_n_accepted: 142"
+        "<br>draft_acceptance_rate: 82.56%"
+    ]
 
 
 def test_build_query_refiner_source_text_includes_prompt_history_and_current_request():

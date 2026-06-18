@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import time
 from typing import Any, AsyncGenerator, Callable, Dict, Optional
 
 import httpx
@@ -18,7 +17,6 @@ from .cache_telemetry import normalize_cache_telemetry
 logger = logging.getLogger(__name__)
 MetadataCallback = Callable[[Optional[Dict[str, Any]]], None]
 StateCallback = Callable[[str], None]
-RuntimeCallback = Callable[[float], None]
 
 
 def build_chat_messages(
@@ -157,7 +155,6 @@ async def stream_chat_response(
     retrieval_endpoint: Optional[str] = None,
     on_metadata: Optional[MetadataCallback] = None,
     on_send_button_state: Optional[StateCallback] = None,
-    on_runtime: Optional[RuntimeCallback] = None,
 ) -> AsyncGenerator[str, None]:
     """Proxy a dashboard chat request and stream the response back to the UI."""
     text = (text or "Hello! What model are you?").strip()
@@ -165,7 +162,6 @@ async def stream_chat_response(
         yield ""
         return
 
-    started_at = time.time()
     if on_send_button_state:
         on_send_button_state("busy")
 
@@ -341,7 +337,5 @@ async def stream_chat_response(
         )
         yield f"Error: {str(exc)}"
     finally:
-        if on_runtime:
-            on_runtime(time.time() - started_at)
         if on_send_button_state:
             on_send_button_state("ready")

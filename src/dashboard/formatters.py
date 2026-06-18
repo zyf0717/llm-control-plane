@@ -81,8 +81,27 @@ def format_response_info(
                 if section_name == "usage" and key in _skip_detail_keys:
                     continue
                 lines.append(f"{key}: {fmt_func(value)}")
+                if section_name == "stats" and key == "draft_n_accepted":
+                    acceptance_rate = _draft_acceptance_rate(section_data)
+                    if acceptance_rate is not None:
+                        lines.append(f"draft_acceptance_rate: {acceptance_rate:.2f}%")
             sections.append("<br>".join(lines))
     return sections
+
+
+def _draft_acceptance_rate(stats: Dict[str, Any]) -> float | None:
+    draft_n = _as_float(stats.get("draft_n"))
+    accepted = _as_float(stats.get("draft_n_accepted"))
+    if draft_n is None or accepted is None or draft_n <= 0:
+        return None
+    return (accepted / draft_n) * 100.0
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def format_timings_info(
@@ -92,11 +111,15 @@ def format_timings_info(
     if not timings:
         return []
 
-    timings_info = [
-        f"{key}: {fmt_func(value)}"
-        for key, value in timings.items()
-        if value is not None
-    ]
+    timings_info = []
+    for key, value in timings.items():
+        if value is None:
+            continue
+        timings_info.append(f"{key}: {fmt_func(value)}")
+        if key == "draft_n_accepted":
+            acceptance_rate = _draft_acceptance_rate(timings)
+            if acceptance_rate is not None:
+                timings_info.append(f"draft_acceptance_rate: {acceptance_rate:.2f}%")
     if not timings_info:
         return []
     return ["**Timings**<br>" + "<br>".join(timings_info)]
