@@ -82,6 +82,6 @@ For contextual workflows using a strong dedicated reranker, the current built-in
 
 The Single-Node tab search provider selector controls ad hoc search augmentation. When selected, the dashboard calls `/search/web`, renders a search-candidate preface, and injects one turn-local untrusted synthetic user message. That synthetic message is merged into the next real user turn by the proxy and is not persisted as durable conversation history.
 
-Single-Node search intentionally keeps `count: 5` and disables inline reranking. Use workflow routing or the Workflows tab for broader search plus explicit reranking.
+Single-Node search intentionally keeps `count: 5` and disables inline reranking. Use workflow dispatch or the Workflows tab for broader search plus explicit reranking.
 
 TL;DR: `/search/web` is lightweight candidate discovery. Rerank is explicit: request it directly with `use_reranker: true`, or model it as a workflow `rerank` step.

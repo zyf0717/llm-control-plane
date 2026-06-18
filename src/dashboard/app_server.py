@@ -83,8 +83,8 @@ from .workflow_formatters import (
     format_workflow_spec,
 )
 
-DEFAULT_WORKFLOW_ROUTING_ID = ""
-WORKFLOW_ROUTING_NONE_LABEL = "None"
+DEFAULT_WORKFLOW_DISPATCH_ID = ""
+WORKFLOW_DISPATCH_NONE_LABEL = "None"
 THREADED_SEARCH_WORKFLOW_ID = "threaded_search"
 ENDED_WORKFLOW_RUN_STATUSES = {"completed", "failed", "cancelled"}
 
@@ -105,11 +105,11 @@ def resolve_endpoint_display_selection(
     return next(iter(choices), None)
 
 
-def resolve_workflow_routing_selection(
+def resolve_workflow_dispatch_selection(
     choices: Dict[str, str],
     *,
     current_selection: Optional[str],
-    default_workflow_id: str = DEFAULT_WORKFLOW_ROUTING_ID,
+    default_workflow_id: str = DEFAULT_WORKFLOW_DISPATCH_ID,
 ) -> Optional[str]:
     current = str(current_selection or "").strip()
     if current in choices:
@@ -122,8 +122,8 @@ def resolve_workflow_routing_selection(
     return next(iter(choices), None)
 
 
-def build_workflow_routing_choices(choices: Dict[str, str]) -> Dict[str, str]:
-    return {"": WORKFLOW_ROUTING_NONE_LABEL, **choices}
+def build_workflow_dispatch_choices(choices: Dict[str, str]) -> Dict[str, str]:
+    return {"": WORKFLOW_DISPATCH_NONE_LABEL, **choices}
 
 
 def resolve_first_search_provider_selection(choices: Dict[str, str]) -> str:
@@ -286,9 +286,13 @@ def workflow_snapshot_with_next_pending_running(
     return updated
 
 
-def workflow_chat_event_updates_workflows_tab(event_type: str) -> bool:
-    """Only terminal buffered workflow events should re-render the Workflows tab."""
-    return str(event_type or "").strip() in {"run_completed", "error"}
+def workflow_dispatch_event_updates_run_details(event_type: str) -> bool:
+    """Low-frequency dispatch state boundaries should re-render run details."""
+    return str(event_type or "").strip() in {
+        "step_completed",
+        "run_completed",
+        "error",
+    }
 
 
 def _input_value(input_obj: Any, name: str, default: Any = None) -> Any:
@@ -378,7 +382,7 @@ def server(input, output, session):
     workflow_spec = reactive.Value(None)
     workflow_runs = reactive.Value([])
     selected_workflow_id = reactive.Value("")
-    selected_workflow_routing_id = reactive.Value(DEFAULT_WORKFLOW_ROUTING_ID)
+    selected_workflow_dispatch_id = reactive.Value(DEFAULT_WORKFLOW_DISPATCH_ID)
     selected_workflow_run_id = reactive.Value("")
     workflow_run_snapshot = reactive.Value(None)
     workflow_status_message = reactive.Value("")
@@ -537,12 +541,12 @@ def server(input, output, session):
         )
 
     def update_single_node_search_provider_select(
-        workflow_routing_id: str,
+        workflow_dispatch_id: str,
         *,
         current_selection: Optional[str] = None,
     ) -> None:
         search_choices, default_selection = fetch_available_search_providers()
-        requires_provider = workflow_requires_search_provider(workflow_routing_id)
+        requires_provider = workflow_requires_search_provider(workflow_dispatch_id)
         choices = build_search_provider_choices(
             search_choices,
             require_provider=requires_provider,
@@ -552,7 +556,7 @@ def server(input, output, session):
             current_selection=current_selection,
             default_selection=default_selection,
             require_provider=requires_provider,
-            force_default=bool(workflow_routing_id) and not requires_provider,
+            force_default=bool(workflow_dispatch_id) and not requires_provider,
         )
         ui.update_select(
             "searchProvider",
@@ -590,15 +594,15 @@ def server(input, output, session):
         current_selection: Optional[str] = None,
     ) -> None:
         with reactive.isolate():
-            workflow_routing_id = str(
-                input.workflowRouting() or selected_workflow_routing_id.get() or ""
+            workflow_dispatch_id = str(
+                input.workflowDispatch() or selected_workflow_dispatch_id.get() or ""
             ).strip()
             workflow_current = str(input.workflowSearchProvider() or "")
             workflow_id = str(
                 input.workflowSelector() or selected_workflow_id.get() or ""
             )
         update_single_node_search_provider_select(
-            workflow_routing_id,
+            workflow_dispatch_id,
             current_selection=current_selection,
         )
         update_workflow_search_provider_select(
@@ -624,39 +628,39 @@ def server(input, output, session):
     async def update_workflow_selector() -> None:
         with reactive.isolate():
             current_selection = str(selected_workflow_id.get() or "").strip()
-            workflow_routing_input = input.workflowRouting()
-            current_routing_selection = str(
-                workflow_routing_input
-                if workflow_routing_input is not None
-                else selected_workflow_routing_id.get()
+            workflow_dispatch_input = input.workflowDispatch()
+            current_dispatch_selection = str(
+                workflow_dispatch_input
+                if workflow_dispatch_input is not None
+                else selected_workflow_dispatch_id.get()
             ).strip()
             current_search_provider = str(input.searchProvider() or "")
         workflows = await fetch_workflows()
         workflow_specs.set(workflows)
         choices = format_workflow_choices(workflows)
-        routing_choices = build_workflow_routing_choices(choices)
+        dispatch_choices = build_workflow_dispatch_choices(choices)
 
-        routing_selected = resolve_workflow_routing_selection(
-            routing_choices,
-            current_selection=current_routing_selection,
+        dispatch_selected = resolve_workflow_dispatch_selection(
+            dispatch_choices,
+            current_selection=current_dispatch_selection,
         )
         ui.update_select(
-            "workflowRouting",
-            choices=routing_choices,
-            selected=routing_selected,
+            "workflowDispatch",
+            choices=dispatch_choices,
+            selected=dispatch_selected,
             session=session,
         )
-        selected_workflow_routing_id.set(routing_selected or "")
+        selected_workflow_dispatch_id.set(dispatch_selected or "")
         await session.send_custom_message(
-            "workflowRoutingState",
+            "workflowDispatchState",
             {
-                "active": bool(routing_selected),
-                "searchProviderEnabled": routing_selected
+                "active": bool(dispatch_selected),
+                "searchProviderEnabled": dispatch_selected
                 == THREADED_SEARCH_WORKFLOW_ID,
             },
         )
         update_single_node_search_provider_select(
-            routing_selected or "",
+            dispatch_selected or "",
             current_selection=current_search_provider,
         )
 
@@ -771,19 +775,19 @@ def server(input, output, session):
             workflow_status_message.set(f"Failed to load workflow: {exc}")
 
     @reactive.Effect
-    @reactive.event(input.workflowRouting)
-    async def _sync_selected_workflow_routing():
-        workflow_routing_id = str(input.workflowRouting() or "").strip()
-        selected_workflow_routing_id.set(workflow_routing_id)
+    @reactive.event(input.workflowDispatch)
+    async def _sync_selected_workflow_dispatch():
+        workflow_dispatch_id = str(input.workflowDispatch() or "").strip()
+        selected_workflow_dispatch_id.set(workflow_dispatch_id)
         update_single_node_search_provider_select(
-            workflow_routing_id,
+            workflow_dispatch_id,
             current_selection=input.searchProvider(),
         )
         await session.send_custom_message(
-            "workflowRoutingState",
+            "workflowDispatchState",
             {
-                "active": bool(workflow_routing_id),
-                "searchProviderEnabled": workflow_routing_id
+                "active": bool(workflow_dispatch_id),
+                "searchProviderEnabled": workflow_dispatch_id
                 == THREADED_SEARCH_WORKFLOW_ID,
             },
         )
@@ -1334,11 +1338,11 @@ def server(input, output, session):
         actual_endpoint_key = selected_endpoint_key
         latest_user_prompt = str(user_input or "").strip()
         search_query = latest_user_prompt
-        workflow_routing_input = _input_value(input, "workflowRouting")
-        workflow_routing_id = str(
-            workflow_routing_input
-            if workflow_routing_input is not None
-            else selected_workflow_routing_id.get()
+        workflow_dispatch_input = _input_value(input, "workflowDispatch")
+        workflow_dispatch_id = str(
+            workflow_dispatch_input
+            if workflow_dispatch_input is not None
+            else selected_workflow_dispatch_id.get()
         ).strip()
         prompt_state = (
             get_system_prompt_state(conversation_id)
@@ -1353,7 +1357,7 @@ def server(input, output, session):
             else None
         )
         uploaded_source_text = build_uploaded_file_source_text(uploaded_files)
-        if uploaded_source_text and not workflow_routing_id:
+        if uploaded_source_text and not workflow_dispatch_id:
             user_input = f"{user_input}\n\n{uploaded_source_text}"
 
         system_prompt_input = _input_value(input, "systemPrompt")
@@ -1408,7 +1412,7 @@ def server(input, output, session):
             bool(prompt_state.get("started")),
         )
 
-        if workflow_routing_id:
+        if workflow_dispatch_id:
             started_at = time.time()
             send_button_state.set("busy")
             try:
@@ -1417,7 +1421,7 @@ def server(input, output, session):
                     raise ValueError("select a machine endpoint")
                 if endpoint_for_workflow.lower() == "smart":
                     raise ValueError(
-                        "workflow routing requires a concrete Machine Endpoint"
+                        "workflow dispatch requires a concrete Machine Endpoint"
                     )
 
                 if fork_reasons:
@@ -1430,7 +1434,7 @@ def server(input, output, session):
                 else:
                     workflow_history = []
 
-                spec = await fetch_workflow(workflow_routing_id)
+                spec = await fetch_workflow(workflow_dispatch_id)
                 payload = build_workflow_chat_run_payload(
                     spec,
                     latest_user_prompt=latest_user_prompt,
@@ -1444,11 +1448,11 @@ def server(input, output, session):
                     conversation_id=conversation_id or "",
                     search_provider=(
                         str(_input_value(input, "searchProvider") or "").strip()
-                        if workflow_routing_id == THREADED_SEARCH_WORKFLOW_ID
+                        if workflow_dispatch_id == THREADED_SEARCH_WORKFLOW_ID
                         else ""
                     ),
                 )
-                created = await create_workflow_run(workflow_routing_id, payload)
+                created = await create_workflow_run(workflow_dispatch_id, payload)
                 run_id = str(created.get("run_id") or "").strip()
                 if not run_id:
                     raise ValueError("workflow API did not return run_id")
@@ -1473,6 +1477,7 @@ def server(input, output, session):
                     snapshot: dict[str, Any],
                     *,
                     step_number: int | None = None,
+                    refresh_runs: bool = True,
                 ) -> None:
                     workflow_run_snapshot.set(snapshot)
                     selected_workflow_run_id.set(run_id)
@@ -1481,7 +1486,8 @@ def server(input, output, session):
                         workflow_status_message.set(
                             f"Advanced {run_id}: step {step_number}, status {status}."
                         )
-                    await update_workflow_run_selector()
+                    if refresh_runs:
+                        await update_workflow_run_selector()
                     await reactive.flush()
 
                 final_text_parts: list[str] = []
@@ -1575,6 +1581,14 @@ def server(input, output, session):
                                 rendered_final = True
                                 final_text_parts.append(content)
                                 yield content
+                            if (
+                                workflow_dispatch_event_updates_run_details(event_type)
+                                and isinstance(snapshot, dict)
+                            ):
+                                await apply_workflow_snapshot(
+                                    snapshot,
+                                    refresh_runs=False,
+                                )
                             continue
 
                         if event_type == "error":
@@ -1583,7 +1597,7 @@ def server(input, output, session):
                             if final_reasoning_open:
                                 yield await close_final_reasoning()
                             if (
-                                workflow_chat_event_updates_workflows_tab(event_type)
+                                workflow_dispatch_event_updates_run_details(event_type)
                                 and final_snapshot is not None
                             ):
                                 await apply_workflow_snapshot(final_snapshot)
@@ -1605,7 +1619,7 @@ def server(input, output, session):
                                 workflow_status_message.set(
                                     f"Ran {run_id}: status {status}."
                                 )
-                                if workflow_chat_event_updates_workflows_tab(event_type):
+                                if workflow_dispatch_event_updates_run_details(event_type):
                                     await apply_workflow_snapshot(final_snapshot)
                                 run_info.set(workflow_chat_run_info(final_snapshot))
                                 if not rendered_final:
@@ -1643,7 +1657,7 @@ def server(input, output, session):
                         )
                     )
             except Exception as exc:
-                message = f"Workflow routing failed: {exc}"
+                message = f"Workflow dispatch failed: {exc}"
                 workflow_status_message.set(message)
                 await chat.append_message(
                     {"role": "assistant", "content": f"Error: {message}"}

@@ -304,8 +304,8 @@ class TestLLMRouter:
                     "ram": "128GB",
                 },
                 {
-                    "name": "gmktec-evo-x2-secondary",
-                    "url": "https://llm-evo-x2-2.paperclips.dev",
+                    "name": "gmktec-evo-x2-utility",
+                    "url": "https://llm-evo-x2-utility.paperclips.dev",
                     "soc": "AMD Ryzen AI Max+ 395",
                     "ram": "128GB",
                 },
@@ -315,7 +315,7 @@ class TestLLMRouter:
                     "type": "reasoning",
                     "endpoint_preference": [
                         "gmktec-evo-x2-primary",
-                        "gmktec-evo-x2-secondary",
+                        "gmktec-evo-x2-utility",
                     ],
                 }
             ],
@@ -325,17 +325,17 @@ class TestLLMRouter:
 
         decision = await router.route_request(
             "Analyze this problem",
-            ["gmktec-evo-x2-secondary", "gmktec-evo-x2-primary"],
+            ["gmktec-evo-x2-utility", "gmktec-evo-x2-primary"],
             WorkloadType.REASONING,
         )
         assert decision.endpoint == "gmktec-evo-x2-primary"
 
         decision = await router.route_request(
             "Analyze this problem",
-            ["gmktec-evo-x2-secondary"],
+            ["gmktec-evo-x2-utility"],
             WorkloadType.REASONING,
         )
-        assert decision.endpoint == "gmktec-evo-x2-secondary"
+        assert decision.endpoint == "gmktec-evo-x2-utility"
 
     def test_get_fastest_endpoint(self, llm_router):
         """Test getting the fastest endpoint (prefers classification preferences)."""

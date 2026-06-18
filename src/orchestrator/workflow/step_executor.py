@@ -141,7 +141,7 @@ class WorkflowStepExecutor:
         if step.kind == "rerank":
             return await self._execute_rerank_step(run, spec, step, step_input, prompt)
 
-        endpoint = run.endpoint
+        endpoint = _step_endpoint(run, step)
         if not endpoint:
             raise ValueError("workflow step endpoint is required")
         if endpoint.lower() == "smart":
@@ -153,6 +153,7 @@ class WorkflowStepExecutor:
             run=run,
             spec=spec,
             step=step,
+            endpoint=endpoint,
             prompt=prompt,
             reasoning_effort=reasoning_effort,
         )
@@ -172,7 +173,7 @@ class WorkflowStepExecutor:
             return
 
         prompt = render_template(step.prompt or "", step_input)
-        endpoint = run.endpoint
+        endpoint = _step_endpoint(run, step)
         if not endpoint:
             raise ValueError("workflow step endpoint is required")
         if endpoint.lower() == "smart":
@@ -221,6 +222,7 @@ class WorkflowStepExecutor:
             spec=spec,
             step=step,
             prompt=prompt,
+            endpoint=endpoint,
             reasoning_effort=reasoning_effort,
             text=text,
             metadata=metadata,
@@ -591,7 +593,7 @@ class WorkflowStepExecutor:
         )
         request_bytes = check_compression_input_payload(prompt, chunk, step)
         result = await self.llm_client.complete(
-            endpoint=str(run.endpoint or ""),
+            endpoint=_step_endpoint(run, step),
             prompt=prompt,
             conversation_id=run.conversation_id,
             reasoning_effort=reasoning_effort,
@@ -686,7 +688,7 @@ class WorkflowStepExecutor:
             step.reasoning_effort or run.reasoning_effort or spec.defaults.reasoning_effort
         )
         result = await self.llm_client.complete(
-            endpoint=str(run.endpoint or ""),
+            endpoint=_step_endpoint(run, step),
             prompt=prompt,
             conversation_id=run.conversation_id,
             reasoning_effort=reasoning_effort,
@@ -708,11 +710,12 @@ class WorkflowStepExecutor:
         run: WorkflowRun,
         spec: WorkflowSpec,
         step: WorkflowStepSpec,
+        endpoint: str,
         prompt: str,
         reasoning_effort: str | None,
     ) -> WorkflowStepExecution:
         result = await self.llm_client.complete(
-            endpoint=str(run.endpoint or ""),
+            endpoint=endpoint,
             prompt=_prompt_with_contract(prompt, step),
             conversation_id=run.conversation_id,
             reasoning_effort=reasoning_effort,
@@ -727,6 +730,7 @@ class WorkflowStepExecutor:
             spec=spec,
             step=step,
             prompt=prompt,
+            endpoint=endpoint,
             reasoning_effort=reasoning_effort,
             text=text,
             metadata=metadata,
@@ -740,6 +744,7 @@ class WorkflowStepExecutor:
         spec: WorkflowSpec,
         step: WorkflowStepSpec,
         prompt: str,
+        endpoint: str,
         reasoning_effort: str | None,
         text: str,
         metadata: dict[str, Any],
@@ -777,7 +782,7 @@ class WorkflowStepExecutor:
                 else build_retry_prompt(prompt, errors, contract)
             )
             result = await self.llm_client.complete(
-                endpoint=str(run.endpoint or ""),
+                endpoint=endpoint,
                 prompt=retry_prompt,
                 conversation_id=run.conversation_id,
                 reasoning_effort=reasoning_effort,
@@ -809,6 +814,10 @@ class WorkflowStepExecutor:
             f"step_id={step.id} reason=structured_output_invalid "
             f"errors={'; '.join(errors)}"
         )
+
+
+def _step_endpoint(run: WorkflowRun, step: WorkflowStepSpec) -> str:
+    return str(step.endpoint or run.endpoint or "").strip()
 
 
 def _prompt_with_contract(prompt: str, step: WorkflowStepSpec) -> str:

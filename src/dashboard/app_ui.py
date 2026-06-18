@@ -325,7 +325,7 @@ app_ui = ui.page_fluid(
             initDashboardChatStreamAutoScrollGuard();
         }
 
-        Shiny.addCustomMessageHandler("workflowRoutingState", function(message) {
+        Shiny.addCustomMessageHandler("workflowDispatchState", function(message) {
             const active = Boolean(message && message.active);
             const searchProviderEnabled = Boolean(
                 message && message.searchProviderEnabled
@@ -450,8 +450,8 @@ app_ui = ui.page_fluid(
                             width="100%",
                         ),
                         ui.input_select(
-                            "workflowRouting",
-                            "Workflow Routing",
+                            "workflowDispatch",
+                            "Workflow Dispatch",
                             choices={"": "None"},
                             selected="",
                             width="100%",

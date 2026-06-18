@@ -1672,8 +1672,8 @@ class TestModelsEndpoint:
             assert "vram" not in model2  # Should not have vram since not in config
 
     @pytest.mark.asyncio
-    async def test_list_models_keeps_evo_x2_primary_secondary_distinct(self):
-        """Test /models exposes the two Evo X2 servers as distinct endpoints."""
+    async def test_list_models_keeps_evo_x2_primary_utility_distinct(self):
+        """Test /models exposes the Evo X2 servers as distinct endpoints."""
         test_client = TestClient(app)
         mock_endpoints = [
             {
@@ -1683,8 +1683,8 @@ class TestModelsEndpoint:
                 "ram": "128GB",
             },
             {
-                "name": "gmktec-evo-x2-secondary",
-                "url": "https://llm-evo-x2-2.paperclips.dev",
+                "name": "gmktec-evo-x2-utility",
+                "url": "https://llm-evo-x2-utility.paperclips.dev",
                 "soc": "AMD Ryzen AI Max+ 395",
                 "ram": "128GB",
             },
@@ -1700,9 +1700,9 @@ class TestModelsEndpoint:
             async def mock_get(url, **_kwargs):
                 mock_response = Mock()
                 mock_response.raise_for_status = Mock()
-                if "evo-x2-2" in url:
+                if "evo-x2-utility" in url:
                     mock_response.json.return_value = {
-                        "data": [{"id": "secondary-model", "object": "model"}]
+                        "data": [{"id": "utility-model", "object": "model"}]
                     }
                 else:
                     mock_response.json.return_value = {
@@ -1721,7 +1721,7 @@ class TestModelsEndpoint:
             for model in models
         } == {
             ("gmktec-evo-x2-primary", "primary-model"),
-            ("gmktec-evo-x2-secondary", "secondary-model"),
+            ("gmktec-evo-x2-utility", "utility-model"),
         }
         assert all(model["soc"] == "AMD Ryzen AI Max+ 395" for model in models)
         assert all(model["ram"] == "128GB" for model in models)

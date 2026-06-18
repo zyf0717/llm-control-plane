@@ -83,6 +83,7 @@ Common fields:
 | `output_key` | all | Key used in `outputs`; defaults to step id |
 | `chat_visibility` | `llm` | `hidden`, `intermediate`, or `final` |
 | `chat_stream` | `llm` | Override streaming for that LLM step |
+| `endpoint` | `llm`, `compress_source` | Override the run endpoint for this model-backed step |
 | `max_tokens` | `llm` | Override max output tokens |
 | `reasoning_effort` | `llm` | Override run/default reasoning effort |
 | `rag_endpoint` | `llm` | Override run/default RAG endpoint |
@@ -155,11 +156,12 @@ The workflow currently sets:
 - `search_count: 20` on the search step
 - `rerank_top_k: 10` on the rerank step
 - `use_query_refiner: false` because the planner owns query generation
+- `endpoint` on the planning LLM step when a smaller/faster concrete endpoint is preferred
 
 This keeps search recall and reranking relevance separate: provider queries can be broad and varied, while the reranker receives one resolved information need plus context.
 
 ## Dashboard Integration
 
-The Workflows tab can create runs, advance one step, run to completion, retry ended steps, upload UTF-8 context files, and inspect artifacts. Single-Node Workflow Routing can route a chat turn through a selected workflow; `contextual_search` requires a concrete search provider, while non-search workflows default the Single-Node provider selector back to `None`.
+The Workflows tab can create runs, advance one step, run to completion, retry ended steps, upload UTF-8 context files, and inspect artifacts. Single-Node Workflow Dispatch can dispatch a chat turn into a selected workflow; `contextual_search` requires a concrete search provider, while non-search workflows default the Single-Node provider selector back to `None`.
 
 TL;DR: workflows are explicit DAGs. Use `search` for candidate collection, `rerank` for ranking, and `llm` steps for planning and synthesis.

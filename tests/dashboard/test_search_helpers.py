@@ -2,7 +2,7 @@ import pytest
 
 from src.dashboard.app_server import (
     build_search_provider_choices,
-    build_workflow_routing_choices,
+    build_workflow_dispatch_choices,
     build_workflow_retry_step_choices,
     build_fork_notice,
     conversation_control_change_reasons,
@@ -11,8 +11,8 @@ from src.dashboard.app_server import (
     resolve_first_search_provider_selection,
     resolve_search_provider_selection,
     resolve_workflow_retry_step_selection,
-    resolve_workflow_routing_selection,
-    workflow_chat_event_updates_workflows_tab,
+    resolve_workflow_dispatch_selection,
+    workflow_dispatch_event_updates_run_details,
     workflow_run_ended,
     workflow_run_in_progress,
     workflow_snapshot_with_next_pending_running,
@@ -314,8 +314,8 @@ def test_format_workflow_intermediate_content_leaves_text_as_is():
     assert format_workflow_intermediate_content("plain update") == "plain update"
 
 
-def test_build_workflow_routing_choices_prepends_none_option():
-    choices = build_workflow_routing_choices(
+def test_build_workflow_dispatch_choices_prepends_none_option():
+    choices = build_workflow_dispatch_choices(
         {"threaded_search": "Threaded Search"}
     )
 
@@ -325,8 +325,8 @@ def test_build_workflow_routing_choices_prepends_none_option():
     }
 
 
-def test_resolve_workflow_routing_selection_defaults_to_none():
-    selected = resolve_workflow_routing_selection(
+def test_resolve_workflow_dispatch_selection_defaults_to_none():
+    selected = resolve_workflow_dispatch_selection(
         {
             "": "None",
             "implementation_plan": "Implementation Plan",
@@ -338,8 +338,8 @@ def test_resolve_workflow_routing_selection_defaults_to_none():
     assert selected == ""
 
 
-def test_resolve_workflow_routing_selection_preserves_valid_current_selection():
-    selected = resolve_workflow_routing_selection(
+def test_resolve_workflow_dispatch_selection_preserves_valid_current_selection():
+    selected = resolve_workflow_dispatch_selection(
         {
             "": "None",
             "implementation_plan": "Implementation Plan",
@@ -351,8 +351,8 @@ def test_resolve_workflow_routing_selection_preserves_valid_current_selection():
     assert selected == "implementation_plan"
 
 
-def test_resolve_workflow_routing_selection_falls_back_to_none_option():
-    selected = resolve_workflow_routing_selection(
+def test_resolve_workflow_dispatch_selection_falls_back_to_none_option():
+    selected = resolve_workflow_dispatch_selection(
         {
             "": "None",
             "research_brief": "Research Brief",
@@ -364,8 +364,8 @@ def test_resolve_workflow_routing_selection_falls_back_to_none_option():
     assert selected == ""
 
 
-def test_resolve_workflow_routing_selection_falls_back_to_first_without_none_option():
-    selected = resolve_workflow_routing_selection(
+def test_resolve_workflow_dispatch_selection_falls_back_to_first_without_none_option():
+    selected = resolve_workflow_dispatch_selection(
         {
             "research_brief": "Research Brief",
             "implementation_plan": "Implementation Plan",
@@ -376,8 +376,8 @@ def test_resolve_workflow_routing_selection_falls_back_to_first_without_none_opt
     assert selected == "research_brief"
 
 
-def test_resolve_workflow_routing_selection_handles_empty_choices():
-    selected = resolve_workflow_routing_selection({}, current_selection="missing")
+def test_resolve_workflow_dispatch_selection_handles_empty_choices():
+    selected = resolve_workflow_dispatch_selection({}, current_selection="missing")
 
     assert selected is None
 
@@ -614,14 +614,14 @@ def test_workflow_snapshot_with_next_pending_running_preserves_running_step():
     assert updated["run"]["current_step_id"] == "first"
 
 
-def test_workflow_chat_events_update_workflows_tab_only_at_terminal_boundary():
-    assert not workflow_chat_event_updates_workflows_tab("run_started")
-    assert not workflow_chat_event_updates_workflows_tab("snapshot")
-    assert not workflow_chat_event_updates_workflows_tab("step_started")
-    assert not workflow_chat_event_updates_workflows_tab("step_delta")
-    assert not workflow_chat_event_updates_workflows_tab("step_completed")
-    assert workflow_chat_event_updates_workflows_tab("run_completed")
-    assert workflow_chat_event_updates_workflows_tab("error")
+def test_workflow_dispatch_events_update_run_details_at_state_boundaries():
+    assert not workflow_dispatch_event_updates_run_details("run_started")
+    assert not workflow_dispatch_event_updates_run_details("snapshot")
+    assert not workflow_dispatch_event_updates_run_details("step_started")
+    assert not workflow_dispatch_event_updates_run_details("step_delta")
+    assert workflow_dispatch_event_updates_run_details("step_completed")
+    assert workflow_dispatch_event_updates_run_details("run_completed")
+    assert workflow_dispatch_event_updates_run_details("error")
 
 
 @pytest.mark.asyncio

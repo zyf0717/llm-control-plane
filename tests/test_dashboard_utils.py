@@ -377,9 +377,9 @@ def test_create_endpoint_display_choices_keeps_evo_x2_routes_distinct():
             "endpoint_url": "https://llm-evo-x2.paperclips.dev",
             "models": [{"id": "primary-model"}],
         },
-        "gmktec-evo-x2-secondary": {
-            "endpoint_url": "https://llm-evo-x2-2.paperclips.dev",
-            "models": [{"id": "secondary-model"}],
+        "gmktec-evo-x2-utility": {
+            "endpoint_url": "https://llm-evo-x2-utility.paperclips.dev",
+            "models": [{"id": "utility-model"}],
         },
     }
 
@@ -387,7 +387,7 @@ def test_create_endpoint_display_choices_keeps_evo_x2_routes_distinct():
 
     assert choices == {
         "gmktec-evo-x2-primary (primary-model)": "gmktec-evo-x2-primary",
-        "gmktec-evo-x2-secondary (secondary-model)": "gmktec-evo-x2-secondary",
+        "gmktec-evo-x2-utility (utility-model)": "gmktec-evo-x2-utility",
     }
     assert mapping == choices
 

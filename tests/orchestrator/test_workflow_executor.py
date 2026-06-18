@@ -145,6 +145,31 @@ steps:
     )
 
 
+def write_step_endpoint_workflow(path: Path) -> None:
+    path.write_text(
+        """
+id: step_endpoint_sample
+name: Step Endpoint Sample
+version: 0.1.0
+params_schema:
+  type: object
+  required: [goal]
+steps:
+  - id: first
+    kind: llm
+    endpoint: node-small
+    prompt: "Goal: {{ params.goal }}"
+    output_key: first_out
+  - id: second
+    kind: llm
+    depends_on: [first]
+    prompt: "Previous: {{ outputs.first_out.text }}"
+    output_key: second_out
+""",
+        encoding="utf-8",
+    )
+
+
 def write_source_workflow(path: Path) -> None:
     path.write_text(
         """
@@ -489,6 +514,32 @@ async def test_executor_advances_steps_with_previous_outputs(tmp_path):
         assert second["run"]["status"] == "completed"
         assert "Goal: ship" in llm.prompts[0]["prompt"]
         assert "answer 1" in llm.prompts[1]["prompt"]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_llm_step_endpoint_overrides_run_endpoint(tmp_path):
+    write_step_endpoint_workflow(tmp_path / "step_endpoint_sample.yaml")
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    llm = FakeLLMClient()
+    executor = WorkflowExecutor(registry, store, llm)
+    try:
+        created = await executor.create_run(
+            "step_endpoint_sample", params={"goal": "ship"}, endpoint="node-large"
+        )
+        run_id = created["run"]["run_id"]
+
+        await executor.advance(run_id)
+        await executor.advance(run_id)
+
+        assert [call["endpoint"] for call in llm.prompts] == [
+            "node-small",
+            "node-large",
+        ]
     finally:
         await store.close()
 

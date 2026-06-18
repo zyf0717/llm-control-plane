@@ -141,6 +141,7 @@ class WorkflowStepSpec:
     depends_on: list[str] | None = None
     output_key: str | None = None
     output_contract: WorkflowOutputContract | None = None
+    endpoint: str | None = None
     reasoning_effort: str | None = None
     retrieval_endpoint: str | None = None
     search_provider: str | None = None
@@ -190,6 +191,15 @@ class WorkflowStepSpec:
         if "rerank_source_text" in data and kind != "rerank":
             raise ValueError(
                 f"workflow step {step_id} rerank_source_text is only supported on rerank steps"
+            )
+        endpoint = _optional_str(data.get("endpoint"))
+        if endpoint is not None and kind not in {"llm", "compress_source"}:
+            raise ValueError(
+                f"workflow step {step_id} endpoint is only supported on model-backed steps"
+            )
+        if endpoint is not None and endpoint.lower() == "smart":
+            raise ValueError(
+                f"workflow step {step_id} endpoint must be a concrete endpoint"
             )
 
         depends_on = data.get("depends_on", [])
@@ -261,6 +271,7 @@ class WorkflowStepSpec:
             depends_on=[str(item).strip() for item in depends_on],
             output_key=_optional_str(data.get("output_key")),
             output_contract=output_contract,
+            endpoint=endpoint,
             reasoning_effort=_optional_str(data.get("reasoning_effort")),
             retrieval_endpoint=_optional_str(data.get("retrieval_endpoint")),
             search_provider=_optional_str(data.get("search_provider")),
