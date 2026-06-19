@@ -133,6 +133,15 @@ class FakeRepoContextClient:
                 "citations": [
                     {"path": "src/api.py", "start_line": 1, "end_line": 1}
                 ],
+                "raw_locations": [
+                    {
+                        "path": "src/api.py",
+                        "start_line": 1,
+                        "end_line": 1,
+                        "text": "def validate(): ...",
+                        "truncated": False,
+                    }
+                ],
                 "turns_used": 1,
                 "truncated": False,
                 "warnings": [],
@@ -356,6 +365,9 @@ steps:
 
       Repo-context evidence:
       {{ outputs.repo_context.text }}
+
+      Repo-context raw locations:
+      {{ outputs.repo_context.json.raw_locations }}
 
       Answer the original request directly using the repo-context evidence.
     output_key: reply
@@ -698,6 +710,8 @@ async def test_repo_context_step_completes_and_persists_artifact(tmp_path):
         assert "Find validation" in final_prompt
         assert "Repo: sample" in final_prompt
         assert "Citations:" in final_prompt
+        assert "Repo-context raw locations:" in final_prompt
+        assert '"text": "def validate(): ..."' in final_prompt
         assert "Answer the original request directly" in final_prompt
     finally:
         await store.close()

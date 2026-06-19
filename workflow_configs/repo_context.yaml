@@ -69,6 +69,9 @@ steps:
       Repo-context evidence:
       {{ outputs.repo_context.text }}
 
+      Repo-context raw locations:
+      {{ outputs.repo_context.json.raw_locations }}
+
       Answer the original request directly using the repo-context evidence.
       Preserve relevant file paths and line ranges. Surface uncertainty or
       missing evidence clearly; do not invent repository details.
