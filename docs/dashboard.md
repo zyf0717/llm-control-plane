@@ -70,7 +70,7 @@ For Single-Node/ad hoc search, the proxy may use the configured query refiner to
 
 When Single-Node workflow dispatch is enabled, the dashboard creates and runs a workflow for the submitted turn instead of sending a direct chat completion. The selected endpoint, reasoning effort, RAG endpoint, and search provider are copied into that workflow run.
 
-For the built-in `repo_context` workflow, Single-Node dispatch maps the submitted message to `query` and the selected Repo Context Repository to `repo_name`.
+For the built-in `repo_context` workflow, selecting a non-`None` Repo Context Repository on Single-Node automatically selects Workflow Dispatch `repo_context`; dispatch maps the submitted message to `query` and the selected repository to `repo_name`.
 
 System prompt and reasoning are first-turn conversation controls. If either changes after a conversation has started, the dashboard automatically forks to a new conversation id, copies prior durable user/assistant history behind the new system prompt, prints an explicit fork notice in the chat, and sends the next turn under the forked id.
 

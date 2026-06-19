@@ -104,6 +104,7 @@ from .workflow_formatters import (
 DEFAULT_WORKFLOW_DISPATCH_ID = ""
 WORKFLOW_DISPATCH_NONE_LABEL = "None"
 THREADED_SEARCH_WORKFLOW_ID = "threaded_search"
+REPO_CONTEXT_WORKFLOW_ID = "repo_context"
 ENDED_WORKFLOW_RUN_STATUSES = {"completed", "failed", "cancelled"}
 
 
@@ -154,6 +155,21 @@ def resolve_workflow_dispatch_selection(
         return default
 
     return next(iter(choices), None)
+
+
+def resolve_workflow_dispatch_selection_for_repo_context(
+    choices: Dict[str, str],
+    *,
+    current_selection: Optional[str],
+    repo_name: Optional[str],
+    repo_context_workflow_id: str = REPO_CONTEXT_WORKFLOW_ID,
+) -> Optional[str]:
+    if str(repo_name or "").strip() and repo_context_workflow_id in choices:
+        return repo_context_workflow_id
+    return resolve_workflow_dispatch_selection(
+        choices,
+        current_selection=current_selection,
+    )
 
 
 def build_workflow_dispatch_choices(choices: Dict[str, str]) -> Dict[str, str]:
@@ -651,6 +667,25 @@ def server(input, output, session):
             current_selection=workflow_current,
         )
 
+    async def apply_single_node_workflow_dispatch_state(
+        workflow_dispatch_id: str,
+        *,
+        current_search_provider: Optional[str] = None,
+    ) -> None:
+        selected_workflow_dispatch_id.set(workflow_dispatch_id)
+        update_single_node_search_provider_select(
+            workflow_dispatch_id,
+            current_selection=current_search_provider,
+        )
+        await session.send_custom_message(
+            "workflowDispatchState",
+            {
+                "active": bool(workflow_dispatch_id),
+                "searchProviderEnabled": workflow_dispatch_id
+                == THREADED_SEARCH_WORKFLOW_ID,
+            },
+        )
+
     async def update_repo_context_repositories() -> None:
         choices, default_selection = await fetch_available_repo_context_repositories()
         with reactive.isolate():
@@ -697,15 +732,17 @@ def server(input, output, session):
                 if workflow_dispatch_input is not None
                 else selected_workflow_dispatch_id.get()
             ).strip()
+            current_repo_context_repo = str(input.repoContextRepo() or "")
             current_search_provider = str(input.searchProvider() or "")
         workflows = await fetch_workflows()
         workflow_specs.set(workflows)
         choices = format_workflow_choices(workflows)
         dispatch_choices = build_workflow_dispatch_choices(choices)
 
-        dispatch_selected = resolve_workflow_dispatch_selection(
+        dispatch_selected = resolve_workflow_dispatch_selection_for_repo_context(
             dispatch_choices,
             current_selection=current_dispatch_selection,
+            repo_name=current_repo_context_repo,
         )
         ui.update_select(
             "workflowDispatch",
@@ -713,18 +750,9 @@ def server(input, output, session):
             selected=dispatch_selected,
             session=session,
         )
-        selected_workflow_dispatch_id.set(dispatch_selected or "")
-        await session.send_custom_message(
-            "workflowDispatchState",
-            {
-                "active": bool(dispatch_selected),
-                "searchProviderEnabled": dispatch_selected
-                == THREADED_SEARCH_WORKFLOW_ID,
-            },
-        )
-        update_single_node_search_provider_select(
+        await apply_single_node_workflow_dispatch_state(
             dispatch_selected or "",
-            current_selection=current_search_provider,
+            current_search_provider=current_search_provider,
         )
 
         selected = current_selection if current_selection in choices else None
@@ -906,18 +934,42 @@ def server(input, output, session):
     @reactive.event(input.workflowDispatch)
     async def _sync_selected_workflow_dispatch():
         workflow_dispatch_id = str(input.workflowDispatch() or "").strip()
-        selected_workflow_dispatch_id.set(workflow_dispatch_id)
-        update_single_node_search_provider_select(
+        await apply_single_node_workflow_dispatch_state(
             workflow_dispatch_id,
-            current_selection=input.searchProvider(),
+            current_search_provider=input.searchProvider(),
         )
-        await session.send_custom_message(
-            "workflowDispatchState",
-            {
-                "active": bool(workflow_dispatch_id),
-                "searchProviderEnabled": workflow_dispatch_id
-                == THREADED_SEARCH_WORKFLOW_ID,
-            },
+
+    @reactive.Effect
+    @reactive.event(input.repoContextRepo)
+    async def _sync_repo_context_workflow_dispatch():
+        repo_name = str(input.repoContextRepo() or "").strip()
+        if not repo_name:
+            return
+        with reactive.isolate():
+            workflow_choices = format_workflow_choices(workflow_specs.get())
+            dispatch_choices = build_workflow_dispatch_choices(workflow_choices)
+            workflow_dispatch_input = input.workflowDispatch()
+            current_dispatch_selection = str(
+                workflow_dispatch_input
+                if workflow_dispatch_input is not None
+                else selected_workflow_dispatch_id.get()
+            ).strip()
+            current_search_provider = str(input.searchProvider() or "")
+        dispatch_selected = resolve_workflow_dispatch_selection_for_repo_context(
+            dispatch_choices,
+            current_selection=current_dispatch_selection,
+            repo_name=repo_name,
+        )
+        if not dispatch_selected or dispatch_selected == current_dispatch_selection:
+            return
+        ui.update_select(
+            "workflowDispatch",
+            selected=dispatch_selected,
+            session=session,
+        )
+        await apply_single_node_workflow_dispatch_state(
+            dispatch_selected,
+            current_search_provider=current_search_provider,
         )
 
     @reactive.Effect

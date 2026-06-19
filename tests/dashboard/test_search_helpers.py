@@ -12,6 +12,7 @@ from src.dashboard.app_server import (
     resolve_search_provider_selection,
     resolve_workflow_retry_step_selection,
     resolve_workflow_dispatch_selection,
+    resolve_workflow_dispatch_selection_for_repo_context,
     workflow_dispatch_event_updates_run_details,
     workflow_run_ended,
     workflow_run_in_progress,
@@ -485,6 +486,61 @@ def test_resolve_workflow_dispatch_selection_handles_empty_choices():
     selected = resolve_workflow_dispatch_selection({}, current_selection="missing")
 
     assert selected is None
+
+
+def test_resolve_workflow_dispatch_selection_for_repo_context_selects_repo_workflow():
+    selected = resolve_workflow_dispatch_selection_for_repo_context(
+        {
+            "": "None",
+            "threaded_search": "Threaded Search",
+            "repo_context": "Repo Context",
+        },
+        current_selection="",
+        repo_name="llm-control-plane",
+    )
+
+    assert selected == "repo_context"
+
+
+def test_resolve_workflow_dispatch_selection_for_repo_context_overrides_current():
+    selected = resolve_workflow_dispatch_selection_for_repo_context(
+        {
+            "": "None",
+            "threaded_search": "Threaded Search",
+            "repo_context": "Repo Context",
+        },
+        current_selection="threaded_search",
+        repo_name="llm-control-plane",
+    )
+
+    assert selected == "repo_context"
+
+
+def test_resolve_workflow_dispatch_selection_for_repo_context_preserves_without_repo():
+    selected = resolve_workflow_dispatch_selection_for_repo_context(
+        {
+            "": "None",
+            "threaded_search": "Threaded Search",
+            "repo_context": "Repo Context",
+        },
+        current_selection="threaded_search",
+        repo_name="",
+    )
+
+    assert selected == "threaded_search"
+
+
+def test_resolve_workflow_dispatch_selection_for_repo_context_handles_missing_workflow():
+    selected = resolve_workflow_dispatch_selection_for_repo_context(
+        {
+            "": "None",
+            "threaded_search": "Threaded Search",
+        },
+        current_selection="threaded_search",
+        repo_name="llm-control-plane",
+    )
+
+    assert selected == "threaded_search"
 
 
 def test_resolve_first_search_provider_selection_skips_none_option():
