@@ -172,6 +172,6 @@ This keeps search recall and reranking relevance separate: provider queries can 
 
 The Workflows tab can create runs, advance one step, run to completion, retry ended steps, upload UTF-8 context files, and inspect artifacts. Single-Node Workflow Dispatch can dispatch a chat turn into a selected workflow; `contextual_search` requires a concrete search provider, while non-search workflows default the Single-Node provider selector back to `None`.
 
-For `repo_context`, the dashboard lists immediate child directories under the configured `repo_context.repos_root`. Single-Node dispatch maps the latest user turn to `query` and the selected repository to `repo_name`. In the Workflows tab, the repository selector fills `repo_name` only when the editable params JSON leaves it missing or blank.
+For `repo_context`, the dashboard lists immediate child directories under the configured `repo_context.repos_root`. Single-Node dispatch maps the latest user turn to `query` and the selected repository to `repo_name`. The built-in workflow first plans a focused repo-context query, then runs hidden repository exploration, then returns a final repo-grounded answer. In the Workflows tab, the repository selector fills `repo_name` only when the editable params JSON leaves it missing or blank.
 
 TL;DR: workflows are explicit DAGs. Use `search` for candidate collection, `rerank` for ranking, and `llm` steps for planning and synthesis.

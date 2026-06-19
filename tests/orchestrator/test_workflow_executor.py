@@ -303,17 +303,62 @@ def write_repo_context_workflow(path: Path) -> None:
         """
 id: repo_context_sample
 name: Repo Context Sample
-version: 0.1.0
+version: 0.2.0
 params_schema:
   type: object
   required: [query, repo_name]
 steps:
+  - id: plan_repo_context_query
+    kind: llm
+    endpoint: gmktec-evo-x2-utility
+    chat_visibility: hidden
+    prompt: |
+      User request:
+      {{ params.query }}
+
+      Repository:
+      {{ params.repo_name }}
+
+      Produce one focused repo-context exploration query.
+    output_key: repo_context_plan
+    output_contract:
+      format: json
+      required: true
+      schema:
+        type: object
+        additionalProperties: false
+        required: [query]
+        properties:
+          query:
+            type: string
+            minLength: 1
   - id: explore
     kind: repo_context
-    prompt: "{{ params.query }}"
+    depends_on: [plan_repo_context_query]
+    prompt: "{{ outputs.repo_context_plan.json.query }}"
     repo_context_repo: "{{ params.repo_name }}"
     repo_context_max_turns: 4
     output_key: repo_context
+    chat_visibility: hidden
+  - id: consolidate_reply
+    kind: llm
+    chat_visibility: final
+    depends_on: [explore]
+    prompt: |
+      Original request:
+      {{ params.query }}
+
+      Repository:
+      {{ params.repo_name }}
+
+      Repo-context exploration query:
+      {{ outputs.repo_context_plan.json.query }}
+
+      Repo-context evidence:
+      {{ outputs.repo_context.text }}
+
+      Answer the original request directly using the repo-context evidence.
+    output_key: reply
 """,
         encoding="utf-8",
     )
@@ -601,23 +646,41 @@ async def test_repo_context_step_completes_and_persists_artifact(tmp_path):
     store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
     await store.initialize()
     repo_context = FakeRepoContextClient()
-    executor = WorkflowExecutor(registry, store, FakeLLMClient(), None, repo_context)
+    llm = SequenceLLMClient(
+        ['{"query": "Find validation"}', "final repo-grounded answer"]
+    )
+    executor = WorkflowExecutor(registry, store, llm, None, repo_context)
     try:
         created = await executor.create_run(
             "repo_context_sample",
-            params={"query": "Find validation", "repo_name": "sample"},
+            params={"query": "How should we update validation?", "repo_name": "sample"},
             endpoint="node-a",
         )
         run_id = created["run"]["run_id"]
 
-        snapshot = await executor.advance(run_id)
+        snapshot = await executor.run_to_completion(run_id)
 
         assert snapshot["run"]["status"] == "completed"
-        output = snapshot["steps"][0]["output_json"]
+        steps = {step["step_id"]: step for step in snapshot["steps"]}
+        specs = {step.id: step for step in registry.get("repo_context_sample").steps}
+        output = steps["explore"]["output_json"]
+        assert specs["plan_repo_context_query"].chat_visibility == "hidden"
+        assert specs["explore"].chat_visibility == "hidden"
+        assert specs["consolidate_reply"].chat_visibility == "final"
+        assert specs["consolidate_reply"].endpoint is None
+        assert specs["consolidate_reply"].output_key == "reply"
         assert output["metadata"]["kind"] == "repo_context"
         assert output["metadata"]["repo_name"] == "sample"
         assert output["json"]["answer"] == "src/api.py:1"
-        assert snapshot["artifacts"][0]["content_text"].startswith("Repo: sample")
+        assert steps["consolidate_reply"]["output_json"]["text"] == (
+            "final repo-grounded answer"
+        )
+        repo_artifacts = [
+            artifact
+            for artifact in snapshot["artifacts"]
+            if artifact["step_id"] == "explore"
+        ]
+        assert repo_artifacts[0]["content_text"].startswith("Repo: sample")
         assert repo_context.calls == [
             {
                 "query": "Find validation",
@@ -625,6 +688,17 @@ async def test_repo_context_step_completes_and_persists_artifact(tmp_path):
                 "max_turns": 4,
             }
         ]
+        assert len(llm.prompts) == 2
+        assert [prompt["endpoint"] for prompt in llm.prompts] == [
+            "gmktec-evo-x2-utility",
+            "node-a",
+        ]
+        final_prompt = llm.prompts[1]["prompt"]
+        assert "How should we update validation?" in final_prompt
+        assert "Find validation" in final_prompt
+        assert "Repo: sample" in final_prompt
+        assert "Citations:" in final_prompt
+        assert "Answer the original request directly" in final_prompt
     finally:
         await store.close()
 
