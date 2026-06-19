@@ -16,7 +16,7 @@ Graph refs are loaded from `langgraph.json`:
 }
 ```
 
-Optional graph metadata lives in `graph_configs/{graph_id}.yaml`:
+Optional graph metadata lives next to graph code in `src/graphs/{graph_id}.yaml`:
 
 ```yaml
 id: research_agent
@@ -75,4 +75,3 @@ If `config.configurable.thread_id` is omitted, the control plane uses the graph 
 Graphs and workflows share proxy runtime services such as endpoint routing, search, rerank, retrieval, tracing, auth, and logging. They do not share registries, stores, routes, request schemas, response schemas, dashboard code, or execution semantics.
 
 Use workflows for explicit YAML step runs with `/advance` and step retry. Use graphs for LangGraph-native Python control flow, streaming, interrupts, and graph checkpoints.
-

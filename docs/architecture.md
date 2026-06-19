@@ -84,7 +84,7 @@ Workflow LLM calls use the same upstream proxy machinery as direct chat requests
 
 ## Graph Model
 
-Graphs are LangGraph-native orchestration units loaded from `langgraph.json` with optional metadata in `graph_configs/`. They have separate `/graphs` and `/graph-runs` APIs, separate graph run tables, and a separate dashboard tab.
+Graphs are LangGraph-native orchestration units loaded from `langgraph.json` with optional metadata beside graph code in `src/graphs/*.yaml`. They have separate `/graphs` and `/graph-runs` APIs, separate graph run tables, and a separate dashboard tab.
 
 Graphs and workflows share neutral runtime adapters for LLM/search/rerank/retrieval access, but they do not share executor, registry, persistence schema, request schema, or dashboard feature code. Either subsystem can be disabled under `orchestration` without changing the other subsystem.
 

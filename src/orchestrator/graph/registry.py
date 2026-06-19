@@ -14,7 +14,7 @@ from .models import GraphSpec
 
 
 DEFAULT_LANGGRAPH_CONFIG = Path("langgraph.json")
-DEFAULT_GRAPH_METADATA_DIR = Path("graph_configs")
+DEFAULT_GRAPH_METADATA_DIR = Path("src/graphs")
 
 
 class GraphRegistry:
@@ -173,4 +173,3 @@ def _dict_or_empty(value: Any) -> dict[str, Any]:
 
 def _safe_module_name(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_]", "_", value)
-

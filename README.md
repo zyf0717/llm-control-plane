@@ -37,7 +37,7 @@ python llm_control_plane.py
 | `src/dashboard/` | Shiny UI plus extracted search/workflow/graph/trace server helpers |
 | `src/search/` | Provider routing, query refinement, and optional explicit reranking |
 | `workflow_configs/` | Context-driven workflow definitions |
-| `graph_configs/` | Optional LangGraph graph metadata |
+| `src/graphs/*.yaml` | Optional LangGraph graph metadata |
 | `langgraph.json` | LangGraph graph refs loaded by the graph subsystem |
 | `config.yaml` | Local endpoint, routing, RAG, and search configuration |
 | `config.example.yaml` | Checked-in configuration template |
