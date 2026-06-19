@@ -104,6 +104,20 @@ The metadata is surfaced through `/models` and shown in the dashboard runtime pa
 
 Each subsystem owns its own API, store, dashboard tab, and execution model. Disabling one should not affect the other.
 
+## Repo-Context Configuration
+
+`repo_context` configures the read-only local repository explorer used by `repo_context` workflow steps and the dashboard repository selector. When omitted, it defaults to enabled with `/home/yifei/repos` as the repository root and `/home/yifei/repos/repo-context` as the CLI project.
+
+| Field | Meaning |
+|---|---|
+| `enabled` | Enable repo-context API and workflow execution |
+| `project_dir` | Path passed to `uv run --project` when `command` is omitted |
+| `repos_root` | Directory whose immediate child directories are valid repo targets |
+| `command` | Explicit argv prefix for the CLI; shell syntax is not used |
+| `default_max_turns` | Step default when `repo_context_max_turns` is omitted |
+| `timeout_seconds` | Subprocess timeout per repo-context step |
+| `max_concurrent` | Max concurrent repo-context subprocesses |
+
 ## RAG Configuration
 
 The `rag` block configures dashboard-visible RAG endpoints and proxy retrieval behavior.

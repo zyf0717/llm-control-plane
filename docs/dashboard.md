@@ -14,6 +14,7 @@ The dashboard runs on `http://localhost:12341`, binds `127.0.0.1`, and communica
 - Reasoning effort selector
 - File upload for inline prompt augmentation
 - Single-Node workflow dispatch
+- Repo-context repository selection for workflows that declare `repo_name`
 - Workflow run creation, stepping, streaming, retry, clearing, and artifact inspection
 - Conversation history viewer
 - Runtime metadata panel
@@ -69,6 +70,8 @@ For Single-Node/ad hoc search, the proxy may use the configured query refiner to
 
 When Single-Node workflow dispatch is enabled, the dashboard creates and runs a workflow for the submitted turn instead of sending a direct chat completion. The selected endpoint, reasoning effort, RAG endpoint, and search provider are copied into that workflow run.
 
+For the built-in `repo_context` workflow, Single-Node dispatch maps the submitted message to `query` and the selected Repo Context Repository to `repo_name`.
+
 System prompt and reasoning are first-turn conversation controls. If either changes after a conversation has started, the dashboard automatically forks to a new conversation id, copies prior durable user/assistant history behind the new system prompt, prints an explicit fork notice in the chat, and sends the next turn under the forked id.
 
 ## RAG Semantics
@@ -96,7 +99,9 @@ The runtime panel may show:
 
 ## Workflow Tab
 
-The Workflows tab exposes the proxy workflow API. It can create a run from workflow params, selected endpoint, optional RAG endpoint, optional search provider, and optional uploaded UTF-8 context files. It can then advance one step, run to completion, stream run events, retry a step and its dependents, clear stored runs, and inspect step artifacts.
+The Workflows tab exposes the proxy workflow API. It can create a run from workflow params, selected endpoint, optional RAG endpoint, optional search provider, optional repo-context repository, and optional uploaded UTF-8 context files. It can then advance one step, run to completion, stream run events, retry a step and its dependents, clear stored runs, and inspect step artifacts.
+
+The Repo Context Repository selector is populated from `GET /repo-context/repos`. If a selected workflow schema includes `repo_name`, the selector fills that param only when the editable Params JSON omits it or leaves it blank.
 
 Search and rerank behavior follows workflow YAML, not the Single-Node ad hoc search path. For the built-in `contextual_search` workflow, the planner produces up to five provider queries and a separate context-resolved rerank query; the search step requests up to twenty results per query and the rerank step caps output at ten.
 

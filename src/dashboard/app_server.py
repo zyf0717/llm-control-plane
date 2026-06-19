@@ -44,6 +44,7 @@ from .utils import (
     create_endpoint_display_choices,
     fetch_conversation_summaries,
     fetch_available_endpoints,
+    fetch_available_repo_context_repositories,
     fetch_available_retrieval_endpoints,
     fetch_available_search_providers,
     fetch_conversation_history,
@@ -76,6 +77,7 @@ from .workflow_server_helpers import (
     build_workflow_params_template,
     format_workflow_intermediate_content,
     format_workflow_thread_briefing,
+    merge_repo_context_repo_name,
     merge_uploaded_source_text,
     workflow_chat_response_text,
     workflow_chat_run_info,
@@ -649,6 +651,28 @@ def server(input, output, session):
             current_selection=workflow_current,
         )
 
+    async def update_repo_context_repositories() -> None:
+        choices, default_selection = await fetch_available_repo_context_repositories()
+        with reactive.isolate():
+            current_single_node = str(input.repoContextRepo() or "")
+            current_workflow = str(input.workflowRepoContextRepo() or "")
+        ui.update_select(
+            "repoContextRepo",
+            choices=choices,
+            selected=current_single_node
+            if current_single_node in choices
+            else default_selection,
+            session=session,
+        )
+        ui.update_select(
+            "workflowRepoContextRepo",
+            choices=choices,
+            selected=(
+                current_workflow if current_workflow in choices else default_selection
+            ),
+            session=session,
+        )
+
     async def update_history_selector() -> None:
         with reactive.isolate():
             current_selection = current_history_conversation_id()
@@ -811,6 +835,7 @@ def server(input, output, session):
         await update_endpoints_and_data()
         await update_retrieval_endpoints()
         await update_search_providers()
+        await update_repo_context_repositories()
         await update_history_selector()
         await update_workflow_selector()
         await update_workflow_run_selector()
@@ -836,6 +861,7 @@ def server(input, output, session):
     @reactive.event(input.refreshWorkflows)
     async def _refresh_workflows():
         await update_workflow_selector()
+        await update_repo_context_repositories()
 
     @reactive.Effect
     @reactive.event(input.refreshWorkflowRuns)
@@ -1004,7 +1030,9 @@ def server(input, output, session):
     @reactive.Effect
     @reactive.event(input.createWorkflowRun)
     async def _create_workflow_run():
-        workflow_id = str(selected_workflow_id.get() or input.workflowSelector() or "").strip()
+        workflow_id = str(
+            selected_workflow_id.get() or input.workflowSelector() or ""
+        ).strip()
         if not workflow_id:
             workflow_status_message.set("Select a workflow first.")
             return
@@ -1018,6 +1046,17 @@ def server(input, output, session):
             params = merge_uploaded_source_text(
                 workflow_params_payload(),
                 build_uploaded_file_source_text(uploaded_files),
+            )
+            selected_spec = workflow_spec.get()
+            if (
+                not isinstance(selected_spec, dict)
+                or str(selected_spec.get("id") or "").strip() != workflow_id
+            ):
+                selected_spec = await fetch_workflow(workflow_id)
+            params = merge_repo_context_repo_name(
+                params,
+                selected_spec,
+                str(input.workflowRepoContextRepo() or ""),
             )
             payload = {
                 "params": params,
@@ -1669,6 +1708,9 @@ def server(input, output, session):
                     ),
                     manual_source_text=current_prompt,
                     uploaded_source_text=uploaded_source_text,
+                    repo_name=str(
+                        _input_value(input, "repoContextRepo") or ""
+                    ).strip(),
                     endpoint=endpoint_for_workflow,
                     reasoning_effort=current_reasoning,
                     conversation_id=conversation_id or "",

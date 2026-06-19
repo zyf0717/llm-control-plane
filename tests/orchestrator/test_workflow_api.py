@@ -25,6 +25,11 @@ class RecordingLLMClient(FakeLLMClient):
         return await super().complete(**kwargs)
 
 
+class FakeRepoContextListClient:
+    def list_repositories(self):
+        return ["alpha", "beta"]
+
+
 def write_workflow(path: Path) -> None:
     path.write_text(
         """
@@ -250,6 +255,20 @@ def test_workflow_api_delete_runs_clears_history(tmp_path):
         assert delete_response.status_code == 200
         assert delete_response.json()["deleted"]["workflow_runs"] == 1
         assert client.get("/workflow-runs").json()["runs"] == []
+
+
+def test_repo_context_repos_api_lists_directories(monkeypatch):
+    monkeypatch.setattr(
+        proxy_module,
+        "repo_context_client",
+        FakeRepoContextListClient(),
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/repo-context/repos")
+
+    assert response.status_code == 200
+    assert response.json() == {"repositories": ["alpha", "beta"]}
 
 
 def test_workflow_api_thread_mode_enriches_params_and_keeps_conversation_separate(

@@ -1,0 +1,23 @@
+id: repo_context
+name: Repo Context
+version: 0.1.0
+description: Explore one local repository with repo-context.
+
+params_schema:
+  type: object
+  required: [query, repo_name]
+  properties:
+    query:
+      type: string
+    repo_name:
+      type: string
+
+steps:
+  - id: explore_repository
+    name: Explore repository
+    kind: repo_context
+    prompt: "{{ params.query }}"
+    repo_context_repo: "{{ params.repo_name }}"
+    repo_context_max_turns: 6
+    output_key: repo_context
+    chat_visibility: final

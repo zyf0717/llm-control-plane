@@ -9,6 +9,7 @@ Workflows are YAML-defined multi-step runs loaded from `workflow_configs/`. They
 | `contextual_search` | Use conversation context to plan searches, dispatch multiple queries, rerank globally, and answer the latest prompt |
 | `research_brief` | Build a concise brief from a question, optional manual context, uploaded files, search, and rerank |
 | `implementation_plan` | Build staged implementation guidance from a goal, optional context, search, and rerank |
+| `repo_context` | Explore one local repository through the configured repo-context CLI |
 
 ## API
 
@@ -77,7 +78,7 @@ Common fields:
 |---|---|---|
 | `id` | all | Stable step id |
 | `name` | all | Display label; defaults to `id` |
-| `kind` | all | `llm`, `search`, `rerank`, or `manual` |
+| `kind` | all | `llm`, `search`, `rerank`, `manual`, `compress_source`, or `repo_context` |
 | `depends_on` | all | Step ids that must complete first |
 | `prompt` | `llm`, `search`, `rerank` | Template rendered from params and prior outputs |
 | `output_key` | all | Key used in `outputs`; defaults to step id |
@@ -102,6 +103,13 @@ Rerank fields:
 |---|---|
 | `rerank_context` | Extra context sent to the reranker |
 | `rerank_top_k` | Final reranked result cap |
+
+Repo-context fields:
+
+| Field | Meaning |
+|---|---|
+| `repo_context_repo` | Template resolving to one immediate child directory under configured `repos_root` |
+| `repo_context_max_turns` | Optional CLI exploration turn cap; defaults to repo-context config |
 
 Unsupported legacy fields:
 
@@ -163,5 +171,7 @@ This keeps search recall and reranking relevance separate: provider queries can 
 ## Dashboard Integration
 
 The Workflows tab can create runs, advance one step, run to completion, retry ended steps, upload UTF-8 context files, and inspect artifacts. Single-Node Workflow Dispatch can dispatch a chat turn into a selected workflow; `contextual_search` requires a concrete search provider, while non-search workflows default the Single-Node provider selector back to `None`.
+
+For `repo_context`, the dashboard lists immediate child directories under the configured `repo_context.repos_root`. Single-Node dispatch maps the latest user turn to `query` and the selected repository to `repo_name`. In the Workflows tab, the repository selector fills `repo_name` only when the editable params JSON leaves it missing or blank.
 
 TL;DR: workflows are explicit DAGs. Use `search` for candidate collection, `rerank` for ranking, and `llm` steps for planning and synthesis.

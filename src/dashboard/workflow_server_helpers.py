@@ -6,7 +6,7 @@ from typing import Any, Awaitable, Callable
 
 TERMINAL_WORKFLOW_STATUSES = {"completed", "failed", "cancelled"}
 WORKFLOW_RUN_MAX_STEPS = 100
-WORKFLOW_CHAT_PROMPT_PARAM_NAMES = ("latest_user_prompt", "goal", "question")
+WORKFLOW_CHAT_PROMPT_PARAM_NAMES = ("latest_user_prompt", "goal", "question", "query")
 
 
 def workflow_snapshot_status(snapshot: dict[str, Any] | None) -> str:
@@ -53,6 +53,7 @@ def build_workflow_chat_params(
     thread_briefing: str = "",
     manual_source_text: str = "",
     uploaded_source_text: str = "",
+    repo_name: str = "",
 ) -> dict[str, str]:
     keys = _workflow_param_keys(spec)
     params: dict[str, str] = {}
@@ -65,6 +66,8 @@ def build_workflow_chat_params(
             params[key] = str(manual_source_text or "")
         elif key == "uploaded_source_text":
             params[key] = str(uploaded_source_text or "")
+        elif key == "repo_name":
+            params[key] = str(repo_name or "")
     return params
 
 
@@ -75,6 +78,7 @@ def build_workflow_chat_run_payload(
     thread_briefing: str = "",
     manual_source_text: str = "",
     uploaded_source_text: str = "",
+    repo_name: str = "",
     endpoint: str,
     reasoning_effort: str = "",
     conversation_id: str = "",
@@ -87,6 +91,7 @@ def build_workflow_chat_run_payload(
             thread_briefing=thread_briefing,
             manual_source_text=manual_source_text,
             uploaded_source_text=uploaded_source_text,
+            repo_name=repo_name,
         ),
         "endpoint": str(endpoint or "").strip(),
     }
@@ -238,6 +243,20 @@ def merge_uploaded_source_text(
     merged["uploaded_source_text"] = "\n\n".join(
         item for item in [existing, source_text] if item
     )
+    return merged
+
+
+def merge_repo_context_repo_name(
+    params: dict[str, Any],
+    spec: dict[str, Any] | None,
+    repo_name: str,
+) -> dict[str, Any]:
+    selected_repo = str(repo_name or "").strip()
+    if not selected_repo or "repo_name" not in _workflow_param_keys(spec):
+        return params
+    merged = dict(params)
+    if not str(merged.get("repo_name") or "").strip():
+        merged["repo_name"] = selected_repo
     return merged
 
 

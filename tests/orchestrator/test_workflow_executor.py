@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from src.orchestrator.repo_context import RepoContextResult
 from src.orchestrator.workflow.executor import WorkflowExecutor, render_template
 from src.orchestrator.workflow.registry import WorkflowRegistry
 from src.orchestrator.workflow.store import SQLiteWorkflowStore
@@ -117,6 +118,33 @@ class EmptySearchClient(CapturingSearchClient):
 
     async def rerank_results(self, **kwargs):
         raise AssertionError("reranker should not run without candidates")
+
+
+class FakeRepoContextClient:
+    def __init__(self):
+        self.calls = []
+
+    async def explore_repository(self, **kwargs):
+        self.calls.append(kwargs)
+        return RepoContextResult(
+            text="Repo: sample\nCitations:\n- src/api.py:1",
+            json={
+                "answer": "src/api.py:1",
+                "citations": [
+                    {"path": "src/api.py", "start_line": 1, "end_line": 1}
+                ],
+                "turns_used": 1,
+                "truncated": False,
+                "warnings": [],
+            },
+            metadata={
+                "kind": "repo_context",
+                "repo_name": kwargs["repo_name"],
+                "repo_root": "/repos/sample",
+                "turns_used": 1,
+                "truncated": False,
+            },
+        )
 
 
 def write_workflow(path: Path) -> None:
@@ -265,6 +293,27 @@ steps:
     depends_on: [plan]
     prompt: "{{ outputs.plan.json.queries }}"
     output_key: search
+""",
+        encoding="utf-8",
+    )
+
+
+def write_repo_context_workflow(path: Path) -> None:
+    path.write_text(
+        """
+id: repo_context_sample
+name: Repo Context Sample
+version: 0.1.0
+params_schema:
+  type: object
+  required: [query, repo_name]
+steps:
+  - id: explore
+    kind: repo_context
+    prompt: "{{ params.query }}"
+    repo_context_repo: "{{ params.repo_name }}"
+    repo_context_max_turns: 4
+    output_key: repo_context
 """,
         encoding="utf-8",
     )
@@ -539,6 +588,42 @@ async def test_llm_step_endpoint_overrides_run_endpoint(tmp_path):
         assert [call["endpoint"] for call in llm.prompts] == [
             "node-small",
             "node-large",
+        ]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_repo_context_step_completes_and_persists_artifact(tmp_path):
+    write_repo_context_workflow(tmp_path / "repo_context_sample.yaml")
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    repo_context = FakeRepoContextClient()
+    executor = WorkflowExecutor(registry, store, FakeLLMClient(), None, repo_context)
+    try:
+        created = await executor.create_run(
+            "repo_context_sample",
+            params={"query": "Find validation", "repo_name": "sample"},
+            endpoint="node-a",
+        )
+        run_id = created["run"]["run_id"]
+
+        snapshot = await executor.advance(run_id)
+
+        assert snapshot["run"]["status"] == "completed"
+        output = snapshot["steps"][0]["output_json"]
+        assert output["metadata"]["kind"] == "repo_context"
+        assert output["metadata"]["repo_name"] == "sample"
+        assert output["json"]["answer"] == "src/api.py:1"
+        assert snapshot["artifacts"][0]["content_text"].startswith("Repo: sample")
+        assert repo_context.calls == [
+            {
+                "query": "Find validation",
+                "repo_name": "sample",
+                "max_turns": 4,
+            }
         ]
     finally:
         await store.close()

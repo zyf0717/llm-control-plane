@@ -16,6 +16,7 @@ from .conversation_store import (
     build_conversation_store_from_env,
 )
 from .orchestration import OrchestrationSubsystem
+from .repo_context import RepoContextClient, load_repo_context_config
 from .utils import HeaderManager
 
 load_dotenv()
@@ -29,6 +30,7 @@ search_service = build_search_router(
     config.get("search", {}),
     query_refiner_headers=HeaderManager.create_auth_headers(),
 )
+repo_context_client = RepoContextClient(load_repo_context_config(config))
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +81,7 @@ def _build_orchestration_subsystems() -> list[OrchestrationSubsystem]:
         subsystems.append(
             WorkflowSubsystem(
                 conversation_store_getter=lambda: conversation_store,
+                repo_context_client=repo_context_client,
             )
         )
     if _subsystem_enabled("graphs", default=True):
@@ -211,6 +214,19 @@ def set_graph_components(
         raise RuntimeError("Graph subsystem is not enabled")
     subsystem.set_components(registry=registry, store=store, executor=executor)
     _sync_graph_globals()
+
+
+def get_repo_context_client() -> RepoContextClient:
+    return repo_context_client
+
+
+def set_repo_context_client(client: RepoContextClient) -> None:
+    global repo_context_client
+    repo_context_client = client
+    subsystem = _find_subsystem("workflows")
+    if subsystem is not None and hasattr(subsystem, "set_repo_context_client"):
+        subsystem.set_repo_context_client(client)
+        _sync_workflow_globals()
 
 
 async def initialize_conversation_store() -> None:

@@ -234,6 +234,48 @@ def test_registry_loads_compress_source_steps(tmp_path):
     assert step.compression_goal == "Preserve evidence."
 
 
+def test_registry_loads_repo_context_steps(tmp_path):
+    write_workflow(
+        tmp_path / "sample.yaml",
+        body=minimal_workflow(
+            steps="""
+  - id: explore
+    name: Explore
+    kind: repo_context
+    prompt: "{{ params.query }}"
+    repo_context_repo: "{{ params.repo_name }}"
+    repo_context_max_turns: 4
+    output_key: repo_context
+"""
+        ),
+    )
+
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+
+    step = registry.get("sample").steps[0]
+    assert step.kind == "repo_context"
+    assert step.repo_context_repo == "{{ params.repo_name }}"
+    assert step.repo_context_max_turns == 4
+
+
+def test_registry_rejects_repo_context_fields_on_other_steps(tmp_path):
+    write_workflow(
+        tmp_path / "sample.yaml",
+        body=minimal_workflow(
+            steps="""
+  - id: first
+    kind: llm
+    prompt: hello
+    repo_context_repo: sample
+"""
+        ),
+    )
+
+    with pytest.raises(ValueError, match="repo_context fields"):
+        WorkflowRegistry(tmp_path).load()
+
+
 def test_registry_rejects_invalid_compression_budgets(tmp_path):
     write_workflow(
         tmp_path / "sample.yaml",
@@ -451,6 +493,7 @@ def test_default_workflow_config_directory_loads_shipped_specs():
         "threaded_search",
         "implementation_plan",
         "research_brief",
+        "repo_context",
     }
 
 

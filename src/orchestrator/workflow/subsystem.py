@@ -6,6 +6,7 @@ from fastapi import APIRouter
 
 from ..conversation_store import ConversationStore
 from ..runtime import ProxyRuntimeLLMClient, ProxyRuntimeSearchClient
+from .step_executor import WorkflowRepoContextClient
 from .api import create_workflow_router
 from .executor import WorkflowExecutor
 from .registry import WorkflowRegistry
@@ -19,8 +20,10 @@ class WorkflowSubsystem:
         self,
         *,
         conversation_store_getter: Callable[[], ConversationStore] | None = None,
+        repo_context_client: WorkflowRepoContextClient | None = None,
     ):
         self.conversation_store_getter = conversation_store_getter
+        self.repo_context_client = repo_context_client
         self.registry = WorkflowRegistry()
         self.store: SQLiteWorkflowStore = build_workflow_store_from_env()
         self.executor: WorkflowExecutor | None = None
@@ -42,6 +45,7 @@ class WorkflowSubsystem:
             self.store,
             ProxyRuntimeLLMClient(),
             ProxyRuntimeSearchClient(),
+            self.repo_context_client,
         )
 
     async def shutdown(self) -> None:
@@ -74,3 +78,10 @@ class WorkflowSubsystem:
         if executor is not None:
             self.executor = executor
 
+    def set_repo_context_client(
+        self, repo_context_client: WorkflowRepoContextClient | None
+    ) -> None:
+        self.repo_context_client = repo_context_client
+        if self.executor is not None:
+            self.executor.repo_context_client = repo_context_client
+            self.executor.step_executor.repo_context_client = repo_context_client

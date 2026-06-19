@@ -22,6 +22,8 @@ NONE_RETRIEVAL_OPTION_LABEL = "None"
 NONE_RETRIEVAL_OPTION_VALUE = ""
 NONE_SEARCH_PROVIDER_LABEL = "None"
 NONE_SEARCH_PROVIDER_VALUE = ""
+NONE_REPO_CONTEXT_REPO_LABEL = "None"
+NONE_REPO_CONTEXT_REPO_VALUE = ""
 DEFAULT_QUERY_REFINER_MAX_SOURCE_CHARS = 12000
 DEFAULT_DISPLAY_TIMEZONE_NAME = "Asia/Singapore"
 SEARCH_PROVIDER_DISPLAY_NAMES = {
@@ -245,6 +247,26 @@ def fetch_available_search_providers() -> tuple[dict[str, str], str]:
         choices[provider_id] = f"{provider_name} ({provider_id})"
 
     return choices, NONE_SEARCH_PROVIDER_VALUE
+
+
+async def fetch_available_repo_context_repositories() -> tuple[dict[str, str], str]:
+    choices = {NONE_REPO_CONTEXT_REPO_VALUE: NONE_REPO_CONTEXT_REPO_LABEL}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{PROXY_BASE_URL}/repo-context/repos")
+            response.raise_for_status()
+            data = response.json()
+    except Exception as exc:
+        logger.warning("Failed to fetch repo-context repositories: %s", exc)
+        return choices, NONE_REPO_CONTEXT_REPO_VALUE
+
+    repositories = data.get("repositories") if isinstance(data, dict) else []
+    if isinstance(repositories, list):
+        for repo in repositories:
+            name = str(repo or "").strip()
+            if name:
+                choices[name] = name
+    return choices, NONE_REPO_CONTEXT_REPO_VALUE
 
 
 def load_query_refiner_max_source_chars() -> int:

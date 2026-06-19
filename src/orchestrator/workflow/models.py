@@ -4,7 +4,14 @@ from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
 
-WorkflowStepKind = Literal["llm", "search", "rerank", "manual", "compress_source"]
+WorkflowStepKind = Literal[
+    "llm",
+    "search",
+    "rerank",
+    "manual",
+    "compress_source",
+    "repo_context",
+]
 WorkflowChatVisibility = Literal["hidden", "intermediate", "final"]
 WorkflowOutputFormat = Literal["json", "yaml", "text"]
 WorkflowCompressionInputFormat = Literal["auto", "text", "json", "yaml"]
@@ -159,6 +166,8 @@ class WorkflowStepSpec:
     compression_input_format: WorkflowCompressionInputFormat = COMPRESSION_DEFAULT_INPUT_FORMAT
     compression_output_format: WorkflowCompressionOutputFormat = COMPRESSION_DEFAULT_OUTPUT_FORMAT
     compression_goal: str | None = None
+    repo_context_repo: str | None = None
+    repo_context_max_turns: int | None = None
     chat_visibility: WorkflowChatVisibility = "hidden"
     chat_stream: bool | None = None
 
@@ -169,7 +178,14 @@ class WorkflowStepSpec:
 
         step_id = _required_str(data, "id", "workflow step")
         kind = _required_str(data, "kind", f"workflow step {step_id}")
-        if kind not in {"llm", "search", "rerank", "manual", "compress_source"}:
+        if kind not in {
+            "llm",
+            "search",
+            "rerank",
+            "manual",
+            "compress_source",
+            "repo_context",
+        }:
             raise ValueError(f"workflow step {step_id} has unsupported kind: {kind}")
         if "use_reranker" in data:
             raise ValueError(
@@ -191,6 +207,13 @@ class WorkflowStepSpec:
         if "rerank_source_text" in data and kind != "rerank":
             raise ValueError(
                 f"workflow step {step_id} rerank_source_text is only supported on rerank steps"
+            )
+        if (
+            "repo_context_repo" in data or "repo_context_max_turns" in data
+        ) and kind != "repo_context":
+            raise ValueError(
+                f"workflow step {step_id} repo_context fields are only supported "
+                "on repo_context steps"
             )
         endpoint = _optional_str(data.get("endpoint"))
         if endpoint is not None and kind not in {"llm", "compress_source"}:
@@ -255,6 +278,18 @@ class WorkflowStepSpec:
                 output_contract = _builtin_compression_contract(
                     compression_output_format  # type: ignore[arg-type]
                 )
+        if kind == "repo_context":
+            if not _optional_str(data.get("repo_context_repo")):
+                raise ValueError(
+                    f"workflow step {step_id} repo_context_repo is required"
+                )
+            max_turns = _optional_int(data.get("repo_context_max_turns"))
+            if max_turns is not None and max_turns <= 0:
+                raise ValueError(
+                    f"workflow step {step_id} repo_context_max_turns must be positive"
+                )
+        else:
+            max_turns = None
 
         chat_visibility = _optional_str(data.get("chat_visibility")) or "hidden"
         if chat_visibility not in {"hidden", "intermediate", "final"}:
@@ -303,6 +338,8 @@ class WorkflowStepSpec:
             compression_input_format=compression_input_format,  # type: ignore[arg-type]
             compression_output_format=compression_output_format,  # type: ignore[arg-type]
             compression_goal=_optional_str(data.get("compression_goal")),
+            repo_context_repo=_optional_str(data.get("repo_context_repo")),
+            repo_context_max_turns=max_turns,
             chat_visibility=chat_visibility,  # type: ignore[arg-type]
             chat_stream=_optional_bool(data.get("chat_stream")),
         )

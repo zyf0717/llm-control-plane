@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Protocol
 
+from ..repo_context import RepoContextResult
 from .compression import (
     build_compression_prompt,
     build_compression_repair_prompt,
@@ -97,6 +98,17 @@ class WorkflowSearchClient(Protocol):
         ...
 
 
+class WorkflowRepoContextClient(Protocol):
+    async def explore_repository(
+        self,
+        *,
+        query: str,
+        repo_name: str,
+        max_turns: int | None = None,
+    ) -> RepoContextResult:
+        ...
+
+
 @dataclass(slots=True)
 class WorkflowStepExecution:
     output: dict[str, Any]
@@ -109,9 +121,11 @@ class WorkflowStepExecutor:
         self,
         llm_client: WorkflowLLMClient,
         search_client: WorkflowSearchClient | None = None,
+        repo_context_client: WorkflowRepoContextClient | None = None,
     ):
         self.llm_client = llm_client
         self.search_client = search_client
+        self.repo_context_client = repo_context_client
 
     async def execute(
         self,
@@ -140,6 +154,9 @@ class WorkflowStepExecutor:
 
         if step.kind == "rerank":
             return await self._execute_rerank_step(run, spec, step, step_input, prompt)
+
+        if step.kind == "repo_context":
+            return await self._execute_repo_context_step(step, step_input, prompt)
 
         endpoint = _step_endpoint(run, step)
         if not endpoint:
@@ -345,6 +362,30 @@ class WorkflowStepExecutor:
             output={"text": text, "json": result, "metadata": {"kind": "rerank"}},
             artifact_text=text,
         )
+
+    async def _execute_repo_context_step(
+        self,
+        step: WorkflowStepSpec,
+        step_input: dict[str, Any],
+        prompt: str,
+    ) -> WorkflowStepExecution:
+        if self.repo_context_client is None:
+            raise ValueError("repo-context workflow client is required")
+        query = prompt.strip()
+        if not query:
+            raise ValueError("repo-context query is required")
+        repo_name = render_template(step.repo_context_repo or "", step_input).strip()
+        result = await self.repo_context_client.explore_repository(
+            query=query,
+            repo_name=repo_name,
+            max_turns=step.repo_context_max_turns,
+        )
+        output = {
+            "text": result.text,
+            "json": result.json,
+            "metadata": result.metadata,
+        }
+        return WorkflowStepExecution(output=output, artifact_text=result.text)
 
     async def _run_rerank(
         self,

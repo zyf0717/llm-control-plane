@@ -444,6 +444,13 @@ app_ui = ui.page_fluid(
                             button_class="dashboard-square-button",
                         ),
                         ui.input_select(
+                            "repoContextRepo",
+                            "Repo Context Repository",
+                            choices={"": "None"},
+                            selected="",
+                            width="100%",
+                        ),
+                        ui.input_select(
                             "searchProvider",
                             "Search Provider",
                             choices=[],
@@ -528,6 +535,13 @@ app_ui = ui.page_fluid(
                         "workflowRetrievalEndpoint",
                         "Retrieval Endpoint",
                         choices={},
+                        width="100%",
+                    ),
+                    ui.input_select(
+                        "workflowRepoContextRepo",
+                        "Repo Context Repository",
+                        choices={"": "None"},
+                        selected="",
                         width="100%",
                     ),
                     ui.input_select(

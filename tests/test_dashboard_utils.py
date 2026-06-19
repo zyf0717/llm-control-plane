@@ -181,6 +181,30 @@ def test_fetch_available_search_providers_returns_none_when_search_disabled(
 
 
 @pytest.mark.asyncio
+async def test_fetch_available_repo_context_repositories_posts_choices(monkeypatch):
+    monkeypatch.setattr(utils, "PROXY_BASE_URL", "http://proxy.local")
+
+    response = Mock()
+    response.raise_for_status = Mock()
+    response.json.return_value = {"repositories": ["repo-a", "repo-b"]}
+
+    with patch("httpx.AsyncClient") as mock_client_class:
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        mock_client.get.return_value = response
+
+        choices, selected = await utils.fetch_available_repo_context_repositories()
+
+    assert choices == {
+        utils.NONE_REPO_CONTEXT_REPO_VALUE: utils.NONE_REPO_CONTEXT_REPO_LABEL,
+        "repo-a": "repo-a",
+        "repo-b": "repo-b",
+    }
+    assert selected == utils.NONE_REPO_CONTEXT_REPO_VALUE
+    mock_client.get.assert_awaited_once_with("http://proxy.local/repo-context/repos")
+
+
+@pytest.mark.asyncio
 async def test_fetch_search_results_posts_to_proxy(monkeypatch):
     monkeypatch.setattr(utils, "PROXY_BASE_URL", "http://proxy.local")
     monkeypatch.setattr(utils, "load_query_refiner_max_source_chars", lambda: 12000)

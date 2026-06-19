@@ -13,6 +13,7 @@ from . import proxy_services as services
 from .thread_state_refresh import maybe_refresh_thread_state
 from .llm_router import get_router
 from .request_processor import RequestProcessor
+from .repo_context_routes import router as repo_context_router
 from .search_routes import router as search_router
 from .upstream_proxy import proxy_request
 from .utils import HeaderManager
@@ -39,6 +40,7 @@ def create_app(*, orchestration_subsystems=None) -> FastAPI:
     for subsystem in subsystems:
         created.include_router(subsystem.router())
     created.include_router(search_router)
+    created.include_router(repo_context_router)
     return created
 
 
@@ -57,6 +59,7 @@ app = FastAPI(lifespan=lifespan)
 for _subsystem in services.get_orchestration_subsystems():
     app.include_router(_subsystem.router())
 app.include_router(search_router)
+app.include_router(repo_context_router)
 
 
 @app.post("/")

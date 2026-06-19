@@ -276,6 +276,10 @@ Create-run body:
 
 See [Workflow Guide](workflows.md) for YAML schema, step semantics, dashboard integration, and the current contextual-search pattern.
 
+## Repo-Context
+
+`GET /repo-context/repos` lists immediate child directory names under the configured `repo_context.repos_root`. The route does not recurse and does not validate Git metadata; workflow execution still resolves the selected name under `repos_root` before invoking the CLI.
+
 ## Graph Runs
 
 LangGraph-native graphs are available when `langgraph.json` defines graph refs.

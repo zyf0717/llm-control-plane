@@ -38,6 +38,7 @@ from src.dashboard.workflow_server_helpers import (
     build_workflow_params_template,
     format_workflow_intermediate_content,
     format_workflow_thread_briefing,
+    merge_repo_context_repo_name,
     merge_uploaded_source_text,
     workflow_chat_response_text,
 )
@@ -189,6 +190,74 @@ def test_build_workflow_chat_params_maps_goal_and_question_schemas():
         },
         latest_user_prompt="research this",
     ) == {"question": "research this"}
+
+
+def test_build_workflow_chat_params_maps_query_and_repo_name_schema():
+    params = build_workflow_chat_params(
+        {
+            "params_schema": {
+                "properties": {
+                    "query": {"type": "string"},
+                    "repo_name": {"type": "string"},
+                }
+            }
+        },
+        latest_user_prompt="Find workflow code",
+        repo_name="llm-control-plane",
+    )
+
+    assert params == {
+        "query": "Find workflow code",
+        "repo_name": "llm-control-plane",
+    }
+
+
+def test_build_workflow_chat_run_payload_maps_repo_context_dispatch():
+    payload = build_workflow_chat_run_payload(
+        {
+            "params_schema": {
+                "required": ["query", "repo_name"],
+                "properties": {
+                    "query": {"type": "string"},
+                    "repo_name": {"type": "string"},
+                },
+            }
+        },
+        latest_user_prompt="Find workflow code",
+        repo_name="llm-control-plane",
+        endpoint="node-a",
+    )
+
+    assert payload["params"] == {
+        "query": "Find workflow code",
+        "repo_name": "llm-control-plane",
+    }
+
+
+def test_merge_repo_context_repo_name_injects_only_when_missing_or_blank():
+    spec = {
+        "params_schema": {
+            "properties": {
+                "query": {"type": "string"},
+                "repo_name": {"type": "string"},
+            }
+        }
+    }
+
+    assert merge_repo_context_repo_name({"query": "q"}, spec, "repo-a") == {
+        "query": "q",
+        "repo_name": "repo-a",
+    }
+    assert merge_repo_context_repo_name(
+        {"query": "q", "repo_name": "repo-b"},
+        spec,
+        "repo-a",
+    )["repo_name"] == "repo-b"
+    assert merge_repo_context_repo_name(
+        {"query": "q", "repo_name": " "},
+        spec,
+        "repo-a",
+    )["repo_name"] == "repo-a"
 
 
 def test_build_workflow_chat_params_omits_unknown_required_param():

@@ -10,6 +10,7 @@ from .registry import WorkflowRegistry
 from .search_results import reranking_path
 from .step_executor import (
     WorkflowLLMClient,
+    WorkflowRepoContextClient,
     WorkflowSearchClient,
     WorkflowStepExecution,
     WorkflowStepExecutor,
@@ -27,12 +28,18 @@ class WorkflowExecutor:
         store: SQLiteWorkflowStore,
         llm_client: WorkflowLLMClient,
         search_client: WorkflowSearchClient | None = None,
+        repo_context_client: WorkflowRepoContextClient | None = None,
     ):
         self.registry = registry
         self.store = store
         self.llm_client = llm_client
         self.search_client = search_client
-        self.step_executor = WorkflowStepExecutor(llm_client, search_client)
+        self.repo_context_client = repo_context_client
+        self.step_executor = WorkflowStepExecutor(
+            llm_client,
+            search_client,
+            repo_context_client,
+        )
 
     async def create_run(
         self,
