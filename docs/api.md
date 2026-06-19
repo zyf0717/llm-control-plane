@@ -86,7 +86,7 @@ POST /conversations/retrieve
 ```bash
 curl -X POST http://localhost:12340/conversations/retrieve \
   -H "Content-Type: application/json" \
-  -d '{"convo_id": "session-abc123"}'
+  -d '{"conversation_id": "session-abc123"}'
 ```
 
 ## Reasoning Control
@@ -265,9 +265,9 @@ Create-run body:
 {
   "params": {"latest_user_prompt": "what changed?"},
   "endpoint": "primary",
-  "convo_id": "optional-session",
+  "conversation_id": "optional-session",
   "reasoning_effort": "high",
-  "rag_endpoint": "http://localhost:8100/api/retrieve/context",
+  "retrieval_endpoint": "http://localhost:8100/api/retrieve/context",
   "search_provider": "duckduckgo_html"
 }
 ```
@@ -276,4 +276,35 @@ Create-run body:
 
 See [Workflow Guide](workflows.md) for YAML schema, step semantics, dashboard integration, and the current contextual-search pattern.
 
-TL;DR: the proxy API is OpenAI-compatible plus control headers for smart routing, conversation history, reasoning, RAG retrieval, and an optional lightweight search-discovery endpoint.
+## Graph Runs
+
+LangGraph-native graphs are available when `langgraph.json` defines graph refs.
+
+Core endpoints:
+
+- `GET /graphs`
+- `GET /graphs/{graph_id}`
+- `POST /graphs/{graph_id}/runs`
+- `GET /graph-runs?limit=50`
+- `GET /graph-runs/{run_id}`
+- `POST /graph-runs/{run_id}/run`
+- `POST /graph-runs/{run_id}/stream`
+- `POST /graph-runs/{run_id}/resume`
+
+Create-run body:
+
+```json
+{
+  "input": {"question": "what changed?"},
+  "config": {
+    "configurable": {
+      "thread_id": "optional-thread",
+      "endpoint": "primary"
+    }
+  }
+}
+```
+
+See [Graph Guide](graphs.md) for LangGraph configuration, metadata, and workflow separation.
+
+TL;DR: the proxy API is OpenAI-compatible plus control headers for smart routing, conversation history, reasoning, RAG retrieval, search discovery, YAML workflows, and LangGraph graphs.

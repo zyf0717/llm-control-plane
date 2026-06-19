@@ -7,12 +7,15 @@
 | Proxy app | `src/orchestrator/proxy.py` | FastAPI app composition, public routes, model discovery, router inclusion |
 | Request processing | `src/orchestrator/request_processor.py` | Conversation history/state, reasoning injection, RAG injection, slot affinity |
 | Upstream proxying | `src/orchestrator/upstream_proxy.py` | Streaming/non-streaming upstream calls, response normalization, trace/history finalization |
-| Runtime services | `src/orchestrator/proxy_services.py` | Configured endpoints, search service, history/workflow stores, startup/shutdown state |
+| Runtime services | `src/orchestrator/proxy_services.py` | Configured endpoints, search service, history store, orchestration subsystem startup/shutdown |
+| Orchestration boundary | `src/orchestrator/orchestration/` | Subsystem lifecycle and router interface |
+| Runtime adapters | `src/orchestrator/runtime/` | Proxy-backed LLM/search adapters shared by orchestration subsystems |
 | Search API | `src/orchestrator/search_routes.py` | `/search/web` request parsing and response wrapping |
 | Search core | `src/search/` | Provider selection, query refinement, result normalization, dedupe, optional reranking |
 | Workflow API | `src/orchestrator/workflow/api.py` | Workflow catalog and run lifecycle routes |
 | Workflow executor | `src/orchestrator/workflow/` | YAML workflow model validation, DAG execution, output contracts |
-| Workflow proxy clients | `src/orchestrator/workflow_clients.py` | Workflow LLM/search adapters backed by the proxy runtime |
+| Graph API | `src/orchestrator/graph/api.py` | LangGraph catalog and run lifecycle routes |
+| Graph runtime | `src/orchestrator/graph/` | LangGraph registry, run store, executor, and subsystem wrapper |
 | LLM Router | `src/orchestrator/llm_router.py` | Workload classification and smart endpoint selection |
 | Dashboard | `src/dashboard/` | Shiny UI for chat, endpoint selection, RAG selection, and runtime inspection |
 | Entry point | `llm_control_plane.py` | Runs proxy and dashboard together |
@@ -28,7 +31,7 @@ flowchart TD
     D -->|GET health_url| RH[RAG health endpoints]
     D -->|POST /smart or /{endpoint}<br/>X-Convo-ID<br/>X-Reasoning-Effort<br/>X-Allow-*-Switch<br/>X-RAG-Endpoint| P
     D -->|POST /search/web| P
-    D -->|Workflow API| P
+    D -->|Workflow API / Graph API| P
 
     P -->|GET /v1/models| M[Configured LLM endpoints]
     M -->|Model metadata| P
@@ -41,8 +44,10 @@ flowchart TD
     P -->|Search route| S[Search service]
     S -->|Provider queries| SP[Search providers]
     S -->|Optional explicit rerank| RK[Reranker]
-    P -->|Workflow routes| W[Workflow executor]
+    P -->|Workflow routes| W[Workflow subsystem]
     W -->|LLM/search/rerank steps| P
+    P -->|Graph routes| G[Graph subsystem]
+    G -->|LangGraph nodes| P
 
     P -->|Forward final messages| LLM[Upstream LLM endpoint]
     LLM -->|SSE or JSON response| P
@@ -77,6 +82,12 @@ Workflows are validated YAML DAGs loaded from `workflow_configs/`. Runs are pers
 
 Workflow LLM calls use the same upstream proxy machinery as direct chat requests. Workflow search/rerank calls use proxy-backed clients, so provider config, query-refiner config, reranker config, and result metadata stay centralized.
 
+## Graph Model
+
+Graphs are LangGraph-native orchestration units loaded from `langgraph.json` with optional metadata in `graph_configs/`. They have separate `/graphs` and `/graph-runs` APIs, separate graph run tables, and a separate dashboard tab.
+
+Graphs and workflows share neutral runtime adapters for LLM/search/rerank/retrieval access, but they do not share executor, registry, persistence schema, request schema, or dashboard feature code. Either subsystem can be disabled under `orchestration` without changing the other subsystem.
+
 ## Smart Routing Logic
 
 Smart routing remains stateless without `X-Convo-ID`. With `X-Convo-ID`, the proxy treats the conversation id as canonical state: the first smart decision pins the route server-side, later `/smart` calls reuse the pin, and removed configured endpoints are reported as stale before rerouting. The dashboard does not keep a parallel smart-routing pin; direct dashboard endpoint selections opt in to proxy-managed route switching.
@@ -95,7 +106,7 @@ Classification uses:
 
 ## Slot Affinity
 
-Endpoint config may set `slot_affinity: true` for llama.cpp servers. The proxy probes `/slots?fail_on_no_slot=1`, stores `convo_id -> endpoint -> slot_id`, and forwards `id_slot` plus `cache_prompt: true` when a slot is available. This is opportunistic only: non-llama upstreams, disabled slot endpoints, probe errors, and ignored slot fields do not fail the chat request.
+Endpoint config may set `slot_affinity: true` for llama.cpp servers. The proxy probes `/slots?fail_on_no_slot=1`, stores `conversation_id -> endpoint -> slot_id`, and forwards `id_slot` plus `cache_prompt: true` when a slot is available. This is opportunistic only: non-llama upstreams, disabled slot endpoints, probe errors, and ignored slot fields do not fail the chat request.
 
 ## Reasoning Channel Extraction
 
@@ -121,4 +132,4 @@ That preserves:
 
 The RAG service owns retrieval, ranking, thresholding, and prompt assembly. The proxy reports endpoint, hit count, injection status, backend mode, truncation, and skip reason headers when available.
 
-TL;DR: the proxy is the integration point; the dashboard selects endpoints and shows metadata, but the proxy owns history, routing, reasoning, RAG injection, search, and workflow execution.
+TL;DR: the proxy is the integration point; the dashboard selects endpoints and shows metadata, but the proxy owns history, routing, reasoning, RAG injection, search, and orchestration subsystem wiring.

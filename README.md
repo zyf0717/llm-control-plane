@@ -14,6 +14,7 @@ The repo is intentionally pragmatic rather than framework-heavy: it keeps routin
 - [Dashboard Guide](docs/dashboard.md)
 - [Search Guide](docs/search.md)
 - [Workflow Guide](docs/workflows.md)
+- [Graph Guide](docs/graphs.md)
 
 ## Quick Start
 
@@ -32,10 +33,12 @@ python llm_control_plane.py
 
 | Path | Purpose |
 |---|---|
-| `src/orchestrator/` | FastAPI app composition, request processing, upstream proxying, smart routing, workflow APIs |
-| `src/dashboard/` | Shiny UI plus extracted search/workflow/trace server helpers |
+| `src/orchestrator/` | FastAPI app composition, request processing, upstream proxying, smart routing, workflow and graph APIs |
+| `src/dashboard/` | Shiny UI plus extracted search/workflow/graph/trace server helpers |
 | `src/search/` | Provider routing, query refinement, and optional explicit reranking |
 | `workflow_configs/` | Context-driven workflow definitions |
+| `graph_configs/` | Optional LangGraph graph metadata |
+| `langgraph.json` | LangGraph graph refs loaded by the graph subsystem |
 | `config.yaml` | Local endpoint, routing, RAG, and search configuration |
 | `config.example.yaml` | Checked-in configuration template |
 | `.env.example` | Checked-in environment variable template |

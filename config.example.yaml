@@ -16,6 +16,12 @@ endpoints:
 dashboard:
   display_timezone: "Asia/Singapore"
 
+orchestration:
+  workflows:
+    enabled: true
+  graphs:
+    enabled: true
+
 retrieval:
   default_endpoint: "http://localhost:8100/api/retrieve/context"
   endpoints:

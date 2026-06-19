@@ -581,6 +581,66 @@ app_ui = ui.page_fluid(
             value="workflows",
         ),
         ui.nav_panel(
+            "Graphs",
+            ui.layout_columns(
+                ui.div(
+                    input_action_row(
+                        ui.input_select(
+                            "graphSelector",
+                            "Graph",
+                            choices={},
+                            width="100%",
+                        ),
+                        "refreshGraphs",
+                        "Refresh",
+                        col_widths=[8, 4],
+                    ),
+                    ui.output_ui("graphSpecDetails"),
+                    ui.input_text_area(
+                        "graphInput",
+                        "Input JSON",
+                        value="{}",
+                        rows=8,
+                        width="100%",
+                    ),
+                    ui.input_text_area(
+                        "graphConfig",
+                        "Config JSON",
+                        value='{\n  "configurable": {}\n}',
+                        rows=6,
+                        width="100%",
+                    ),
+                    ui.input_action_button(
+                        "createGraphRun",
+                        "Create run",
+                        class_="dashboard-full-width-action",
+                    ),
+                    ui.output_text("graphStatusMessage"),
+                ),
+                ui.div(
+                    input_action_row(
+                        ui.input_select(
+                            "graphRunSelector",
+                            "Run",
+                            choices={},
+                            width="100%",
+                        ),
+                        "refreshGraphRuns",
+                        "Refresh",
+                        col_widths=[8, 4],
+                    ),
+                    ui.layout_columns(
+                        ui.input_action_button("runGraphToCompletion", "Run"),
+                        ui.input_action_button("streamGraphRun", "Stream"),
+                        col_widths=[3, 3],
+                    ),
+                    ui.output_ui("graphRunDetails"),
+                ),
+                col_widths=[3, 9],
+            ),
+            value="graphs",
+        ),
+        ui.nav_panel(
             "Conversation History",
             input_action_row(
                 ui.input_select(

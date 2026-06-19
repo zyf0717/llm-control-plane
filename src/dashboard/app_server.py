@@ -52,6 +52,22 @@ from .utils import (
     find_model_by_endpoint,
     read_trace_events,
 )
+from .graph_client import (
+    create_graph_run,
+    fetch_graph,
+    fetch_graph_run,
+    fetch_graph_runs,
+    fetch_graphs,
+    run_graph_to_completion,
+    stream_graph_run_events,
+)
+from .graph_formatters import (
+    format_graph_choices,
+    format_graph_run_choices,
+    format_graph_run_details,
+    format_graph_spec,
+    graph_input_template,
+)
 from .workflow_server_helpers import (
     WORKFLOW_RUN_MAX_STEPS,
     advance_workflow_to_terminal,
@@ -402,6 +418,13 @@ def server(input, output, session):
     selected_workflow_run_id = reactive.Value("")
     workflow_run_snapshot = reactive.Value(None)
     workflow_status_message = reactive.Value("")
+    graph_specs = reactive.Value([])
+    graph_spec = reactive.Value(None)
+    graph_runs = reactive.Value([])
+    selected_graph_id = reactive.Value("")
+    selected_graph_run_id = reactive.Value("")
+    graph_run_snapshot = reactive.Value(None)
+    graph_status_message = reactive.Value("")
 
     def current_active_conversation_id() -> str:
         return str(input.conversationID() or "").strip()
@@ -730,6 +753,57 @@ def server(input, output, session):
             except Exception as exc:
                 workflow_status_message.set(f"Failed to load workflow run: {exc}")
 
+    async def update_graph_selector() -> None:
+        with reactive.isolate():
+            current_selection = str(selected_graph_id.get() or "").strip()
+        graphs = await fetch_graphs()
+        graph_specs.set(graphs)
+        choices = format_graph_choices(graphs)
+        selected = current_selection if current_selection in choices else None
+        if selected is None and choices:
+            selected = next(iter(choices))
+        ui.update_select(
+            "graphSelector",
+            choices=choices,
+            selected=selected,
+            session=session,
+        )
+        if selected:
+            selected_graph_id.set(selected)
+            try:
+                spec = await fetch_graph(selected)
+                graph_spec.set(spec)
+                ui.update_text_area(
+                    "graphInput",
+                    value=graph_input_template(spec),
+                    session=session,
+                )
+                graph_status_message.set("")
+            except Exception as exc:
+                graph_status_message.set(f"Failed to load graph: {exc}")
+
+    async def update_graph_run_selector() -> None:
+        with reactive.isolate():
+            current_selection = str(selected_graph_run_id.get() or "").strip()
+        runs = await fetch_graph_runs()
+        graph_runs.set(runs)
+        choices = format_graph_run_choices(runs)
+        selected = current_selection if current_selection in choices else None
+        if selected is None and choices:
+            selected = next(iter(choices))
+        ui.update_select(
+            "graphRunSelector",
+            choices=choices,
+            selected=selected,
+            session=session,
+        )
+        if selected:
+            selected_graph_run_id.set(selected)
+            try:
+                graph_run_snapshot.set(await fetch_graph_run(selected))
+            except Exception as exc:
+                graph_status_message.set(f"Failed to load graph run: {exc}")
+
     shinyswatch.theme_picker_server()
 
     @reactive.Effect
@@ -740,6 +814,8 @@ def server(input, output, session):
         await update_history_selector()
         await update_workflow_selector()
         await update_workflow_run_selector()
+        await update_graph_selector()
+        await update_graph_run_selector()
 
     @reactive.Effect
     def _initialize_conversation_id():
@@ -765,6 +841,16 @@ def server(input, output, session):
     @reactive.event(input.refreshWorkflowRuns)
     async def _refresh_workflow_runs():
         await update_workflow_run_selector()
+
+    @reactive.Effect
+    @reactive.event(input.refreshGraphs)
+    async def _refresh_graphs():
+        await update_graph_selector()
+
+    @reactive.Effect
+    @reactive.event(input.refreshGraphRuns)
+    async def _refresh_graph_runs():
+        await update_graph_run_selector()
 
     @reactive.Effect
     @reactive.event(input.workflowSelector)
@@ -823,6 +909,40 @@ def server(input, output, session):
             workflow_status_message.set(f"Failed to load workflow run: {exc}")
 
     @reactive.Effect
+    @reactive.event(input.graphSelector)
+    async def _sync_selected_graph():
+        graph_id = str(input.graphSelector() or "").strip()
+        selected_graph_id.set(graph_id)
+        if not graph_id:
+            graph_spec.set(None)
+            return
+        try:
+            spec = await fetch_graph(graph_id)
+            graph_spec.set(spec)
+            ui.update_text_area(
+                "graphInput",
+                value=graph_input_template(spec),
+                session=session,
+            )
+            graph_status_message.set("")
+        except Exception as exc:
+            graph_status_message.set(f"Failed to load graph: {exc}")
+
+    @reactive.Effect
+    @reactive.event(input.graphRunSelector)
+    async def _sync_selected_graph_run():
+        run_id = str(input.graphRunSelector() or "").strip()
+        selected_graph_run_id.set(run_id)
+        if not run_id:
+            graph_run_snapshot.set(None)
+            return
+        try:
+            graph_run_snapshot.set(await fetch_graph_run(run_id))
+            graph_status_message.set("")
+        except Exception as exc:
+            graph_status_message.set(f"Failed to load graph run: {exc}")
+
+    @reactive.Effect
     async def _sync_workflow_run_controls():
         snapshot = workflow_run_snapshot.get()
         in_progress = workflow_run_in_progress(snapshot)
@@ -862,10 +982,24 @@ def server(input, output, session):
             raise ValueError("workflow params must be a JSON object")
         return data
 
+    def graph_json_payload(input_id: str, *, label: str) -> dict[str, Any]:
+        raw = str(getattr(input, input_id)() or "").strip()
+        if not raw:
+            return {}
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError(f"{label} must be a JSON object")
+        return data
+
     async def refresh_selected_workflow_run(run_id: str) -> None:
         workflow_run_snapshot.set(await fetch_workflow_run(run_id))
         selected_workflow_run_id.set(run_id)
         await update_workflow_run_selector()
+
+    async def refresh_selected_graph_run(run_id: str) -> None:
+        graph_run_snapshot.set(await fetch_graph_run(run_id))
+        selected_graph_run_id.set(run_id)
+        await update_graph_run_selector()
 
     @reactive.Effect
     @reactive.event(input.createWorkflowRun)
@@ -909,6 +1043,29 @@ def server(input, output, session):
             await refresh_selected_workflow_run(run_id)
         except Exception as exc:
             workflow_status_message.set(f"Create run failed: {exc}")
+
+    @reactive.Effect
+    @reactive.event(input.createGraphRun)
+    async def _create_graph_run():
+        graph_id = str(selected_graph_id.get() or input.graphSelector() or "").strip()
+        if not graph_id:
+            graph_status_message.set("Select a graph first.")
+            return
+        try:
+            created = await create_graph_run(
+                graph_id,
+                {
+                    "input": graph_json_payload("graphInput", label="graph input"),
+                    "config": graph_json_payload("graphConfig", label="graph config"),
+                },
+            )
+            run_id = str(created.get("run_id") or "").strip()
+            if not run_id:
+                raise ValueError("graph API did not return run_id")
+            graph_status_message.set(f"Created graph run {run_id}.")
+            await refresh_selected_graph_run(run_id)
+        except Exception as exc:
+            graph_status_message.set(f"Create graph run failed: {exc}")
 
     @reactive.Effect
     @reactive.event(input.advanceWorkflowRun)
@@ -993,6 +1150,45 @@ def server(input, output, session):
             await update_workflow_run_selector()
         except Exception as exc:
             workflow_status_message.set(f"Retry failed: {exc}")
+
+    @reactive.Effect
+    @reactive.event(input.runGraphToCompletion)
+    async def _run_graph_to_completion():
+        run_id = str(selected_graph_run_id.get() or input.graphRunSelector() or "").strip()
+        if not run_id:
+            graph_status_message.set("Select a graph run first.")
+            return
+        try:
+            snapshot = await run_graph_to_completion(run_id)
+            graph_run_snapshot.set(snapshot)
+            status = str(snapshot.get("run", {}).get("status") or "unknown")
+            graph_status_message.set(f"Ran graph run {run_id}: status {status}.")
+            await update_graph_run_selector()
+        except Exception as exc:
+            graph_status_message.set(f"Run graph failed: {exc}")
+
+    @reactive.Effect
+    @reactive.event(input.streamGraphRun)
+    async def _stream_graph_run():
+        run_id = str(selected_graph_run_id.get() or input.graphRunSelector() or "").strip()
+        if not run_id:
+            graph_status_message.set("Select a graph run first.")
+            return
+        try:
+            final_snapshot = None
+            async for event in stream_graph_run_events(run_id):
+                snapshot = event.get("snapshot") if isinstance(event, dict) else None
+                if isinstance(snapshot, dict):
+                    final_snapshot = snapshot
+                    graph_run_snapshot.set(snapshot)
+            if final_snapshot is None:
+                final_snapshot = await fetch_graph_run(run_id)
+                graph_run_snapshot.set(final_snapshot)
+            status = str(final_snapshot.get("run", {}).get("status") or "unknown")
+            graph_status_message.set(f"Streamed graph run {run_id}: status {status}.")
+            await update_graph_run_selector()
+        except Exception as exc:
+            graph_status_message.set(f"Stream graph failed: {exc}")
 
     @reactive.Effect
     @reactive.event(input.endpoint)
@@ -1197,6 +1393,18 @@ def server(input, output, session):
             format_step_timeline(snapshot),
             format_artifacts(snapshot),
         )
+
+    @render.ui
+    def graphSpecDetails():
+        return format_graph_spec(graph_spec.get())
+
+    @render.ui
+    def graphRunDetails():
+        return format_graph_run_details(graph_run_snapshot.get())
+
+    @render.text
+    def graphStatusMessage():
+        return graph_status_message.get()
 
     @render.ui
     def outputRunInfo():

@@ -31,9 +31,9 @@ Create-run body:
 {
   "params": {"goal": "ship the feature"},
   "endpoint": "primary",
-  "convo_id": "optional-session",
+  "conversation_id": "optional-session",
   "reasoning_effort": "high",
-  "rag_endpoint": "http://localhost:8100/api/retrieve/context",
+  "retrieval_endpoint": "http://localhost:8100/api/retrieve/context",
   "search_provider": "duckduckgo_html"
 }
 ```
@@ -60,7 +60,7 @@ defaults:
   stream: false
   max_tokens: 1024
   search_provider: duckduckgo_html
-  rag_endpoint: http://localhost:8100/api/retrieve/context
+  retrieval_endpoint: http://localhost:8100/api/retrieve/context
 
 steps:
   - id: plan
@@ -86,7 +86,7 @@ Common fields:
 | `endpoint` | `llm`, `compress_source` | Override the run endpoint for this model-backed step |
 | `max_tokens` | `llm` | Override max output tokens |
 | `reasoning_effort` | `llm` | Override run/default reasoning effort |
-| `rag_endpoint` | `llm` | Override run/default RAG endpoint |
+| `retrieval_endpoint` | `llm` | Override run/default RAG endpoint |
 
 Search fields:
 

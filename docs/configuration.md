@@ -18,6 +18,12 @@ endpoints:
     ram: "16GB"
     url: "https://mac-mini.example.com"
 
+orchestration:
+  workflows:
+    enabled: true
+  graphs:
+    enabled: true
+
 rag:
   default_endpoint: "http://localhost:8100/api/retrieve"
   endpoints:
@@ -91,6 +97,12 @@ Optional metadata fields:
 - `soc`
 
 The metadata is surfaced through `/models` and shown in the dashboard runtime panel.
+
+## Orchestration Subsystems
+
+`orchestration.workflows.enabled` controls the YAML workflow subsystem. `orchestration.graphs.enabled` controls the LangGraph graph subsystem. Both default to enabled when omitted.
+
+Each subsystem owns its own API, store, dashboard tab, and execution model. Disabling one should not affect the other.
 
 ## RAG Configuration
 

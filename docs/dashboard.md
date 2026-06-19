@@ -46,6 +46,7 @@ Workflow dispatch can change selector defaults:
 - Single-Node `contextual_search`: enables the selector and defaults to the first configured non-`None` provider; `None` is removed when a real provider exists.
 - Single-Node non-search workflows: resets to `None` and disables the selector.
 - Workflows tab: selector remains enabled; `contextual_search` requires a real provider, while non-search workflows default to `None`.
+- Graphs tab: manages LangGraph-native graph runs separately from workflows.
 
 ## Request Behavior
 
@@ -68,7 +69,7 @@ For Single-Node/ad hoc search, the proxy may use the configured query refiner to
 
 When Single-Node workflow dispatch is enabled, the dashboard creates and runs a workflow for the submitted turn instead of sending a direct chat completion. The selected endpoint, reasoning effort, RAG endpoint, and search provider are copied into that workflow run.
 
-System prompt and reasoning are first-turn conversation controls. If either changes after a conversation has started, the dashboard automatically forks to a new `convo_id`, copies prior durable user/assistant history behind the new system prompt, prints an explicit fork notice in the chat, and sends the next turn under the forked id.
+System prompt and reasoning are first-turn conversation controls. If either changes after a conversation has started, the dashboard automatically forks to a new conversation id, copies prior durable user/assistant history behind the new system prompt, prints an explicit fork notice in the chat, and sends the next turn under the forked id.
 
 ## RAG Semantics
 

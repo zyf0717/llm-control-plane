@@ -16,30 +16,46 @@ from .request_processor import RequestProcessor
 from .search_routes import router as search_router
 from .upstream_proxy import proxy_request
 from .utils import HeaderManager
-from .workflow import create_workflow_router
+
+
+def create_app(*, orchestration_subsystems=None) -> FastAPI:
+    subsystems = (
+        list(orchestration_subsystems)
+        if orchestration_subsystems is not None
+        else services.get_orchestration_subsystems()
+    )
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        await services.startup_conversation_store()
+        await services.startup_orchestration_subsystems(subsystems)
+        try:
+            yield
+        finally:
+            await services.shutdown_orchestration_subsystems(subsystems)
+            await services.shutdown_conversation_store()
+
+    created = FastAPI(lifespan=lifespan)
+    for subsystem in subsystems:
+        created.include_router(subsystem.router())
+    created.include_router(search_router)
+    return created
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await services.startup_conversation_store()
-    await services.startup_workflow_components()
+    await services.startup_orchestration_subsystems()
     try:
         yield
     finally:
-        await services.shutdown_workflow_components()
+        await services.shutdown_orchestration_subsystems()
         await services.shutdown_conversation_store()
 
 
 app = FastAPI(lifespan=lifespan)
-
-app.include_router(
-    create_workflow_router(
-        registry_getter=services.get_workflow_registry,
-        store_getter=services.get_workflow_store,
-        executor_getter=services.get_workflow_executor,
-        conversation_store_getter=lambda: services.conversation_store,
-    )
-)
+for _subsystem in services.get_orchestration_subsystems():
+    app.include_router(_subsystem.router())
 app.include_router(search_router)
 
 
@@ -263,9 +279,9 @@ async def refresh_thread_state(conversation_id: str, request: Request):
     try:
         llm_client = services.get_workflow_executor().llm_client
     except RuntimeError:
-        from .workflow_clients import ProxyWorkflowLLMClient
+        from .runtime import ProxyRuntimeLLMClient
 
-        llm_client = ProxyWorkflowLLMClient()
+        llm_client = ProxyRuntimeLLMClient()
 
     try:
         return await maybe_refresh_thread_state(
