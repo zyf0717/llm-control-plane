@@ -10,6 +10,7 @@ from src.orchestrator.graph.executor import GraphExecutor
 from src.orchestrator.graph.registry import GraphRegistry
 from src.orchestrator.graph.store import SQLiteGraphRunStore
 from src.orchestrator.proxy import create_app
+from src.graphs import common as graph_common
 
 
 def write_fake_graph(path: Path) -> None:
@@ -173,6 +174,89 @@ def test_app_can_start_without_orchestration_subsystems():
         response = client.get("/graphs")
 
     assert response.status_code == 404
+
+
+class FakeGraphLLMClient:
+    async def complete(self, **kwargs):
+        prompt = kwargs["prompt"]
+        if "Return strict JSON only" in prompt or "corrected strict JSON" in prompt:
+            return {
+                "text": json.dumps(
+                    {
+                        "rerank_query": "ship graph support",
+                        "queries": ["ship graph support"],
+                        "reason": "test",
+                        "source_preferences": ["primary sources"],
+                    }
+                ),
+                "metadata": {"endpoint": kwargs["endpoint"]},
+            }
+        return {
+            "text": f"answer: {prompt[:20]}",
+            "metadata": {"endpoint": kwargs["endpoint"]},
+        }
+
+
+class FakeGraphSearchClient:
+    async def search(self, **kwargs):
+        return {
+            "query": kwargs["query"],
+            "provider": kwargs.get("provider") or "fake",
+            "results": [
+                {
+                    "title": "Result",
+                    "url": "https://example.com",
+                    "snippet": "Evidence",
+                }
+            ],
+            "warnings": [],
+        }
+
+    async def rerank_results(self, **kwargs):
+        return {
+            "query": kwargs["query"],
+            "provider": "fake",
+            "results": kwargs["results"][: kwargs.get("top_k") or len(kwargs["results"])],
+            "warnings": [],
+            "reranking": {"used": True, "path": "fake"},
+        }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("graph_id", "graph_input"),
+    [
+        ("research_brief", {"question": "ship graph support"}),
+        ("implementation_plan", {"goal": "ship graph support"}),
+        ("threaded_search", {"latest_user_prompt": "ship graph support"}),
+    ],
+)
+async def test_shipped_generated_graphs_execute_with_neutral_runtime_clients(
+    tmp_path,
+    monkeypatch,
+    graph_id,
+    graph_input,
+):
+    monkeypatch.setattr(graph_common, "LLM_CLIENT", FakeGraphLLMClient())
+    monkeypatch.setattr(graph_common, "SEARCH_CLIENT", FakeGraphSearchClient())
+    registry = GraphRegistry()
+    registry.load()
+    store = SQLiteGraphRunStore(tmp_path / "graphs.sqlite3")
+    await store.initialize()
+    try:
+        executor = GraphExecutor(registry, store)
+        created = await executor.create_run(
+            graph_id,
+            input=graph_input,
+            config={"configurable": {"thread_id": f"{graph_id}-thread"}},
+        )
+
+        snapshot = await executor.run(created["run_id"])
+
+        assert snapshot["run"]["status"] == "completed"
+        assert snapshot["run"]["output"]["final"].startswith("answer:")
+    finally:
+        await store.close()
 
 
 @pytest.mark.asyncio

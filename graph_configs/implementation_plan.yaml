@@ -1,0 +1,28 @@
+id: implementation_plan
+name: Implementation Plan
+description: LangGraph-native implementation planning graph derived from the shipped workflow pattern.
+input_schema:
+  type: object
+  required: [goal]
+  properties:
+    goal:
+      type: string
+    thread_state_text:
+      type: string
+    recent_conversation_messages:
+      type: string
+    thread_briefing:
+      type: string
+    thread_metadata:
+      type: object
+    manual_source_text:
+      type: string
+    uploaded_source_text:
+      type: string
+defaults:
+  configurable:
+    endpoint: smart
+    reasoning_effort: high
+ui:
+  supports_streaming: true
+  supports_interrupts: false

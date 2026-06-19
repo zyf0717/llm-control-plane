@@ -1,5 +1,9 @@
 {
   "dependencies": ["."],
-  "graphs": {},
+  "graphs": {
+    "implementation_plan": "src.graphs.implementation_plan:graph",
+    "research_brief": "src.graphs.research_brief:graph",
+    "threaded_search": "src.graphs.threaded_search:graph"
+  },
   "env": ".env"
 }
