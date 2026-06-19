@@ -111,9 +111,12 @@ Each subsystem owns its own API, store, dashboard tab, and execution model. Disa
 | Field | Meaning |
 |---|---|
 | `enabled` | Enable repo-context API and workflow execution |
-| `project_dir` | Path passed to `uv run --project` when `command` is omitted |
+| `project_dir` | Path passed to the default `uv run --project` entry point when `entry_point` is omitted |
 | `repos_root` | Directory whose immediate child directories are valid repo targets |
-| `command` | Explicit argv prefix for the CLI; shell syntax is not used |
+| `entry_point.command` | CLI executable; `explore` is appended before request options |
+| `entry_point.args` | CLI entry-point args before the `explore` subcommand |
+| `entry_point.env` | Extra environment variables merged into the repo-context subprocess |
+| `env` | Top-level subprocess environment overrides; applied after `entry_point.env` |
 | `default_max_turns` | Step default when `repo_context_max_turns` is omitted |
 | `timeout_seconds` | Subprocess timeout per repo-context step |
 | `max_concurrent` | Max concurrent repo-context subprocesses |

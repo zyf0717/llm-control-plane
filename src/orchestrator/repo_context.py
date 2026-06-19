@@ -20,22 +20,32 @@ class RepoContextConfig:
     enabled: bool = True
     project_dir: Path = DEFAULT_REPO_CONTEXT_PROJECT_DIR
     repos_root: Path = DEFAULT_REPO_CONTEXT_REPOS_ROOT
-    command: list[str] = field(default_factory=list)
+    entry_point: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
     default_max_turns: int = DEFAULT_REPO_CONTEXT_MAX_TURNS
     timeout_seconds: float = DEFAULT_REPO_CONTEXT_TIMEOUT_SECONDS
     max_concurrent: int = DEFAULT_REPO_CONTEXT_MAX_CONCURRENT
 
     def effective_command(self) -> list[str]:
-        if self.command:
-            return list(self.command)
-        return [
-            "uv",
-            "run",
-            "--project",
-            str(self.project_dir),
-            "repo-context",
+        if self.entry_point:
+            return _append_cli_subcommand(self.entry_point, "explore")
+        return _append_cli_subcommand(
+            [
+                "uv",
+                "run",
+                "--project",
+                str(self.project_dir),
+                "repo-context",
+            ],
             "explore",
-        ]
+        )
+
+
+def _append_cli_subcommand(command: list[str], subcommand: str) -> list[str]:
+    parts = list(command)
+    if parts and parts[-1] == subcommand:
+        return parts
+    return [*parts, subcommand]
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,12 +127,17 @@ class RepoContextClient:
         )
 
     async def _run_command(self, command: list[str]) -> str:
+        env = None
+        if self.config.env:
+            env = os.environ.copy()
+            env.update(self.config.env)
         async with self._semaphore:
             try:
                 process = await asyncio.create_subprocess_exec(
                     *command,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    env=env,
                 )
             except FileNotFoundError as exc:
                 raise RuntimeError(
@@ -174,12 +189,14 @@ def load_repo_context_config(config: dict[str, Any] | None) -> RepoContextConfig
     repos_root = Path(
         str(data.get("repos_root") or DEFAULT_REPO_CONTEXT_REPOS_ROOT)
     ).expanduser()
-    command = _command_list(data.get("command"))
+    entry_point, env = _entry_point_config(data.get("entry_point"))
+    env = {**env, **_env_map(data.get("env"))}
     return RepoContextConfig(
         enabled=_bool_value(data.get("enabled"), default=True),
         project_dir=project_dir,
         repos_root=repos_root,
-        command=command,
+        entry_point=entry_point,
+        env=env,
         default_max_turns=max(
             1, _int_value(data.get("default_max_turns"), DEFAULT_REPO_CONTEXT_MAX_TURNS)
         ),
@@ -285,6 +302,26 @@ def _command_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if str(item or "").strip()]
+
+
+def _entry_point_config(value: Any) -> tuple[list[str], dict[str, str]]:
+    if isinstance(value, dict):
+        command = str(value.get("command") or "").strip()
+        argv = [command, *_command_list(value.get("args"))] if command else []
+        return argv, _env_map(value.get("env"))
+    return _command_list(value), {}
+
+
+def _env_map(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    env: dict[str, str] = {}
+    for key, item in value.items():
+        name = str(key or "").strip()
+        if not name or item is None:
+            continue
+        env[name] = str(item)
+    return env
 
 
 def _bool_value(value: Any, *, default: bool) -> bool:

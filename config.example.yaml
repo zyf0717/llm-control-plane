@@ -26,13 +26,14 @@ repo_context:
   enabled: true
   project_dir: "/home/yifei/repos/repo-context"
   repos_root: "/home/yifei/repos"
-  command:
-    - "uv"
-    - "run"
-    - "--project"
-    - "/home/yifei/repos/repo-context"
-    - "repo-context"
-    - "explore"
+  entry_point:
+    command: "uv"
+    args:
+      - "run"
+      - "--project"
+      - "/home/yifei/repos/repo-context"
+      - "repo-context"
+    env: {}
   default_max_turns: 6
   timeout_seconds: 180
   max_concurrent: 2
