@@ -328,7 +328,27 @@ steps:
       Repository:
       {{ params.repo_name }}
 
-      Produce one focused repo-context exploration query.
+      Produce one repo-context CLI query for citation retrieval.
+
+      The query is passed directly to `repo-context explore --query`. It must be
+      a concrete retrieval instruction, not an analytical question.
+
+      Rules:
+      - Start with an imperative such as "Find", "In <path>, find", or "Return".
+      - Preserve exact file paths, symbols, classes, functions, config keys, and
+        string literals from the request; wrap identifiers in backticks when useful.
+      - For broad requests, translate the ask into code targets to retrieve:
+        entrypoints, handlers, routing, auth/security, config, data transforms,
+        call sites, tests, and error handling as relevant.
+      - Avoid vague analysis words in the query such as how, why, explain,
+        architecture, behavior, compare, synthesize, tradeoff, and flow.
+      - Do not include the repository name, markdown, bullets, or multiple
+        candidate queries.
+
+      Examples:
+      - User asks where validation happens -> "Find request validation logic."
+      - User names `FooService` -> "Find `FooService` definition and primary call sites."
+      - User asks about a component's architecture -> "Find the component entrypoints, routing, auth/security, config, and request-processing code."
     output_key: repo_context_plan
     output_contract:
       format: json
@@ -341,6 +361,7 @@ steps:
           query:
             type: string
             minLength: 1
+            maxLength: 320
   - id: explore
     kind: repo_context
     depends_on: [plan_repo_context_query]
@@ -348,6 +369,32 @@ steps:
     repo_context_repo: "{{ params.repo_name }}"
     repo_context_max_turns: 4
     output_key: repo_context
+    output_contract:
+      format: json
+      required: true
+      schema:
+        type: object
+        additionalProperties: true
+        required:
+          - answer
+          - citations
+          - raw_locations
+          - turns_used
+          - truncated
+          - warnings
+        properties:
+          answer:
+            type: string
+          citations:
+            type: array
+          raw_locations:
+            type: array
+          turns_used:
+            type: integer
+          truncated:
+            type: boolean
+          warnings:
+            type: array
     chat_visibility: hidden
   - id: consolidate_reply
     kind: llm
@@ -705,6 +752,10 @@ async def test_repo_context_step_completes_and_persists_artifact(tmp_path):
             "gmktec-evo-x2-utility",
             "node-a",
         ]
+        planner_prompt = llm.prompts[0]["prompt"]
+        assert "repo-context explore --query" in planner_prompt
+        assert "concrete retrieval instruction" in planner_prompt
+        assert "Find request validation logic." in planner_prompt
         final_prompt = llm.prompts[1]["prompt"]
         assert "How should we update validation?" in final_prompt
         assert "Find validation" in final_prompt

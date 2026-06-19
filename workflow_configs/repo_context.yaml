@@ -25,9 +25,27 @@ steps:
       Repository:
       {{ params.repo_name }}
 
-      Produce one focused repo-context exploration query that will retrieve the
-      repository evidence needed to answer the request. Keep it specific and
-      action-oriented.
+      Produce one repo-context CLI query for citation retrieval.
+
+      The query is passed directly to `repo-context explore --query`. It must be
+      a concrete retrieval instruction, not an analytical question.
+
+      Rules:
+      - Start with an imperative such as "Find", "In <path>, find", or "Return".
+      - Preserve exact file paths, symbols, classes, functions, config keys, and
+        string literals from the request; wrap identifiers in backticks when useful.
+      - For broad requests, translate the ask into code targets to retrieve:
+        entrypoints, handlers, routing, auth/security, config, data transforms,
+        call sites, tests, and error handling as relevant.
+      - Avoid vague analysis words in the query such as how, why, explain,
+        architecture, behavior, compare, synthesize, tradeoff, and flow.
+      - Do not include the repository name, markdown, bullets, or multiple
+        candidate queries.
+
+      Examples:
+      - User asks where validation happens -> "Find request validation logic."
+      - User names `FooService` -> "Find `FooService` definition and primary call sites."
+      - User asks about a component's architecture -> "Find the component entrypoints, routing, auth/security, config, and request-processing code."
     output_key: repo_context_plan
     output_contract:
       format: json
@@ -40,6 +58,7 @@ steps:
           query:
             type: string
             minLength: 1
+            maxLength: 320
 
   - id: explore_repository
     name: Explore repository
@@ -49,6 +68,68 @@ steps:
     repo_context_repo: "{{ params.repo_name }}"
     repo_context_max_turns: 6
     output_key: repo_context
+    output_contract:
+      format: json
+      required: true
+      schema:
+        type: object
+        additionalProperties: true
+        required:
+          - answer
+          - citations
+          - raw_locations
+          - query
+          - repo_root
+          - turns_used
+          - truncated
+          - warnings
+        properties:
+          answer:
+            type: string
+          query:
+            type: string
+          repo_root:
+            type: string
+          citations:
+            type: array
+            items:
+              type: object
+              additionalProperties: true
+              required: [path]
+              properties:
+                path:
+                  type: string
+                start_line:
+                  type: integer
+                end_line:
+                  type: integer
+                reason:
+                  type: [string, "null"]
+          raw_locations:
+            type: array
+            items:
+              type: object
+              additionalProperties: true
+              required: [path, start_line, end_line]
+              properties:
+                path:
+                  type: string
+                start_line:
+                  type: integer
+                end_line:
+                  type: integer
+                text:
+                  type: string
+                truncated:
+                  type: boolean
+          turns_used:
+            type: integer
+          truncated:
+            type: boolean
+          warnings:
+            type: array
+            items:
+              type: string
     chat_visibility: hidden
 
   - id: consolidate_reply
