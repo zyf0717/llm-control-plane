@@ -335,9 +335,17 @@ steps:
 
       Rules:
       - Start with an imperative such as "Find", "In <path>, find", or "Return".
+      - Preserve the latest user prompt's scope. Use prior thread context only
+        to resolve pronouns or omitted subject names.
       - Preserve exact file paths, symbols, classes, functions, config keys, and
         string literals from the request; wrap identifiers in backticks when useful.
-      - For broad requests, translate the ask into code targets to retrieve:
+      - Do not add unstated constraints: no inferred root directory, directory
+        depth, file extension filter, file name pattern, package, provider, or
+        technology-specific convention unless the user or thread context says it.
+      - For location/listing requests such as "where are ..." or "find files",
+        keep the query broad and minimal. Do not convert it into a glob, extension
+        list, or root-only search unless the user explicitly asked for that.
+      - For broad architecture requests, translate the ask into code targets to retrieve:
         entrypoints, handlers, routing, auth/security, config, data transforms,
         call sites, tests, and error handling as relevant.
       - Avoid vague analysis words in the query such as how, why, explain,
@@ -347,6 +355,7 @@ steps:
 
       Examples:
       - User asks where validation happens -> "Find request validation logic."
+      - User asks where Terraform files are -> "Find Terraform files."
       - User names `FooService` -> "Find `FooService` definition and primary call sites."
       - User asks about a component's architecture -> "Find the component entrypoints, routing, auth/security, config, and request-processing code."
     output_key: repo_context_plan
@@ -756,6 +765,8 @@ async def test_repo_context_step_completes_and_persists_artifact(tmp_path):
         assert "repo-context explore --query" in planner_prompt
         assert "concrete retrieval instruction" in planner_prompt
         assert "Find request validation logic." in planner_prompt
+        assert "Do not add unstated constraints" in planner_prompt
+        assert "Find Terraform files." in planner_prompt
         final_prompt = llm.prompts[1]["prompt"]
         assert "How should we update validation?" in final_prompt
         assert "Find validation" in final_prompt
