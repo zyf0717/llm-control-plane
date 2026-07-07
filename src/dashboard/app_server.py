@@ -772,6 +772,13 @@ def server(input, output, session):
             session=session,
         )
 
+    def clear_single_node_retrieval_endpoint_select() -> None:
+        ui.update_select(
+            "retrievalEndpoint",
+            selected="",
+            session=session,
+        )
+
     def update_single_node_search_provider_select(
         workflow_dispatch_id: str,
         *,
@@ -801,6 +808,18 @@ def server(input, output, session):
             selected=selected,
             session=session,
         )
+
+    def clear_single_node_search_provider_select() -> None:
+        ui.update_select(
+            "searchProvider",
+            selected="",
+            session=session,
+        )
+
+    def clear_single_node_upload() -> None:
+        next_key = file_upload_key.get() + 1
+        current_files.set({"key": next_key, "files": None})
+        file_upload_key.set(next_key)
 
     def update_workflow_search_provider_select(
         workflow_id: str,
@@ -860,18 +879,33 @@ def server(input, output, session):
             workflow_dispatch_id,
             dispatch_spec,
         )
+        if panel_state["active"]:
+            if not panel_state["search_provider_enabled"]:
+                clear_single_node_search_provider_select()
+            if panel_state["retrieval_endpoint_enabled"]:
+                clear_single_node_retrieval_endpoint_select()
+            if not panel_state["repo_context_repo_enabled"]:
+                ui.update_select("repoContextRepo", selected="", session=session)
+            if not panel_state["upload_enabled"]:
+                clear_single_node_upload()
         update_single_node_search_provider_select(
             workflow_dispatch_id,
             spec=dispatch_spec,
-            current_selection=current_search_provider,
+            current_selection=(
+                current_search_provider
+                if panel_state["search_provider_enabled"]
+                else ""
+            ),
         )
         await update_single_node_retrieval_endpoint_select(
             workflow_dispatch_id,
             spec=dispatch_spec,
-            current_selection=str(input.retrievalEndpoint() or ""),
+            current_selection=(
+                ""
+                if panel_state["retrieval_endpoint_enabled"]
+                else str(input.retrievalEndpoint() or "")
+            ),
         )
-        if not panel_state["repo_context_repo_enabled"]:
-            ui.update_select("repoContextRepo", selected="", session=session)
         await session.send_custom_message(
             "workflowDispatchState",
             {
@@ -1554,6 +1588,8 @@ def server(input, output, session):
     @reactive.Effect
     @reactive.event(input.retrievalEndpoint)
     async def _append_retrieval_suffix_for_selected_endpoint():
+        if str(selected_workflow_dispatch_id.get() or "").strip():
+            return
         conversation_id = current_active_conversation_id()
         if not conversation_id:
             return
