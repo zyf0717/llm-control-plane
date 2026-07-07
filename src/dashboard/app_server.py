@@ -104,6 +104,7 @@ from .workflow_formatters import (
 DEFAULT_WORKFLOW_DISPATCH_ID = ""
 WORKFLOW_DISPATCH_NONE_LABEL = "None"
 THREADED_SEARCH_WORKFLOW_ID = "threaded_search"
+THREADED_RAG_WORKFLOW_ID = "threaded_rag"
 REPO_CONTEXT_WORKFLOW_ID = "repo_context"
 ENDED_WORKFLOW_RUN_STATUSES = {"completed", "failed", "cancelled"}
 
@@ -184,8 +185,20 @@ def resolve_first_search_provider_selection(choices: Dict[str, str]) -> str:
     return ""
 
 
+def resolve_first_retrieval_endpoint_selection(choices: Dict[str, str]) -> str:
+    for endpoint in choices:
+        normalized = str(endpoint or "").strip()
+        if normalized:
+            return normalized
+    return ""
+
+
 def workflow_requires_search_provider(workflow_id: Optional[str]) -> bool:
     return str(workflow_id or "").strip() == THREADED_SEARCH_WORKFLOW_ID
+
+
+def workflow_requires_retrieval_endpoint(workflow_id: Optional[str]) -> bool:
+    return str(workflow_id or "").strip() == THREADED_RAG_WORKFLOW_ID
 
 
 def build_search_provider_choices(
@@ -198,6 +211,21 @@ def build_search_provider_choices(
             provider_id: label
             for provider_id, label in choices.items()
             if str(provider_id or "").strip()
+        }
+        return required_choices or choices
+    return choices
+
+
+def build_retrieval_endpoint_choices(
+    choices: Dict[str, str],
+    *,
+    require_endpoint: bool,
+) -> Dict[str, str]:
+    if require_endpoint:
+        required_choices = {
+            endpoint: label
+            for endpoint, label in choices.items()
+            if str(endpoint or "").strip()
         }
         return required_choices or choices
     return choices
@@ -225,6 +253,32 @@ def resolve_search_provider_selection(
         if "" in choices:
             return ""
         return next(iter(choices), "")
+
+    if current and current in choices:
+        return current
+    if default in choices:
+        return default
+    if "" in choices:
+        return ""
+    return next(iter(choices), "")
+
+
+def resolve_retrieval_endpoint_selection(
+    choices: Dict[str, str],
+    *,
+    current_selection: Optional[str] = None,
+    default_selection: str = "",
+    require_endpoint: bool = False,
+) -> str:
+    current = str(current_selection or "").strip()
+    default = str(default_selection or "")
+
+    if require_endpoint:
+        if current and current in choices:
+            return current
+        if default and default in choices:
+            return default
+        return resolve_first_retrieval_endpoint_selection(choices)
 
     if current and current in choices:
         return current
@@ -576,12 +630,26 @@ def server(input, output, session):
 
     async def update_retrieval_endpoints(current_selection: Optional[str] = None) -> None:
         retrieval_choices, default_selection = await fetch_available_retrieval_endpoints()
+        with reactive.isolate():
+            workflow_dispatch_id = str(
+                input.workflowDispatch() or selected_workflow_dispatch_id.get() or ""
+            ).strip()
+        requires_endpoint = workflow_requires_retrieval_endpoint(workflow_dispatch_id)
+        single_node_choices = build_retrieval_endpoint_choices(
+            retrieval_choices,
+            require_endpoint=requires_endpoint,
+        )
         selected = (
-            current_selection if current_selection in retrieval_choices else default_selection
+            resolve_retrieval_endpoint_selection(
+                single_node_choices,
+                current_selection=current_selection,
+                default_selection=default_selection,
+                require_endpoint=requires_endpoint,
+            )
         )
         ui.update_select(
             "retrievalEndpoint",
-            choices=retrieval_choices,
+            choices=single_node_choices,
             selected=selected,
             session=session,
         )
@@ -594,6 +662,30 @@ def server(input, output, session):
             "workflowRetrievalEndpoint",
             choices=retrieval_choices,
             selected=workflow_selected,
+            session=session,
+        )
+
+    async def update_single_node_retrieval_endpoint_select(
+        workflow_dispatch_id: str,
+        *,
+        current_selection: Optional[str] = None,
+    ) -> None:
+        retrieval_choices, default_selection = await fetch_available_retrieval_endpoints()
+        requires_endpoint = workflow_requires_retrieval_endpoint(workflow_dispatch_id)
+        choices = build_retrieval_endpoint_choices(
+            retrieval_choices,
+            require_endpoint=requires_endpoint,
+        )
+        selected = resolve_retrieval_endpoint_selection(
+            choices,
+            current_selection=current_selection,
+            default_selection=default_selection,
+            require_endpoint=requires_endpoint,
+        )
+        ui.update_select(
+            "retrievalEndpoint",
+            choices=choices,
+            selected=selected,
             session=session,
         )
 
@@ -677,12 +769,20 @@ def server(input, output, session):
             workflow_dispatch_id,
             current_selection=current_search_provider,
         )
+        await update_single_node_retrieval_endpoint_select(
+            workflow_dispatch_id,
+            current_selection=str(input.retrievalEndpoint() or ""),
+        )
         await session.send_custom_message(
             "workflowDispatchState",
             {
                 "active": bool(workflow_dispatch_id),
-                "searchProviderEnabled": workflow_dispatch_id
-                == THREADED_SEARCH_WORKFLOW_ID,
+                "retrievalEndpointEnabled": workflow_requires_retrieval_endpoint(
+                    workflow_dispatch_id
+                ),
+                "searchProviderEnabled": workflow_requires_search_provider(
+                    workflow_dispatch_id
+                ),
             },
         )
 
@@ -1740,6 +1840,14 @@ def server(input, output, session):
                     raise ValueError(
                         "workflow dispatch requires a concrete Machine Endpoint"
                     )
+                workflow_retrieval_endpoint = str(
+                    _input_value(input, "retrievalEndpoint") or ""
+                ).strip()
+                if workflow_requires_retrieval_endpoint(workflow_dispatch_id):
+                    if not workflow_retrieval_endpoint:
+                        raise ValueError(
+                            "workflow dispatch requires a Retrieval Endpoint"
+                        )
 
                 if fork_reasons:
                     workflow_history = forked_history
@@ -1766,9 +1874,14 @@ def server(input, output, session):
                     endpoint=endpoint_for_workflow,
                     reasoning_effort=current_reasoning,
                     conversation_id=conversation_id or "",
+                    retrieval_endpoint=(
+                        workflow_retrieval_endpoint
+                        if workflow_requires_retrieval_endpoint(workflow_dispatch_id)
+                        else ""
+                    ),
                     search_provider=(
                         str(_input_value(input, "searchProvider") or "").strip()
-                        if workflow_dispatch_id == THREADED_SEARCH_WORKFLOW_ID
+                        if workflow_requires_search_provider(workflow_dispatch_id)
                         else ""
                     ),
                 )

@@ -82,6 +82,7 @@ def build_workflow_chat_run_payload(
     endpoint: str,
     reasoning_effort: str = "",
     conversation_id: str = "",
+    retrieval_endpoint: str = "",
     search_provider: str = "",
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
@@ -101,6 +102,9 @@ def build_workflow_chat_run_payload(
     conversation_id = str(conversation_id or "").strip()
     if conversation_id:
         payload["conversation_id"] = conversation_id
+    retrieval = str(retrieval_endpoint or "").strip()
+    if retrieval:
+        payload["retrieval_endpoint"] = retrieval
     provider = str(search_provider or "").strip()
     if provider:
         payload["search_provider"] = provider

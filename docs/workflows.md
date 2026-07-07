@@ -6,7 +6,8 @@ Workflows are YAML-defined multi-step runs loaded from `workflow_configs/`. They
 
 | Workflow | Purpose |
 |---|---|
-| `contextual_search` | Use conversation context to plan searches, dispatch multiple queries, rerank globally, and answer the latest prompt |
+| `threaded_search` | Use thread context to plan searches, dispatch multiple queries, rerank globally, and answer the latest prompt |
+| `threaded_rag` | Use thread context to plan multiple Retrieval queries, dispatch them concurrently, then answer from merged RAG evidence |
 | `research_brief` | Build a concise brief from a question, optional manual context, uploaded files, search, and rerank |
 | `implementation_plan` | Build staged implementation guidance from a goal, optional context, search, and rerank |
 | `repo_context` | Explore one local repository through the configured repo-context CLI |
@@ -78,16 +79,17 @@ Common fields:
 |---|---|---|
 | `id` | all | Stable step id |
 | `name` | all | Display label; defaults to `id` |
-| `kind` | all | `llm`, `search`, `rerank`, `manual`, `compress_source`, or `repo_context` |
+| `kind` | all | `llm`, `search`, `retrieval`, `rerank`, `manual`, `compress_source`, or `repo_context` |
 | `depends_on` | all | Step ids that must complete first |
-| `prompt` | `llm`, `search`, `rerank` | Template rendered from params and prior outputs |
+| `prompt` | `llm`, `search`, `retrieval`, `rerank` | Template rendered from params and prior outputs |
 | `output_key` | all | Key used in `outputs`; defaults to step id |
 | `chat_visibility` | `llm` | `hidden`, `intermediate`, or `final` |
 | `chat_stream` | `llm` | Override streaming for that LLM step |
 | `endpoint` | `llm`, `compress_source` | Override the run endpoint for this model-backed step |
 | `max_tokens` | `llm` | Override max output tokens |
 | `reasoning_effort` | `llm` | Override run/default reasoning effort |
-| `retrieval_endpoint` | `llm` | Override run/default RAG endpoint |
+| `retrieval_endpoint` | `llm`, `retrieval` | Override run/default RAG endpoint |
+| `use_retrieval` | `llm`, `compress_source` | Set `false` to prevent a model-backed step from using the run/default RAG endpoint |
 
 Search fields:
 
@@ -96,6 +98,12 @@ Search fields:
 | `search_provider` | Override run/default provider |
 | `search_count` | Provider result count per dispatched query; defaults to `5` |
 | `use_query_refiner` | Whether the proxy query refiner may rewrite/fan out plain prompts |
+
+Retrieval fields:
+
+| Field | Meaning |
+|---|---|
+| `retrieval_count` | Context block limit per dispatched retrieval query; defaults to proxy retrieval config |
 
 Rerank fields:
 
@@ -147,11 +155,13 @@ JSON and YAML contracts persist both raw text and parsed JSON under the step out
 
 A `search` step renders its prompt, extracts one or more queries, and dispatches them through the workflow search client. If the rendered prompt is JSON containing a string array, each unique string becomes a query. Multiple query results are deduped and merged; the merged output includes `queries`, `per_query`, `workflow_search`, and `results`.
 
+A `retrieval` step follows the same query extraction shape as `search`: JSON arrays, `queries`, and `query` fields are accepted. It dispatches all extracted queries concurrently to the selected Retrieval endpoint, merges and dedupes returned context/evidence blocks, and persists `queries`, `per_query`, `workflow_retrieval`, `context_blocks`, `evidence_blocks`, and `grounded_user_messages`.
+
 A `rerank` step selects a dependency output containing `results`, renders its own prompt as the ranking query, renders `rerank_context`, and calls the workflow reranker. The output overwrites `output_key` when configured, so downstream LLM steps can consume reranked results through the same logical key.
 
-## Contextual Search Pattern
+## Threaded Search Pattern
 
-`contextual_search` uses three distinct query concepts:
+`threaded_search` uses three distinct query concepts:
 
 | Value | Source | Purpose |
 |---|---|---|
@@ -168,9 +178,15 @@ The workflow currently sets:
 
 This keeps search recall and reranking relevance separate: provider queries can be broad and varied, while the reranker receives one resolved information need plus context.
 
+## Threaded RAG Pattern
+
+`threaded_rag` first runs `plan_rag_prompt` with `use_retrieval: false`. That step resolves pronouns, ellipses, omitted subjects, and thread-local constraints into one self-contained `retrieval_prompt` plus one to six `retrieval_queries`. It emits multiple queries when the prompt mentions, compares, or implies multiple entities, projects, repos, products, services, dates, or evidence angles.
+
+The `retrieve_evidence` step dispatches those queries concurrently to the selected run-level Retrieval endpoint and merges the returned evidence. The final `answer_with_rag` LLM step also sets `use_retrieval: false`; it synthesizes from the merged retrieval output instead of triggering an additional single-query proxy Retrieval pass.
+
 ## Dashboard Integration
 
-The Workflows tab can create runs, advance one step, run to completion, retry ended steps, upload UTF-8 context files, and inspect artifacts. Single-Node Workflow Dispatch can dispatch a chat turn into a selected workflow; `contextual_search` requires a concrete search provider, while non-search workflows default the Single-Node provider selector back to `None`.
+The Workflows tab can create runs, advance one step, run to completion, retry ended steps, upload UTF-8 context files, and inspect artifacts. Single-Node Workflow Dispatch can dispatch a chat turn into a selected workflow; `threaded_search` requires a concrete search provider, `threaded_rag` requires a concrete Retrieval endpoint, and other workflows default the Single-Node provider selector back to `None`.
 
 For `repo_context`, the dashboard lists immediate child directories under the configured `repo_context.repos_root`. Single-Node dispatch maps the latest user turn to `query` and the selected repository to `repo_name`. The built-in workflow first plans a focused repo-context query, then runs hidden repository exploration, then returns a final repo-grounded answer. In the Workflows tab, the repository selector fills `repo_name` only when the editable params JSON leaves it missing or blank.
 

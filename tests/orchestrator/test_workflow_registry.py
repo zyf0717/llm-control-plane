@@ -68,6 +68,64 @@ def test_registry_loads_chat_visibility_fields(tmp_path):
     assert step.chat_stream is False
 
 
+def test_registry_loads_use_retrieval_on_model_backed_steps(tmp_path):
+    write_workflow(
+        tmp_path / "sample.yaml",
+        body=minimal_workflow(
+            steps="""
+  - id: first
+    kind: llm
+    prompt: hello
+    use_retrieval: false
+"""
+        ),
+    )
+
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+
+    assert registry.get("sample").steps[0].use_retrieval is False
+
+
+def test_registry_loads_retrieval_steps(tmp_path):
+    write_workflow(
+        tmp_path / "sample.yaml",
+        body=minimal_workflow(
+            steps="""
+  - id: retrieve
+    kind: retrieval
+    prompt: hello
+    retrieval_count: 4
+    output_key: retrieval
+"""
+        ),
+    )
+
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+
+    step = registry.get("sample").steps[0]
+    assert step.kind == "retrieval"
+    assert step.retrieval_count == 4
+
+
+def test_registry_rejects_use_retrieval_on_non_model_steps(tmp_path):
+    write_workflow(
+        tmp_path / "sample.yaml",
+        body=minimal_workflow(
+            steps="""
+  - id: first
+    kind: search
+    prompt: hello
+    use_retrieval: false
+"""
+        ),
+    )
+
+    with pytest.raises(ValueError, match="use_retrieval"):
+        WorkflowRegistry(tmp_path).load()
+
+
 def test_registry_loads_output_contract(tmp_path):
     write_workflow(
         tmp_path / "sample.yaml",
@@ -491,6 +549,7 @@ def test_default_workflow_config_directory_loads_shipped_specs():
 
     assert {spec.id for spec in registry.list()} == {
         "threaded_search",
+        "threaded_rag",
         "implementation_plan",
         "research_brief",
         "repo_context",

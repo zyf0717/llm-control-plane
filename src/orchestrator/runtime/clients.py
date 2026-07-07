@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any, AsyncIterator, Dict, Optional
 
+import httpx
+
 from src.search import SearchArgs, wrap_search_results
 from src.search.types import SearchResponse, SearchResult
 
@@ -245,6 +247,83 @@ class ProxyRuntimeSearchClient:
         payload = response.to_dict()
         payload["search_evidence"] = wrap_search_results(response)
         return payload
+
+
+class ProxyRuntimeRetrievalClient:
+    async def retrieve(
+        self,
+        *,
+        query: str,
+        retrieval_endpoint: str,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        from .. import proxy_services as services
+        from ..request_processor import RequestProcessor
+        from ..utils import HeaderManager
+
+        normalized_endpoint = RequestProcessor._normalize_retrieval_endpoint(
+            retrieval_endpoint
+        )
+        if not normalized_endpoint:
+            raise ValueError("retrieval endpoint is required")
+
+        request_headers = HeaderManager.create_auth_headers()
+        request_headers["Content-Type"] = "application/json"
+        request_payload = {
+            "query": str(query or "").strip(),
+            "limit": int(limit or services.RETRIEVAL_TOP_K),
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    normalized_endpoint,
+                    json=request_payload,
+                    headers=request_headers,
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except Exception as exc:
+            return {
+                "query": request_payload["query"],
+                "retrieval_endpoint": normalized_endpoint,
+                "context_blocks": [],
+                "evidence_blocks": [],
+                "grounded_user_message": "",
+                "warnings": [f"retrieval request failed: {str(exc)}"],
+                "degraded": True,
+            }
+
+        data = dict(payload) if isinstance(payload, dict) else {}
+        context_blocks = data.get("context_blocks")
+        if not isinstance(context_blocks, list):
+            context_blocks = []
+        evidence_blocks = data.get("evidence_blocks")
+        if not isinstance(evidence_blocks, list):
+            evidence_blocks = context_blocks
+        warnings = []
+        if isinstance(data.get("warnings"), list):
+            warnings = [
+                str(item)
+                for item in data.get("warnings", [])
+                if str(item).strip()
+            ]
+
+        grounded_user_message = str(data.get("grounded_user_message") or "").strip()
+        if not grounded_user_message and not context_blocks and not evidence_blocks:
+            warnings.append("retrieval returned no context")
+
+        return {
+            **data,
+            "query": request_payload["query"],
+            "retrieval_endpoint": normalized_endpoint,
+            "context_blocks": context_blocks,
+            "evidence_blocks": evidence_blocks,
+            "grounded_user_message": grounded_user_message,
+            "warnings": warnings,
+            "degraded": bool(data.get("degraded"))
+            or (not grounded_user_message and not context_blocks and not evidence_blocks),
+        }
 
 
 async def _iter_sse_data(response: Any) -> AsyncIterator[str]:

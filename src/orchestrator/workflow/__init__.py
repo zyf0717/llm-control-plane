@@ -2,6 +2,7 @@ from .api import create_workflow_router
 from .executor import (
     WorkflowExecutor,
     WorkflowLLMClient,
+    WorkflowRetrievalClient,
     WorkflowSearchClient,
     WorkflowStepExecution,
     render_template,
@@ -28,6 +29,7 @@ __all__ = [
     "WorkflowLLMClient",
     "WorkflowOutputContract",
     "WorkflowRegistry",
+    "WorkflowRetrievalClient",
     "WorkflowRun",
     "WorkflowRunStatus",
     "WorkflowSearchClient",

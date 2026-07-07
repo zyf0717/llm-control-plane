@@ -98,6 +98,17 @@ class WorkflowSearchClient(Protocol):
         ...
 
 
+class WorkflowRetrievalClient(Protocol):
+    async def retrieve(
+        self,
+        *,
+        query: str,
+        retrieval_endpoint: str,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        ...
+
+
 class WorkflowRepoContextClient(Protocol):
     async def explore_repository(
         self,
@@ -122,10 +133,12 @@ class WorkflowStepExecutor:
         llm_client: WorkflowLLMClient,
         search_client: WorkflowSearchClient | None = None,
         repo_context_client: WorkflowRepoContextClient | None = None,
+        retrieval_client: WorkflowRetrievalClient | None = None,
     ):
         self.llm_client = llm_client
         self.search_client = search_client
         self.repo_context_client = repo_context_client
+        self.retrieval_client = retrieval_client
 
     async def execute(
         self,
@@ -151,6 +164,9 @@ class WorkflowStepExecutor:
 
         if step.kind == "search":
             return await self._execute_search_step(run, spec, step, prompt)
+
+        if step.kind == "retrieval":
+            return await self._execute_retrieval_step(run, spec, step, prompt)
 
         if step.kind == "rerank":
             return await self._execute_rerank_step(run, spec, step, step_input, prompt)
@@ -212,7 +228,7 @@ class WorkflowStepExecutor:
             prompt=_prompt_with_contract(prompt, step),
             conversation_id=run.conversation_id,
             reasoning_effort=reasoning_effort,
-            retrieval_endpoint=run.retrieval_endpoint or step.retrieval_endpoint or spec.defaults.retrieval_endpoint,
+            retrieval_endpoint=_step_retrieval_endpoint(run, spec, step),
             max_tokens=step.max_tokens or spec.defaults.max_tokens,
             skip_conversation=True,
         ):
@@ -268,7 +284,7 @@ class WorkflowStepExecutor:
                     "metadata": {"kind": "search", "skipped": "no-search-client"},
                 }
             )
-        queries = extract_search_queries(prompt)
+        queries = _extract_retrieval_queries(prompt)
         provider = run.search_provider or step.search_provider or spec.defaults.search_provider
         use_query_refiner = (
             bool(step.use_query_refiner)
@@ -298,6 +314,49 @@ class WorkflowStepExecutor:
         text = json.dumps(result, indent=2)
         return WorkflowStepExecution(
             output={"text": text, "json": result, "metadata": {"kind": "search"}},
+            artifact_text=text,
+        )
+
+    async def _execute_retrieval_step(
+        self,
+        run: WorkflowRun,
+        spec: WorkflowSpec,
+        step: WorkflowStepSpec,
+        prompt: str,
+    ) -> WorkflowStepExecution:
+        if self.retrieval_client is None:
+            raise ValueError("workflow retrieval client is required")
+        retrieval_endpoint = (
+            run.retrieval_endpoint
+            or step.retrieval_endpoint
+            or spec.defaults.retrieval_endpoint
+        )
+        if not retrieval_endpoint:
+            raise ValueError("workflow retrieval endpoint is required")
+        queries = extract_search_queries(prompt)
+        if not any(query.strip() for query in queries):
+            raise ValueError(
+                "workflow retrieval step produced no query; check upstream JSON output"
+            )
+        results = await asyncio.gather(
+            *(
+                self.retrieval_client.retrieve(
+                    query=query,
+                    retrieval_endpoint=retrieval_endpoint,
+                    limit=step.retrieval_count,
+                )
+                for query in queries
+            )
+        )
+        result = _merge_retrieval_results(
+            queries,
+            results,
+            retrieval_endpoint=retrieval_endpoint,
+            limit=step.retrieval_count,
+        )
+        text = json.dumps(result, indent=2)
+        return WorkflowStepExecution(
+            output={"text": text, "json": result, "metadata": {"kind": "retrieval"}},
             artifact_text=text,
         )
 
@@ -638,7 +697,7 @@ class WorkflowStepExecutor:
             prompt=prompt,
             conversation_id=run.conversation_id,
             reasoning_effort=reasoning_effort,
-            retrieval_endpoint=run.retrieval_endpoint or step.retrieval_endpoint or spec.defaults.retrieval_endpoint,
+            retrieval_endpoint=_step_retrieval_endpoint(run, spec, step),
             max_tokens=step.max_tokens or spec.defaults.max_tokens,
             skip_conversation=True,
         )
@@ -733,7 +792,7 @@ class WorkflowStepExecutor:
             prompt=prompt,
             conversation_id=run.conversation_id,
             reasoning_effort=reasoning_effort,
-            retrieval_endpoint=run.retrieval_endpoint or step.retrieval_endpoint or spec.defaults.retrieval_endpoint,
+            retrieval_endpoint=_step_retrieval_endpoint(run, spec, step),
             max_tokens=step.max_tokens or spec.defaults.max_tokens,
             skip_conversation=True,
         )
@@ -760,7 +819,7 @@ class WorkflowStepExecutor:
             prompt=_prompt_with_contract(prompt, step),
             conversation_id=run.conversation_id,
             reasoning_effort=reasoning_effort,
-            retrieval_endpoint=run.retrieval_endpoint or step.retrieval_endpoint or spec.defaults.retrieval_endpoint,
+            retrieval_endpoint=_step_retrieval_endpoint(run, spec, step),
             max_tokens=step.max_tokens or spec.defaults.max_tokens,
             skip_conversation=True,
         )
@@ -827,9 +886,7 @@ class WorkflowStepExecutor:
                 prompt=retry_prompt,
                 conversation_id=run.conversation_id,
                 reasoning_effort=reasoning_effort,
-                retrieval_endpoint=(
-                    run.retrieval_endpoint or step.retrieval_endpoint or spec.defaults.retrieval_endpoint
-                ),
+                retrieval_endpoint=_step_retrieval_endpoint(run, spec, step),
                 max_tokens=step.max_tokens or spec.defaults.max_tokens,
                 skip_conversation=True,
             )
@@ -859,6 +916,135 @@ class WorkflowStepExecutor:
 
 def _step_endpoint(run: WorkflowRun, step: WorkflowStepSpec) -> str:
     return str(step.endpoint or run.endpoint or "").strip()
+
+
+def _step_retrieval_endpoint(
+    run: WorkflowRun,
+    spec: WorkflowSpec,
+    step: WorkflowStepSpec,
+) -> str | None:
+    if step.use_retrieval is False:
+        return None
+    return (
+        run.retrieval_endpoint
+        or step.retrieval_endpoint
+        or spec.defaults.retrieval_endpoint
+    )
+
+
+def _merge_retrieval_results(
+    queries: list[str],
+    results: list[dict[str, Any]],
+    *,
+    retrieval_endpoint: str,
+    limit: int | None,
+) -> dict[str, Any]:
+    context_blocks: list[dict[str, Any]] = []
+    evidence_blocks: list[dict[str, Any]] = []
+    grounded_messages: list[str] = []
+    warnings: list[str] = []
+    per_query: list[dict[str, Any]] = []
+    degraded = False
+    seen_context: set[str] = set()
+    seen_evidence: set[str] = set()
+
+    for query, result in zip(queries, results):
+        response = dict(result)
+        response["query"] = str(response.get("query") or query)
+        per_query.append(response)
+        degraded = degraded or bool(response.get("degraded"))
+        if isinstance(response.get("warnings"), list):
+            warnings.extend(str(item) for item in response["warnings"])
+
+        grounded_message = str(response.get("grounded_user_message") or "").strip()
+        if grounded_message:
+            grounded_messages.append(grounded_message)
+
+        for block in response.get("context_blocks") or []:
+            if not isinstance(block, dict):
+                continue
+            key = _retrieval_block_key(block)
+            if key in seen_context:
+                continue
+            seen_context.add(key)
+            context_blocks.append(block)
+
+        raw_evidence_blocks = response.get("evidence_blocks") or []
+        if not raw_evidence_blocks:
+            raw_evidence_blocks = response.get("context_blocks") or []
+        for block in raw_evidence_blocks:
+            if not isinstance(block, dict):
+                continue
+            key = _retrieval_block_key(block)
+            if key in seen_evidence:
+                continue
+            seen_evidence.add(key)
+            evidence_blocks.append(block)
+
+    return {
+        "query": queries[0] if queries else "",
+        "queries": list(queries),
+        "retrieval_endpoint": retrieval_endpoint,
+        "context_blocks": context_blocks,
+        "evidence_blocks": evidence_blocks,
+        "grounded_user_messages": grounded_messages,
+        "grounded_user_message": "\n\n".join(grounded_messages),
+        "warnings": warnings,
+        "degraded": degraded
+        or any(
+            not (
+                result.get("context_blocks")
+                or result.get("evidence_blocks")
+                or result.get("grounded_user_message")
+            )
+            for result in results
+        ),
+        "per_query": per_query,
+        "workflow_retrieval": {
+            "queries": list(queries),
+            "fanout": len(queries) > 1,
+            "limit": limit,
+        },
+    }
+
+
+def _extract_retrieval_queries(prompt: str) -> list[str]:
+    stripped = str(prompt or "").strip()
+    parsed = parse_json_text(stripped)
+    if isinstance(parsed, dict) and isinstance(parsed.get("retrieval_queries"), list):
+        return _clean_query_list(parsed["retrieval_queries"]) or [stripped]
+    return extract_search_queries(stripped)
+
+
+def _clean_query_list(raw_queries: list[Any]) -> list[str]:
+    queries: list[str] = []
+    seen: set[str] = set()
+    for raw_query in raw_queries:
+        query = str(raw_query or "").strip()
+        key = " ".join(query.lower().split())
+        if not query or key in seen:
+            continue
+        seen.add(key)
+        queries.append(query)
+    return queries
+
+
+def _retrieval_block_key(block: dict[str, Any]) -> str:
+    identity_parts = [
+        str(block.get(key) or "").strip()
+        for key in ("id", "chunk_id", "document_id")
+        if str(block.get(key) or "").strip()
+    ]
+    if identity_parts:
+        return "id:" + "|".join(identity_parts)
+    source_parts = [
+        str(block.get(key) or "").strip()
+        for key in ("url", "source", "path", "title", "text", "content", "snippet")
+        if str(block.get(key) or "").strip()
+    ]
+    if source_parts:
+        return "source:" + "|".join(source_parts)
+    return json.dumps(block, sort_keys=True, default=str)
 
 
 def _prompt_with_contract(prompt: str, step: WorkflowStepSpec) -> str:

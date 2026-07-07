@@ -5,7 +5,11 @@ from typing import Callable
 from fastapi import APIRouter
 
 from ..conversation_store import ConversationStore
-from ..runtime import ProxyRuntimeLLMClient, ProxyRuntimeSearchClient
+from ..runtime import (
+    ProxyRuntimeLLMClient,
+    ProxyRuntimeRetrievalClient,
+    ProxyRuntimeSearchClient,
+)
 from .step_executor import WorkflowRepoContextClient
 from .api import create_workflow_router
 from .executor import WorkflowExecutor
@@ -46,6 +50,7 @@ class WorkflowSubsystem:
             ProxyRuntimeLLMClient(),
             ProxyRuntimeSearchClient(),
             self.repo_context_client,
+            ProxyRuntimeRetrievalClient(),
         )
 
     async def shutdown(self) -> None:

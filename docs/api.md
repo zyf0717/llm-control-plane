@@ -272,9 +272,9 @@ Create-run body:
 }
 ```
 
-`endpoint` must be a concrete configured endpoint, not `smart`. Search-capable workflows such as `contextual_search` require a concrete search provider; non-search workflows can leave it `null`.
+`endpoint` must be a concrete configured endpoint, not `smart`. Search-capable workflows such as `threaded_search` require a concrete search provider; RAG-backed workflows such as `threaded_rag` require a concrete Retrieval endpoint; other workflows can leave those selectors `null`.
 
-See [Workflow Guide](workflows.md) for YAML schema, step semantics, dashboard integration, and the current contextual-search pattern.
+See [Workflow Guide](workflows.md) for YAML schema, step semantics, dashboard integration, and the current threaded-search/threaded-RAG patterns.
 
 ## Repo-Context
 

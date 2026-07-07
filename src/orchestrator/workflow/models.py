@@ -8,6 +8,7 @@ WorkflowStepKind = Literal[
     "llm",
     "search",
     "rerank",
+    "retrieval",
     "manual",
     "compress_source",
     "repo_context",
@@ -151,9 +152,11 @@ class WorkflowStepSpec:
     endpoint: str | None = None
     reasoning_effort: str | None = None
     retrieval_endpoint: str | None = None
+    use_retrieval: bool | None = None
     search_provider: str | None = None
     search_count: int | None = None
     use_query_refiner: bool | None = None
+    retrieval_count: int | None = None
     rerank_source_text: str | None = None
     rerank_top_k: int | None = None
     max_tokens: int | None = None
@@ -182,6 +185,7 @@ class WorkflowStepSpec:
             "llm",
             "search",
             "rerank",
+            "retrieval",
             "manual",
             "compress_source",
             "repo_context",
@@ -223,6 +227,11 @@ class WorkflowStepSpec:
         if endpoint is not None and endpoint.lower() == "smart":
             raise ValueError(
                 f"workflow step {step_id} endpoint must be a concrete endpoint"
+            )
+        if "use_retrieval" in data and kind not in {"llm", "compress_source"}:
+            raise ValueError(
+                f"workflow step {step_id} use_retrieval is only supported "
+                "on model-backed steps"
             )
 
         depends_on = data.get("depends_on", [])
@@ -309,9 +318,11 @@ class WorkflowStepSpec:
             endpoint=endpoint,
             reasoning_effort=_optional_str(data.get("reasoning_effort")),
             retrieval_endpoint=_optional_str(data.get("retrieval_endpoint")),
+            use_retrieval=_optional_bool(data.get("use_retrieval")),
             search_provider=_optional_str(data.get("search_provider")),
             search_count=_optional_int(data.get("search_count")),
             use_query_refiner=_optional_bool(data.get("use_query_refiner")),
+            retrieval_count=_optional_int(data.get("retrieval_count")),
             rerank_source_text=_optional_str(data.get("rerank_source_text")),
             rerank_top_k=_optional_int(data.get("rerank_top_k")),
             max_tokens=_optional_int(data.get("max_tokens")),

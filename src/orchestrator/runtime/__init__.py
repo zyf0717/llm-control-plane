@@ -1,3 +1,11 @@
-from .clients import ProxyRuntimeLLMClient, ProxyRuntimeSearchClient
+from .clients import (
+    ProxyRuntimeLLMClient,
+    ProxyRuntimeRetrievalClient,
+    ProxyRuntimeSearchClient,
+)
 
-__all__ = ["ProxyRuntimeLLMClient", "ProxyRuntimeSearchClient"]
+__all__ = [
+    "ProxyRuntimeLLMClient",
+    "ProxyRuntimeRetrievalClient",
+    "ProxyRuntimeSearchClient",
+]

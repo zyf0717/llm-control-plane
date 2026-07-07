@@ -74,11 +74,11 @@ The proxy processes chat requests in this order:
 
 `POST /search/web` is a lightweight candidate-discovery API. Query refinement is enabled by default when configured; reranking is disabled by default and requires `use_reranker: true`. The dashboard Single-Node ad hoc path keeps this lightweight by sending `count: 5` and `use_reranker: false`.
 
-Workflow search is different: a `search` step can dispatch one or more planned queries and a later `rerank` step can rank the merged candidates. The built-in `contextual_search` workflow plans up to five provider queries, asks for up to twenty results per query, and reranks to ten final candidates.
+Workflow search is different: a `search` step can dispatch one or more planned queries and a later `rerank` step can rank the merged candidates. The built-in `threaded_search` workflow plans up to five provider queries and reranks the merged candidates. Workflow Retrieval can also run as an explicit `retrieval` step; `threaded_rag` plans one to six thread-resolved retrieval queries, dispatches them concurrently, and synthesizes from merged context without an extra single-query proxy Retrieval pass.
 
 ## Workflow Model
 
-Workflows are validated YAML DAGs loaded from `workflow_configs/`. Runs are persisted by the proxy runtime and can be advanced step-by-step, run to completion, streamed, retried, or cleared through the workflow API. Step kinds are `llm`, `search`, `rerank`, and `manual`.
+Workflows are validated YAML DAGs loaded from `workflow_configs/`. Runs are persisted by the proxy runtime and can be advanced step-by-step, run to completion, streamed, retried, or cleared through the workflow API. Step kinds are `llm`, `search`, `retrieval`, `rerank`, `manual`, `compress_source`, and `repo_context`.
 
 Workflow LLM calls use the same upstream proxy machinery as direct chat requests. Workflow search/rerank calls use proxy-backed clients, so provider config, query-refiner config, reranker config, and result metadata stay centralized.
 

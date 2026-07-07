@@ -120,6 +120,27 @@ class EmptySearchClient(CapturingSearchClient):
         raise AssertionError("reranker should not run without candidates")
 
 
+class CapturingRetrievalClient:
+    def __init__(self):
+        self.calls = []
+
+    async def retrieve(self, **kwargs):
+        self.calls.append(kwargs)
+        query = kwargs["query"]
+        return {
+            "query": query,
+            "context_blocks": [
+                {
+                    "source": f"{query}-source",
+                    "text": f"{query} context",
+                }
+            ],
+            "grounded_user_message": f"Grounded {query}",
+            "warnings": [],
+            "degraded": False,
+        }
+
+
 class FakeRepoContextClient:
     def __init__(self):
         self.calls = []
@@ -302,6 +323,57 @@ steps:
     depends_on: [plan]
     prompt: "{{ outputs.plan.json.queries }}"
     output_key: search
+""",
+        encoding="utf-8",
+    )
+
+
+def write_retrieval_queries_workflow(path: Path) -> None:
+    path.write_text(
+        """
+id: retrieval_queries_sample
+name: Retrieval Queries Sample
+version: 0.1.0
+params_schema:
+  type: object
+  required: [goal]
+steps:
+  - id: plan
+    kind: llm
+    use_retrieval: false
+    prompt: "{{ params.goal }}"
+    output_key: plan
+    output_contract:
+      format: json
+      required: true
+      schema:
+        type: object
+        additionalProperties: false
+        required: [retrieval_queries, retrieval_prompt]
+        properties:
+          retrieval_queries:
+            type: array
+            minItems: 1
+            items:
+              type: string
+              minLength: 1
+          retrieval_prompt:
+            type: string
+            minLength: 1
+  - id: retrieve
+    kind: retrieval
+    depends_on: [plan]
+    retrieval_count: 4
+    prompt: "{{ outputs.plan.json.retrieval_queries }}"
+    output_key: retrieval
+  - id: answer
+    kind: llm
+    use_retrieval: false
+    depends_on: [retrieve]
+    prompt: |
+      Prompt: {{ outputs.plan.json.retrieval_prompt }}
+      Context: {{ outputs.retrieval.text }}
+    output_key: answer
 """,
         encoding="utf-8",
     )
@@ -804,6 +876,122 @@ async def test_executor_uses_run_search_provider_and_retrieval_endpoint(tmp_path
 
         assert search.calls[0]["provider"] == "duckduckgo_html"
         assert llm.prompts[0]["retrieval_endpoint"] == "http://retrieval/api/retrieve/context"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_executor_can_disable_retrieval_for_one_llm_step(tmp_path):
+    (tmp_path / "retrieval_optout_sample.yaml").write_text(
+        """
+id: retrieval_optout_sample
+name: Retrieval Opt-Out Sample
+version: 0.1.0
+params_schema:
+  type: object
+  required: [goal]
+steps:
+  - id: plan
+    kind: llm
+    use_retrieval: false
+    prompt: "Plan: {{ params.goal }}"
+    output_key: plan
+  - id: answer
+    kind: llm
+    depends_on: [plan]
+    prompt: "Answer: {{ outputs.plan.text }}"
+    output_key: answer
+""",
+        encoding="utf-8",
+    )
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    llm = FakeLLMClient()
+    executor = WorkflowExecutor(registry, store, llm)
+    try:
+        created = await executor.create_run(
+            "retrieval_optout_sample",
+            params={"goal": "ship"},
+            endpoint="node-a",
+            retrieval_endpoint="http://retrieval/api/retrieve/context",
+        )
+        run_id = created["run"]["run_id"]
+
+        await executor.advance(run_id)
+        await executor.advance(run_id)
+
+        assert llm.prompts[0]["retrieval_endpoint"] is None
+        assert (
+            llm.prompts[1]["retrieval_endpoint"]
+            == "http://retrieval/api/retrieve/context"
+        )
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_retrieval_step_dispatches_planned_queries(tmp_path):
+    write_retrieval_queries_workflow(tmp_path / "retrieval_queries_sample.yaml")
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    llm = SequenceLLMClient(
+        [
+            (
+                '{"retrieval_queries": ["project alpha status", '
+                '"project beta status"], "retrieval_prompt": '
+                '"Compare project alpha and project beta."}'
+            ),
+            "final answer",
+        ]
+    )
+    retrieval = CapturingRetrievalClient()
+    executor = WorkflowExecutor(
+        registry,
+        store,
+        llm,
+        retrieval_client=retrieval,
+    )
+    try:
+        created = await executor.create_run(
+            "retrieval_queries_sample",
+            params={"goal": "compare them"},
+            endpoint="node-a",
+            retrieval_endpoint="http://retrieval/api/retrieve/context",
+        )
+        run_id = created["run"]["run_id"]
+
+        await executor.advance(run_id)
+        snapshot = await executor.advance(run_id)
+        await executor.advance(run_id)
+
+        assert retrieval.calls == [
+            {
+                "query": "project alpha status",
+                "retrieval_endpoint": "http://retrieval/api/retrieve/context",
+                "limit": 4,
+            },
+            {
+                "query": "project beta status",
+                "retrieval_endpoint": "http://retrieval/api/retrieve/context",
+                "limit": 4,
+            },
+        ]
+        retrieval_step = next(
+            step for step in snapshot["steps"] if step["step_id"] == "retrieve"
+        )
+        output = retrieval_step["output_json"]["json"]
+        assert output["workflow_retrieval"]["fanout"] is True
+        assert output["queries"] == ["project alpha status", "project beta status"]
+        assert len(output["context_blocks"]) == 2
+        assert llm.prompts[0]["retrieval_endpoint"] is None
+        assert llm.prompts[1]["retrieval_endpoint"] is None
+        assert "Compare project alpha and project beta." in llm.prompts[1]["prompt"]
+        assert "project alpha status context" in llm.prompts[1]["prompt"]
+        assert "project beta status context" in llm.prompts[1]["prompt"]
     finally:
         await store.close()
 

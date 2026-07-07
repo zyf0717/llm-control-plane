@@ -1,0 +1,136 @@
+id: threaded_rag
+name: Threaded RAG
+version: 0.1.0
+description: Use thread briefing to plan multiple Retrieval queries, dispatch them, then answer with merged RAG evidence.
+
+params_schema:
+  type: object
+  required: [latest_user_prompt]
+  properties:
+    latest_user_prompt:
+      type: string
+    thread_briefing:
+      type: string
+    thread_state_text:
+      type: string
+    recent_conversation_messages:
+      type: string
+    thread_metadata:
+      type: object
+    manual_source_text:
+      type: string
+    uploaded_source_text:
+      type: string
+
+defaults:
+  reasoning_effort: high
+  stream: false
+
+steps:
+  - id: plan_rag_prompt
+    name: Plan RAG prompt
+    kind: llm
+    endpoint: gmktec-evo-x2-utility
+    use_retrieval: false
+    chat_visibility: intermediate
+    chat_stream: false
+    prompt: |
+      Latest user prompt:
+      {{ params.latest_user_prompt }}
+
+      Prior thread context:
+      {{ params.thread_state_text }}
+
+      Recent conversation context:
+      {{ params.recent_conversation_messages }}
+
+      Additional context:
+      {{ params.thread_briefing }}
+      {{ params.manual_source_text }}
+      {{ params.uploaded_source_text }}
+
+      Infer the user's actual information need from the latest turn in the
+      full thread context. Decide exactly what should be sent to Retrieval
+      before any RAG lookup happens.
+
+      Return strict JSON only:
+      {
+        "retrieval_queries": [
+          "concise semantic retrieval query for the primary information need",
+          "concise semantic retrieval query for a distinct entity, project, or evidence angle"
+        ],
+        "retrieval_prompt": "one self-contained user prompt to answer after Retrieval fanout",
+        "reason": "why this prompt preserves the latest user intent with thread context"
+      }
+
+      RAG prompt rules:
+      - Resolve pronouns, ellipses, omitted subjects, and references from thread context.
+      - Preserve the latest user prompt's constraints and requested output shape.
+      - Prefer exact named entities, terms, file names, product names, and dates from the prompt/context.
+      - Return 1 to 6 queries in `retrieval_queries`.
+      - Use multiple queries when the latest prompt mentions, compares, or implies multiple entities, projects, repos, products, services, dates, or evidence angles.
+      - Keep each retrieval query focused on one entity/project/angle where possible.
+      - Include only context needed to make the latest request self-contained.
+      - Do not include a transcript, citations invented from memory, markdown fences, or multiple candidate prompts.
+      - Retrieval queries should describe the evidence needed; do not use search operators.
+      - `retrieval_prompt` should ask for a direct answer using retrieved context and require uncertainty when Retrieval is insufficient.
+      - Keep `retrieval_prompt` under 1200 characters.
+      - Do not include markdown, bullets, or explanatory prose outside the JSON object.
+    output_key: rag_prompt
+    output_contract:
+      format: json
+      required: true
+      schema:
+        type: object
+        additionalProperties: false
+        required: [retrieval_queries, retrieval_prompt, reason]
+        properties:
+          retrieval_queries:
+            type: array
+            minItems: 1
+            maxItems: 6
+            items:
+              type: string
+              minLength: 3
+              maxLength: 240
+          retrieval_prompt:
+            type: string
+            minLength: 3
+            maxLength: 1200
+          reason:
+            type: string
+            minLength: 1
+      on_invalid:
+        action: retry
+        max_attempts: 2
+        repair: true
+
+  - id: retrieve_evidence
+    name: Retrieve evidence
+    kind: retrieval
+    depends_on: [plan_rag_prompt]
+    retrieval_count: 3
+    prompt: |
+      {{ outputs.rag_prompt.json.retrieval_queries }}
+    output_key: retrieval_evidence
+
+  - id: answer_with_rag
+    name: Answer with RAG
+    kind: llm
+    use_retrieval: false
+    chat_visibility: final
+    depends_on: [retrieve_evidence]
+    prompt: |
+      User prompt:
+      {{ outputs.rag_prompt.json.retrieval_prompt }}
+
+      Retrieval plan:
+      {{ outputs.rag_prompt.text }}
+
+      Retrieval context:
+      {{ outputs.retrieval_evidence.text }}
+
+      Answer the user prompt directly using the retrieved context. Compare or
+      combine evidence across all retrieved entities/projects when relevant.
+      Surface material uncertainty, missing evidence, or retrieval failures.
+    output_key: reply

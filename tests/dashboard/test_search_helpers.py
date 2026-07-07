@@ -1,6 +1,7 @@
 import pytest
 
 from src.dashboard.app_server import (
+    build_retrieval_endpoint_choices,
     build_search_provider_choices,
     build_workflow_dispatch_choices,
     build_workflow_retry_step_choices,
@@ -9,10 +10,13 @@ from src.dashboard.app_server import (
     normalize_reasoning_effort,
     resolve_endpoint_display_selection,
     resolve_first_search_provider_selection,
+    resolve_retrieval_endpoint_selection,
     resolve_search_provider_selection,
     resolve_workflow_retry_step_selection,
     resolve_workflow_dispatch_selection,
     resolve_workflow_dispatch_selection_for_repo_context,
+    workflow_requires_retrieval_endpoint,
+    workflow_requires_search_provider,
     workflow_dispatch_event_updates_run_details,
     workflow_run_ended,
     workflow_run_in_progress,
@@ -318,6 +322,22 @@ def test_build_workflow_chat_run_payload_includes_workflow_search_provider():
     assert payload["search_provider"] == "duckduckgo_html"
 
 
+def test_build_workflow_chat_run_payload_includes_workflow_retrieval_endpoint():
+    payload = build_workflow_chat_run_payload(
+        {
+            "params_schema": {
+                "required": ["latest_user_prompt"],
+                "properties": {"latest_user_prompt": {"type": "string"}},
+            }
+        },
+        latest_user_prompt="latest only",
+        endpoint="node-a",
+        retrieval_endpoint="http://retrieval/api/retrieve/context",
+    )
+
+    assert payload["retrieval_endpoint"] == "http://retrieval/api/retrieve/context"
+
+
 def test_format_workflow_thread_briefing_skips_system_messages():
     rendered = format_workflow_thread_briefing(
         [
@@ -557,6 +577,72 @@ def test_resolve_first_search_provider_selection_skips_none_option():
 
 def test_resolve_first_search_provider_selection_returns_empty_without_provider():
     assert resolve_first_search_provider_selection({"": "None"}) == ""
+
+
+def test_workflow_dispatch_capability_flags_are_specific():
+    assert workflow_requires_search_provider("threaded_search")
+    assert not workflow_requires_search_provider("threaded_rag")
+    assert workflow_requires_retrieval_endpoint("threaded_rag")
+    assert not workflow_requires_retrieval_endpoint("threaded_search")
+    assert not workflow_requires_retrieval_endpoint("repo_context")
+
+
+def test_build_retrieval_endpoint_choices_removes_none_when_required():
+    choices = build_retrieval_endpoint_choices(
+        {
+            "": "None",
+            "http://retrieval-a/api/retrieve/context": "Retrieval A",
+            "http://retrieval-b/api/retrieve/context": "Retrieval B",
+        },
+        require_endpoint=True,
+    )
+
+    assert choices == {
+        "http://retrieval-a/api/retrieve/context": "Retrieval A",
+        "http://retrieval-b/api/retrieve/context": "Retrieval B",
+    }
+
+
+def test_build_retrieval_endpoint_choices_keeps_none_without_real_endpoint():
+    assert build_retrieval_endpoint_choices(
+        {"": "None"},
+        require_endpoint=True,
+    ) == {"": "None"}
+
+
+def test_resolve_retrieval_endpoint_selection_requires_first_real_endpoint():
+    choices = build_retrieval_endpoint_choices(
+        {
+            "": "None",
+            "http://retrieval-a/api/retrieve/context": "Retrieval A",
+            "http://retrieval-b/api/retrieve/context": "Retrieval B",
+        },
+        require_endpoint=True,
+    )
+
+    assert (
+        resolve_retrieval_endpoint_selection(
+            choices,
+            current_selection="",
+            default_selection="",
+            require_endpoint=True,
+        )
+        == "http://retrieval-a/api/retrieve/context"
+    )
+
+
+def test_resolve_retrieval_endpoint_selection_preserves_current_real_endpoint():
+    selected = resolve_retrieval_endpoint_selection(
+        {
+            "http://retrieval-a/api/retrieve/context": "Retrieval A",
+            "http://retrieval-b/api/retrieve/context": "Retrieval B",
+        },
+        current_selection="http://retrieval-b/api/retrieve/context",
+        default_selection="",
+        require_endpoint=True,
+    )
+
+    assert selected == "http://retrieval-b/api/retrieve/context"
 
 
 def test_build_search_provider_choices_removes_none_when_required():

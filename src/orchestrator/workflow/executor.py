@@ -11,6 +11,7 @@ from .search_results import reranking_path
 from .step_executor import (
     WorkflowLLMClient,
     WorkflowRepoContextClient,
+    WorkflowRetrievalClient,
     WorkflowSearchClient,
     WorkflowStepExecution,
     WorkflowStepExecutor,
@@ -29,16 +30,19 @@ class WorkflowExecutor:
         llm_client: WorkflowLLMClient,
         search_client: WorkflowSearchClient | None = None,
         repo_context_client: WorkflowRepoContextClient | None = None,
+        retrieval_client: WorkflowRetrievalClient | None = None,
     ):
         self.registry = registry
         self.store = store
         self.llm_client = llm_client
         self.search_client = search_client
         self.repo_context_client = repo_context_client
+        self.retrieval_client = retrieval_client
         self.step_executor = WorkflowStepExecutor(
             llm_client,
             search_client,
             repo_context_client,
+            retrieval_client,
         )
 
     async def create_run(

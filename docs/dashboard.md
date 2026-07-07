@@ -44,9 +44,10 @@ The dashboard runs on `http://localhost:12341`, binds `127.0.0.1`, and communica
 
 Workflow dispatch can change selector defaults:
 
-- Single-Node `contextual_search`: enables the selector and defaults to the first configured non-`None` provider; `None` is removed when a real provider exists.
-- Single-Node non-search workflows: resets to `None` and disables the selector.
-- Workflows tab: selector remains enabled; `contextual_search` requires a real provider, while non-search workflows default to `None`.
+- Single-Node `threaded_search`: enables the search selector and defaults to the first configured non-`None` provider; `None` is removed when a real provider exists.
+- Single-Node `threaded_rag`: keeps the RAG selector enabled and defaults to the first configured non-`None` Retrieval endpoint; `None` is removed when a real endpoint exists.
+- Single-Node non-search/non-RAG workflows: reset search to `None` and disable the search/RAG selectors.
+- Workflows tab: selectors remain enabled; `threaded_search` requires a real provider, while non-search workflows default search to `None`.
 - Graphs tab: manages LangGraph-native graph runs separately from workflows.
 
 ## Request Behavior
@@ -68,7 +69,7 @@ When a search provider is selected outside workflow dispatch, the dashboard firs
 
 For Single-Node/ad hoc search, the proxy may use the configured query refiner to turn the latest request plus compact dashboard context into provider-ready query text or fanout queries. Workflow search can either use that query refiner for plain search prompts or let workflow LLM steps inspect the larger workflow context and dispatch planned queries directly through the selected provider. Workflow reranking is surfaced as its own workflow step.
 
-When Single-Node workflow dispatch is enabled, the dashboard creates and runs a workflow for the submitted turn instead of sending a direct chat completion. The selected endpoint, reasoning effort, RAG endpoint, and search provider are copied into that workflow run.
+When Single-Node workflow dispatch is enabled, the dashboard creates and runs a workflow for the submitted turn instead of sending a direct chat completion. The selected endpoint and reasoning effort are copied into that workflow run. `threaded_search` also copies the selected search provider; `threaded_rag` also copies the selected RAG endpoint.
 
 For the built-in `repo_context` workflow, selecting a non-`None` Repo Context Repository on Single-Node automatically selects Workflow Dispatch `repo_context`; dispatch maps the submitted message to `query` and the selected repository to `repo_name`.
 
@@ -103,7 +104,7 @@ The Workflows tab exposes the proxy workflow API. It can create a run from workf
 
 The Repo Context Repository selector is populated from `GET /repo-context/repos`. If a selected workflow schema includes `repo_name`, the selector fills that param only when the editable Params JSON omits it or leaves it blank.
 
-Search and rerank behavior follows workflow YAML, not the Single-Node ad hoc search path. For the built-in `contextual_search` workflow, the planner produces up to five provider queries and a separate context-resolved rerank query; the search step requests up to twenty results per query and the rerank step caps output at ten.
+Search, retrieval, and rerank behavior follows workflow YAML, not the Single-Node ad hoc paths. For the built-in `threaded_search` workflow, the planner produces up to five provider queries and a separate context-resolved rerank query; the search step requests candidates per query and the rerank step caps output according to workflow config. For `threaded_rag`, the planner produces one to six retrieval queries, dispatches them concurrently through the selected RAG endpoint, and synthesizes from the merged retrieval context.
 
 ## Logout and Themes
 

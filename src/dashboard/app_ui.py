@@ -330,7 +330,13 @@ app_ui = ui.page_fluid(
             const searchProviderEnabled = Boolean(
                 message && message.searchProviderEnabled
             );
-            setDashboardSelectDisabled("retrievalEndpoint", active);
+            const retrievalEndpointEnabled = Boolean(
+                message && message.retrievalEndpointEnabled
+            );
+            setDashboardSelectDisabled(
+                "retrievalEndpoint",
+                active && !retrievalEndpointEnabled
+            );
             setDashboardSelectDisabled(
                 "searchProvider",
                 active && !searchProviderEnabled
