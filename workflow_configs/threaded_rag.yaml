@@ -56,8 +56,8 @@ steps:
       Return strict JSON only:
       {
         "retrieval_queries": [
-          "concise semantic retrieval query for the primary information need",
-          "concise semantic retrieval query for a distinct entity, project, or evidence angle"
+          "focused keyword/phrase probe for the primary entity and evidence need",
+          "focused keyword/phrase probe for a distinct entity, project, or evidence angle"
         ],
         "retrieval_prompt": "one self-contained user prompt to answer after Retrieval fanout",
         "reason": "why this prompt preserves the latest user intent with thread context"
@@ -66,13 +66,23 @@ steps:
       RAG prompt rules:
       - Resolve pronouns, ellipses, omitted subjects, and references from thread context.
       - Preserve the latest user prompt's constraints and requested output shape.
-      - Prefer exact named entities, terms, file names, product names, and dates from the prompt/context.
+      - Build `retrieval_queries` for vector/BM25 chunk retrieval, not web search.
+      - Prefer compact keyword/phrase probes over full natural-language questions.
+      - Use exact named entities, project/repo names, product names, symbols, file names, API names, dates, identifiers, and domain terms from the prompt/context.
+      - Include only the disambiguating action/concept words needed to retrieve relevant chunks.
+      - For metric/field/methodology questions, prefer retrieval terms such as measured parameters, outcome measures, variables, trial, validation, table, appendix, and any abbreviations present in context.
+      - Bad retrieval query: "list of physiological metrics measured in Project WOREC's human trials and thermoregulatory model"
+      - Good retrieval query: "WOREC physiological metrics human trials"
+      - Good retrieval query: "WOREC measured parameters outcome measures validation"
+      - Avoid generic verbs and filler such as explain, compare, analyze, overview, latest, best, how, why, what, tell me, information about, docs, guide, tutorial, site, official, or source.
+      - Never start retrieval queries with generic intent phrases such as list of, specific, details regarding, find out more, determine, provide, or based on.
       - Return 1 to 6 queries in `retrieval_queries`.
       - Use multiple queries when the latest prompt mentions, compares, or implies multiple entities, projects, repos, products, services, dates, or evidence angles.
       - Keep each retrieval query focused on one entity/project/angle where possible.
+      - Keep each retrieval query under 12 words unless exact identifiers require more.
       - Include only context needed to make the latest request self-contained.
       - Do not include a transcript, citations invented from memory, markdown fences, or multiple candidate prompts.
-      - Retrieval queries should describe the evidence needed; do not use search operators.
+      - Do not use web search operators, URLs, quoted search strings, boolean syntax, or source-domain preferences.
       - `retrieval_prompt` should ask for a direct answer using retrieved context and require uncertainty when Retrieval is insufficient.
       - Keep `retrieval_prompt` under 1200 characters.
       - Do not include markdown, bullets, or explanatory prose outside the JSON object.
@@ -109,7 +119,7 @@ steps:
     name: Retrieve evidence
     kind: retrieval
     depends_on: [plan_rag_prompt]
-    retrieval_count: 3
+    retrieval_count: 10
     prompt: |
       {{ outputs.rag_prompt.json.retrieval_queries }}
     output_key: retrieval_evidence

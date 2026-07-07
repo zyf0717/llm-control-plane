@@ -354,7 +354,7 @@ class WorkflowStepExecutor:
             retrieval_endpoint=retrieval_endpoint,
             limit=step.retrieval_count,
         )
-        text = json.dumps(result, indent=2)
+        text = _format_retrieval_evidence_text(result)
         return WorkflowStepExecution(
             output={"text": text, "json": result, "metadata": {"kind": "retrieval"}},
             artifact_text=text,
@@ -1006,6 +1006,116 @@ def _merge_retrieval_results(
             "limit": limit,
         },
     }
+
+
+_RETRIEVAL_EVIDENCE_MAX_BLOCKS = 24
+_RETRIEVAL_EVIDENCE_MAX_CONTENT_CHARS = 1800
+
+
+def _format_retrieval_evidence_text(result: dict[str, Any]) -> str:
+    queries = [
+        str(query).strip()
+        for query in result.get("queries") or [result.get("query")]
+        if str(query or "").strip()
+    ]
+    lines: list[str] = []
+    if queries:
+        lines.append("Retrieval queries:")
+        lines.extend(f"- {query}" for query in queries)
+
+    warnings = [
+        str(warning).strip()
+        for warning in result.get("warnings") or []
+        if str(warning or "").strip()
+    ]
+    if warnings:
+        lines.append("")
+        lines.append("Retrieval warnings:")
+        lines.extend(f"- {warning}" for warning in warnings)
+
+    blocks = [
+        block
+        for block in (
+            result.get("context_blocks") or result.get("evidence_blocks") or []
+        )
+        if isinstance(block, dict)
+    ]
+    if blocks:
+        lines.append("")
+        lines.append("Retrieved context:")
+        for index, block in enumerate(
+            blocks[:_RETRIEVAL_EVIDENCE_MAX_BLOCKS], start=1
+        ):
+            label = _retrieval_block_label(block)
+            content = _retrieval_block_content(block)
+            lines.append(f"[{index}] Source: {label}")
+            relevance = _retrieval_block_relevance(block)
+            if relevance:
+                lines.append(relevance)
+            if content:
+                lines.append(f"Excerpt: {content}")
+            lines.append("")
+        omitted = len(blocks) - _RETRIEVAL_EVIDENCE_MAX_BLOCKS
+        if omitted > 0:
+            lines.append(f"... {omitted} additional retrieved blocks omitted.")
+    else:
+        grounded_message = str(result.get("grounded_user_message") or "").strip()
+        if grounded_message:
+            lines.append("")
+            lines.append("Retrieved context:")
+            lines.append(_truncate_retrieval_content(grounded_message))
+
+    if result.get("degraded"):
+        lines.append("")
+        lines.append("Retrieval degraded: true")
+
+    return "\n".join(lines).strip()
+
+
+def _retrieval_block_label(block: dict[str, Any]) -> str:
+    for key in ("citation_label", "title", "source_uri", "chunk_id", "document_id"):
+        value = str(block.get(key) or "").strip()
+        if value:
+            return value
+    return "retrieved block"
+
+
+def _retrieval_block_content(block: dict[str, Any]) -> str:
+    for key in ("content", "text", "excerpt", "snippet"):
+        value = str(block.get(key) or "").strip()
+        if value:
+            return _truncate_retrieval_content(value)
+    return ""
+
+
+def _retrieval_block_relevance(block: dict[str, Any]) -> str:
+    parts: list[str] = []
+    legs = block.get("retrieval_legs")
+    if isinstance(legs, list):
+        value = ", ".join(str(item).strip() for item in legs if str(item).strip())
+        if value:
+            parts.append(f"retrieval={value}")
+    entities = block.get("matched_entities")
+    if isinstance(entities, list):
+        value = ", ".join(
+            str(item).strip() for item in entities if str(item).strip()
+        )
+        if value:
+            parts.append(f"entities={value}")
+    score = block.get("fusion_score")
+    if isinstance(score, (int, float)):
+        parts.append(f"score={score:.4g}")
+    return f"Metadata: {'; '.join(parts)}" if parts else ""
+
+
+def _truncate_retrieval_content(content: str) -> str:
+    normalized = " ".join(str(content or "").split())
+    if len(normalized) <= _RETRIEVAL_EVIDENCE_MAX_CONTENT_CHARS:
+        return normalized
+    return (
+        normalized[: _RETRIEVAL_EVIDENCE_MAX_CONTENT_CHARS - 14].rstrip()
+        + " ...[truncated]"
+    )
 
 
 def _extract_retrieval_queries(prompt: str) -> list[str]:
