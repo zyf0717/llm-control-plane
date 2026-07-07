@@ -333,14 +333,28 @@ app_ui = ui.page_fluid(
             const retrievalEndpointEnabled = Boolean(
                 message && message.retrievalEndpointEnabled
             );
+            const repoContextRepoEnabled = Boolean(
+                message && message.repoContextRepoEnabled
+            );
+            const uploadEnabled = Boolean(message && message.uploadEnabled);
             setDashboardSelectDisabled(
                 "retrievalEndpoint",
                 active && !retrievalEndpointEnabled
+            );
+            setDashboardControlDisabled(
+                "refreshRetrievalEndpoints",
+                active && !retrievalEndpointEnabled
+            );
+            setDashboardSelectDisabled(
+                "repoContextRepo",
+                active && !repoContextRepoEnabled
             );
             setDashboardSelectDisabled(
                 "searchProvider",
                 active && !searchProviderEnabled
             );
+            setDashboardControlDisabled("uploadFile", active && !uploadEnabled);
+            setDashboardControlDisabled("clearUpload", active && !uploadEnabled);
         });
 
         Shiny.addCustomMessageHandler("workflowRunControlState", function(message) {

@@ -201,6 +201,63 @@ def workflow_requires_retrieval_endpoint(workflow_id: Optional[str]) -> bool:
     return str(workflow_id or "").strip() == THREADED_RAG_WORKFLOW_ID
 
 
+def workflow_step_kinds(spec: dict[str, Any] | None) -> set[str]:
+    steps = spec.get("steps") if isinstance(spec, dict) else []
+    if not isinstance(steps, list):
+        return set()
+    return {
+        str(step.get("kind") or "").strip()
+        for step in steps
+        if isinstance(step, dict) and str(step.get("kind") or "").strip()
+    }
+
+
+def workflow_param_names(spec: dict[str, Any] | None) -> set[str]:
+    schema = spec.get("params_schema") if isinstance(spec, dict) else {}
+    if not isinstance(schema, dict):
+        return set()
+    properties = schema.get("properties")
+    names = set(str(key) for key in properties) if isinstance(properties, dict) else set()
+    required = schema.get("required")
+    if isinstance(required, list):
+        names.update(str(item) for item in required if str(item or "").strip())
+    return names
+
+
+def workflow_uses_search_provider(spec: dict[str, Any] | None) -> bool:
+    return "search" in workflow_step_kinds(spec)
+
+
+def workflow_uses_retrieval_endpoint(spec: dict[str, Any] | None) -> bool:
+    return "retrieval" in workflow_step_kinds(spec)
+
+
+def workflow_uses_repo_context_repo(spec: dict[str, Any] | None) -> bool:
+    return "repo_context" in workflow_step_kinds(
+        spec
+    ) or "repo_name" in workflow_param_names(spec)
+
+
+def workflow_accepts_uploaded_source(spec: dict[str, Any] | None) -> bool:
+    return "uploaded_source_text" in workflow_param_names(spec)
+
+
+def single_node_right_panel_state(
+    workflow_id: Optional[str],
+    spec: dict[str, Any] | None,
+) -> dict[str, bool]:
+    active = bool(str(workflow_id or "").strip())
+    return {
+        "active": active,
+        "search_provider_enabled": (not active) or workflow_uses_search_provider(spec),
+        "retrieval_endpoint_enabled": (not active)
+        or workflow_uses_retrieval_endpoint(spec),
+        "repo_context_repo_enabled": (not active)
+        or workflow_uses_repo_context_repo(spec),
+        "upload_enabled": (not active) or workflow_accepts_uploaded_source(spec),
+    }
+
+
 def build_search_provider_choices(
     choices: Dict[str, str],
     *,
@@ -628,17 +685,37 @@ def server(input, output, session):
             session=session,
         )
 
+    async def single_node_dispatch_spec(
+        workflow_dispatch_id: str,
+    ) -> dict[str, Any] | None:
+        workflow_id = str(workflow_dispatch_id or "").strip()
+        if not workflow_id:
+            return None
+        try:
+            return await fetch_workflow(workflow_id)
+        except Exception:
+            return None
+
     async def update_retrieval_endpoints(current_selection: Optional[str] = None) -> None:
         retrieval_choices, default_selection = await fetch_available_retrieval_endpoints()
         with reactive.isolate():
             workflow_dispatch_id = str(
                 input.workflowDispatch() or selected_workflow_dispatch_id.get() or ""
             ).strip()
-        requires_endpoint = workflow_requires_retrieval_endpoint(workflow_dispatch_id)
+        dispatch_spec = await single_node_dispatch_spec(workflow_dispatch_id)
+        panel_state = single_node_right_panel_state(
+            workflow_dispatch_id,
+            dispatch_spec,
+        )
+        requires_endpoint = panel_state["retrieval_endpoint_enabled"] and bool(
+            workflow_dispatch_id
+        )
         single_node_choices = build_retrieval_endpoint_choices(
             retrieval_choices,
             require_endpoint=requires_endpoint,
         )
+        if not panel_state["retrieval_endpoint_enabled"]:
+            current_selection = ""
         selected = (
             resolve_retrieval_endpoint_selection(
                 single_node_choices,
@@ -668,14 +745,20 @@ def server(input, output, session):
     async def update_single_node_retrieval_endpoint_select(
         workflow_dispatch_id: str,
         *,
+        spec: dict[str, Any] | None = None,
         current_selection: Optional[str] = None,
     ) -> None:
         retrieval_choices, default_selection = await fetch_available_retrieval_endpoints()
-        requires_endpoint = workflow_requires_retrieval_endpoint(workflow_dispatch_id)
+        panel_state = single_node_right_panel_state(workflow_dispatch_id, spec)
+        requires_endpoint = panel_state["retrieval_endpoint_enabled"] and bool(
+            workflow_dispatch_id
+        )
         choices = build_retrieval_endpoint_choices(
             retrieval_choices,
             require_endpoint=requires_endpoint,
         )
+        if not panel_state["retrieval_endpoint_enabled"]:
+            current_selection = ""
         selected = resolve_retrieval_endpoint_selection(
             choices,
             current_selection=current_selection,
@@ -692,20 +775,25 @@ def server(input, output, session):
     def update_single_node_search_provider_select(
         workflow_dispatch_id: str,
         *,
+        spec: dict[str, Any] | None = None,
         current_selection: Optional[str] = None,
     ) -> None:
         search_choices, default_selection = fetch_available_search_providers()
         requires_provider = workflow_requires_search_provider(workflow_dispatch_id)
+        panel_state = single_node_right_panel_state(workflow_dispatch_id, spec)
         choices = build_search_provider_choices(
             search_choices,
             require_provider=requires_provider,
         )
+        force_default = bool(workflow_dispatch_id) and not panel_state[
+            "search_provider_enabled"
+        ]
         selected = resolve_search_provider_selection(
             choices,
             current_selection=current_selection,
             default_selection=default_selection,
             require_provider=requires_provider,
-            force_default=bool(workflow_dispatch_id) and not requires_provider,
+            force_default=force_default,
         )
         ui.update_select(
             "searchProvider",
@@ -750,8 +838,10 @@ def server(input, output, session):
             workflow_id = str(
                 input.workflowSelector() or selected_workflow_id.get() or ""
             )
+        dispatch_spec = await single_node_dispatch_spec(workflow_dispatch_id)
         update_single_node_search_provider_select(
             workflow_dispatch_id,
+            spec=dispatch_spec,
             current_selection=current_selection,
         )
         update_workflow_search_provider_select(
@@ -765,24 +855,33 @@ def server(input, output, session):
         current_search_provider: Optional[str] = None,
     ) -> None:
         selected_workflow_dispatch_id.set(workflow_dispatch_id)
+        dispatch_spec = await single_node_dispatch_spec(workflow_dispatch_id)
+        panel_state = single_node_right_panel_state(
+            workflow_dispatch_id,
+            dispatch_spec,
+        )
         update_single_node_search_provider_select(
             workflow_dispatch_id,
+            spec=dispatch_spec,
             current_selection=current_search_provider,
         )
         await update_single_node_retrieval_endpoint_select(
             workflow_dispatch_id,
+            spec=dispatch_spec,
             current_selection=str(input.retrievalEndpoint() or ""),
         )
+        if not panel_state["repo_context_repo_enabled"]:
+            ui.update_select("repoContextRepo", selected="", session=session)
         await session.send_custom_message(
             "workflowDispatchState",
             {
-                "active": bool(workflow_dispatch_id),
-                "retrievalEndpointEnabled": workflow_requires_retrieval_endpoint(
-                    workflow_dispatch_id
-                ),
-                "searchProviderEnabled": workflow_requires_search_provider(
-                    workflow_dispatch_id
-                ),
+                "active": panel_state["active"],
+                "retrievalEndpointEnabled": panel_state[
+                    "retrieval_endpoint_enabled"
+                ],
+                "searchProviderEnabled": panel_state["search_provider_enabled"],
+                "repoContextRepoEnabled": panel_state["repo_context_repo_enabled"],
+                "uploadEnabled": panel_state["upload_enabled"],
             },
         )
 
@@ -1843,7 +1942,12 @@ def server(input, output, session):
                 workflow_retrieval_endpoint = str(
                     _input_value(input, "retrievalEndpoint") or ""
                 ).strip()
-                if workflow_requires_retrieval_endpoint(workflow_dispatch_id):
+                spec = await fetch_workflow(workflow_dispatch_id)
+                panel_state = single_node_right_panel_state(
+                    workflow_dispatch_id,
+                    spec,
+                )
+                if panel_state["retrieval_endpoint_enabled"]:
                     if not workflow_retrieval_endpoint:
                         raise ValueError(
                             "workflow dispatch requires a Retrieval Endpoint"
@@ -1859,7 +1963,20 @@ def server(input, output, session):
                 else:
                     workflow_history = []
 
-                spec = await fetch_workflow(workflow_dispatch_id)
+                workflow_uploaded_source_text = (
+                    uploaded_source_text if panel_state["upload_enabled"] else ""
+                )
+                workflow_repo_name = (
+                    str(_input_value(input, "repoContextRepo") or "").strip()
+                    if panel_state["repo_context_repo_enabled"]
+                    else ""
+                )
+                workflow_search_provider = (
+                    str(_input_value(input, "searchProvider") or "").strip()
+                    if panel_state["search_provider_enabled"]
+                    else ""
+                )
+
                 payload = build_workflow_chat_run_payload(
                     spec,
                     latest_user_prompt=latest_user_prompt,
@@ -1867,23 +1984,17 @@ def server(input, output, session):
                         workflow_history
                     ),
                     manual_source_text=current_prompt,
-                    uploaded_source_text=uploaded_source_text,
-                    repo_name=str(
-                        _input_value(input, "repoContextRepo") or ""
-                    ).strip(),
+                    uploaded_source_text=workflow_uploaded_source_text,
+                    repo_name=workflow_repo_name,
                     endpoint=endpoint_for_workflow,
                     reasoning_effort=current_reasoning,
                     conversation_id=conversation_id or "",
                     retrieval_endpoint=(
                         workflow_retrieval_endpoint
-                        if workflow_requires_retrieval_endpoint(workflow_dispatch_id)
+                        if panel_state["retrieval_endpoint_enabled"]
                         else ""
                     ),
-                    search_provider=(
-                        str(_input_value(input, "searchProvider") or "").strip()
-                        if workflow_requires_search_provider(workflow_dispatch_id)
-                        else ""
-                    ),
+                    search_provider=workflow_search_provider,
                 )
                 created = await create_workflow_run(workflow_dispatch_id, payload)
                 run_id = str(created.get("run_id") or "").strip()

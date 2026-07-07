@@ -15,6 +15,11 @@ from src.dashboard.app_server import (
     resolve_workflow_retry_step_selection,
     resolve_workflow_dispatch_selection,
     resolve_workflow_dispatch_selection_for_repo_context,
+    single_node_right_panel_state,
+    workflow_accepts_uploaded_source,
+    workflow_uses_repo_context_repo,
+    workflow_uses_retrieval_endpoint,
+    workflow_uses_search_provider,
     workflow_requires_retrieval_endpoint,
     workflow_requires_search_provider,
     workflow_dispatch_event_updates_run_details,
@@ -585,6 +590,105 @@ def test_workflow_dispatch_capability_flags_are_specific():
     assert workflow_requires_retrieval_endpoint("threaded_rag")
     assert not workflow_requires_retrieval_endpoint("threaded_search")
     assert not workflow_requires_retrieval_endpoint("repo_context")
+
+
+def test_workflow_spec_capabilities_detect_relevant_right_panel_controls():
+    spec = {
+        "params_schema": {
+            "required": ["latest_user_prompt"],
+            "properties": {
+                "latest_user_prompt": {"type": "string"},
+                "uploaded_source_text": {"type": "string"},
+            },
+        },
+        "steps": [
+            {"id": "retrieve", "kind": "retrieval"},
+            {"id": "answer", "kind": "llm"},
+        ],
+    }
+
+    assert workflow_uses_retrieval_endpoint(spec)
+    assert workflow_accepts_uploaded_source(spec)
+    assert not workflow_uses_search_provider(spec)
+    assert not workflow_uses_repo_context_repo(spec)
+
+
+def test_workflow_spec_capabilities_detect_search_and_repo_context():
+    spec = {
+        "params_schema": {
+            "required": ["query", "repo_name"],
+            "properties": {
+                "query": {"type": "string"},
+                "repo_name": {"type": "string"},
+            },
+        },
+        "steps": [
+            {"id": "search", "kind": "search"},
+            {"id": "repo", "kind": "repo_context"},
+        ],
+    }
+
+    assert workflow_uses_search_provider(spec)
+    assert workflow_uses_repo_context_repo(spec)
+    assert not workflow_uses_retrieval_endpoint(spec)
+    assert not workflow_accepts_uploaded_source(spec)
+
+
+def test_single_node_right_panel_state_for_no_workflow_keeps_controls_enabled():
+    assert single_node_right_panel_state("", None) == {
+        "active": False,
+        "search_provider_enabled": True,
+        "retrieval_endpoint_enabled": True,
+        "repo_context_repo_enabled": True,
+        "upload_enabled": True,
+    }
+
+
+def test_single_node_right_panel_state_for_threaded_rag():
+    state = single_node_right_panel_state(
+        "threaded_rag",
+        {
+            "params_schema": {
+                "properties": {"uploaded_source_text": {"type": "string"}}
+            },
+            "steps": [
+                {"id": "plan", "kind": "llm"},
+                {"id": "retrieve", "kind": "retrieval"},
+            ],
+        },
+    )
+
+    assert state == {
+        "active": True,
+        "search_provider_enabled": False,
+        "retrieval_endpoint_enabled": True,
+        "repo_context_repo_enabled": False,
+        "upload_enabled": True,
+    }
+
+
+def test_single_node_right_panel_state_for_repo_context():
+    state = single_node_right_panel_state(
+        "repo_context",
+        {
+            "params_schema": {
+                "required": ["latest_user_prompt", "repo_name"],
+                "properties": {
+                    "latest_user_prompt": {"type": "string"},
+                    "repo_name": {"type": "string"},
+                },
+            },
+            "steps": [{"id": "repo", "kind": "repo_context"}],
+        },
+    )
+
+    assert state == {
+        "active": True,
+        "search_provider_enabled": False,
+        "retrieval_endpoint_enabled": False,
+        "repo_context_repo_enabled": True,
+        "upload_enabled": False,
+    }
 
 
 def test_build_retrieval_endpoint_choices_removes_none_when_required():
