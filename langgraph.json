@@ -2,7 +2,9 @@
   "dependencies": ["."],
   "graphs": {
     "implementation_plan": "src.graphs.implementation_plan:graph",
+    "repo_context": "src.graphs.repo_context:graph",
     "research_brief": "src.graphs.research_brief:graph",
+    "threaded_rag": "src.graphs.threaded_rag:graph",
     "threaded_search": "src.graphs.threaded_search:graph"
   },
   "env": ".env"

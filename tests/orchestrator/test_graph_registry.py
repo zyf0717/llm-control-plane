@@ -98,7 +98,9 @@ def test_shipped_graph_registry_loads_workflow_derived_graphs():
     graph_ids = {spec.id for spec in registry.list()}
     assert {
         "implementation_plan",
+        "repo_context",
         "research_brief",
+        "threaded_rag",
         "threaded_search",
     }.issubset(graph_ids)
 

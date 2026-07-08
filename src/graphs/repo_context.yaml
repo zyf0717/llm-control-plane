@@ -1,0 +1,24 @@
+id: repo_context
+name: Repo Context
+description: LangGraph-native repository exploration graph derived from the shipped workflow pattern.
+input_schema:
+  type: object
+  required: [latest_user_prompt, repo_name]
+  properties:
+    latest_user_prompt:
+      type: string
+    repo_name:
+      type: string
+    thread_state_text:
+      type: string
+    recent_conversation_messages:
+      type: string
+    thread_metadata:
+      type: object
+defaults:
+  configurable:
+    endpoint: smart
+    reasoning_effort: high
+ui:
+  supports_streaming: true
+  supports_interrupts: false

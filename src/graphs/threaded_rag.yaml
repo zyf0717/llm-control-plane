@@ -1,0 +1,28 @@
+id: threaded_rag
+name: Threaded RAG
+description: LangGraph-native threaded RAG graph derived from the shipped workflow pattern.
+input_schema:
+  type: object
+  required: [latest_user_prompt]
+  properties:
+    latest_user_prompt:
+      type: string
+    thread_briefing:
+      type: string
+    thread_state_text:
+      type: string
+    recent_conversation_messages:
+      type: string
+    thread_metadata:
+      type: object
+    manual_source_text:
+      type: string
+    uploaded_source_text:
+      type: string
+defaults:
+  configurable:
+    endpoint: smart
+    reasoning_effort: high
+ui:
+  supports_streaming: true
+  supports_interrupts: false

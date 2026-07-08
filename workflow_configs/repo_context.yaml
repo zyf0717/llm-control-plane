@@ -154,7 +154,7 @@ steps:
     depends_on: [explore_repository]
     prompt: |
       Original request:
-      {{ params.query }}
+      {{ params.latest_user_prompt }}
 
       Repository:
       {{ params.repo_name }}

@@ -6,11 +6,21 @@ from typing import Any
 
 import jsonschema
 
-from src.orchestrator.runtime import ProxyRuntimeLLMClient, ProxyRuntimeSearchClient
+from src.orchestrator.config import CONFIG_FILE, load_config
+from src.orchestrator.repo_context import RepoContextClient, load_repo_context_config
+from src.orchestrator.runtime import (
+    ProxyRuntimeLLMClient,
+    ProxyRuntimeRetrievalClient,
+    ProxyRuntimeSearchClient,
+)
 
 
 LLM_CLIENT = ProxyRuntimeLLMClient()
 SEARCH_CLIENT = ProxyRuntimeSearchClient()
+RETRIEVAL_CLIENT = ProxyRuntimeRetrievalClient()
+REPO_CONTEXT_CLIENT = RepoContextClient(
+    load_repo_context_config(load_config(CONFIG_FILE))
+)
 
 
 def configurable(config: dict[str, Any] | None) -> dict[str, Any]:
@@ -79,9 +89,14 @@ def output_from_payload(
     *,
     kind: str,
     metadata: dict[str, Any] | None = None,
+    text: str | None = None,
 ) -> dict[str, Any]:
     return {
-        "text": json.dumps(payload, indent=2, default=str),
+        "text": (
+            text
+            if text is not None
+            else json.dumps(payload, indent=2, default=str)
+        ),
         "json": payload,
         "metadata": {"kind": kind, **dict(metadata or {})},
     }
@@ -93,14 +108,17 @@ async def llm_text(
     *,
     default_endpoint: str = "smart",
     max_output_tokens: int | None = None,
+    use_retrieval: bool = True,
 ) -> dict[str, Any]:
     response = await LLM_CLIENT.complete(
         endpoint=endpoint(config, default=default_endpoint),
         prompt=prompt,
         conversation_id=thread_id(config),
         reasoning_effort=reasoning_effort(config),
-        retrieval_endpoint=retrieval_endpoint(config),
-        max_tokens=max_output_tokens if max_output_tokens is not None else max_tokens(config),
+        retrieval_endpoint=retrieval_endpoint(config) if use_retrieval else None,
+        max_tokens=(
+            max_output_tokens if max_output_tokens is not None else max_tokens(config)
+        ),
         skip_conversation=True,
     )
     return {
@@ -117,6 +135,7 @@ async def llm_json(
     schema: dict[str, Any],
     default_endpoint: str = "smart",
     max_attempts: int = 3,
+    use_retrieval: bool = True,
 ) -> dict[str, Any]:
     current_prompt = prompt
     last_text = ""
@@ -126,6 +145,7 @@ async def llm_json(
             current_prompt,
             config,
             default_endpoint=default_endpoint,
+            use_retrieval=use_retrieval,
         )
         last_text = output["text"]
         try:
@@ -194,6 +214,59 @@ async def search_many(
     return output_from_payload(merged, kind="search")
 
 
+async def retrieve_many(
+    queries: list[str],
+    config: dict[str, Any] | None,
+    *,
+    limit: int = 10,
+) -> dict[str, Any]:
+    cleaned = dedupe_texts(queries)
+    if not cleaned:
+        raise ValueError("graph retrieval produced no queries")
+    endpoint_value = retrieval_endpoint(config)
+    if not endpoint_value:
+        raise ValueError("graph retrieval endpoint is required")
+    payloads = await asyncio.gather(
+        *[
+            RETRIEVAL_CLIENT.retrieve(
+                query=query,
+                retrieval_endpoint=endpoint_value,
+                limit=limit,
+            )
+            for query in cleaned
+        ]
+    )
+    merged = merge_retrieval_payloads(
+        cleaned,
+        payloads,
+        retrieval_endpoint=endpoint_value,
+        limit=limit,
+    )
+    return output_from_payload(
+        merged,
+        kind="retrieval",
+        text=format_retrieval_evidence_text(merged),
+    )
+
+
+async def repo_context_explore(
+    *,
+    query: str,
+    repo_name: str,
+    max_turns: int = 6,
+) -> dict[str, Any]:
+    result = await REPO_CONTEXT_CLIENT.explore_repository(
+        query=query,
+        repo_name=repo_name,
+        max_turns=max_turns,
+    )
+    return {
+        "text": result.text,
+        "json": result.json,
+        "metadata": dict(result.metadata),
+    }
+
+
 async def rerank(
     query: str,
     source_output: dict[str, Any],
@@ -225,6 +298,198 @@ async def rerank(
         "source_text_provided": bool(source_text),
     }
     return output_from_payload(payload, kind="rerank")
+
+
+def merge_retrieval_payloads(
+    queries: list[str],
+    payloads: list[dict[str, Any]],
+    *,
+    retrieval_endpoint: str,
+    limit: int,
+) -> dict[str, Any]:
+    context_blocks: list[dict[str, Any]] = []
+    evidence_blocks: list[dict[str, Any]] = []
+    grounded_messages: list[str] = []
+    warnings: list[str] = []
+    per_query: list[dict[str, Any]] = []
+    degraded = False
+    seen_context: set[str] = set()
+    seen_evidence: set[str] = set()
+
+    for query, payload in zip(queries, payloads):
+        response = dict(payload) if isinstance(payload, dict) else {}
+        response["query"] = str(response.get("query") or query)
+        per_query.append(response)
+        degraded = degraded or bool(response.get("degraded"))
+        warnings.extend(str(item) for item in response.get("warnings") or [])
+
+        grounded_message = str(response.get("grounded_user_message") or "").strip()
+        if grounded_message:
+            grounded_messages.append(grounded_message)
+
+        for block in response.get("context_blocks") or []:
+            if not isinstance(block, dict):
+                continue
+            key = retrieval_block_key(block)
+            if key in seen_context:
+                continue
+            seen_context.add(key)
+            context_blocks.append(dict(block))
+
+        raw_evidence_blocks = response.get("evidence_blocks") or []
+        if not raw_evidence_blocks:
+            raw_evidence_blocks = response.get("context_blocks") or []
+        for block in raw_evidence_blocks:
+            if not isinstance(block, dict):
+                continue
+            key = retrieval_block_key(block)
+            if key in seen_evidence:
+                continue
+            seen_evidence.add(key)
+            evidence_blocks.append(dict(block))
+
+    return {
+        "query": queries[0] if queries else "",
+        "queries": list(queries),
+        "retrieval_endpoint": retrieval_endpoint,
+        "context_blocks": context_blocks,
+        "evidence_blocks": evidence_blocks,
+        "grounded_user_messages": grounded_messages,
+        "grounded_user_message": "\n\n".join(grounded_messages),
+        "warnings": warnings,
+        "degraded": degraded
+        or any(
+            not (
+                payload.get("context_blocks")
+                or payload.get("evidence_blocks")
+                or payload.get("grounded_user_message")
+            )
+            for payload in payloads
+            if isinstance(payload, dict)
+        ),
+        "per_query": per_query,
+        "graph_retrieval": {
+            "queries": list(queries),
+            "fanout": len(queries) > 1,
+            "limit": limit,
+        },
+    }
+
+
+_RETRIEVAL_EVIDENCE_MAX_BLOCKS = 24
+_RETRIEVAL_EVIDENCE_MAX_CONTENT_CHARS = 1800
+
+
+def format_retrieval_evidence_text(payload: dict[str, Any]) -> str:
+    queries = [
+        str(query).strip()
+        for query in payload.get("queries") or [payload.get("query")]
+        if str(query or "").strip()
+    ]
+    lines: list[str] = []
+    if queries:
+        lines.append("Retrieval queries:")
+        lines.extend(f"- {query}" for query in queries)
+
+    warnings = [
+        str(warning).strip()
+        for warning in payload.get("warnings") or []
+        if str(warning or "").strip()
+    ]
+    if warnings:
+        lines.append("")
+        lines.append("Retrieval warnings:")
+        lines.extend(f"- {warning}" for warning in warnings)
+
+    blocks = [
+        block
+        for block in (
+            payload.get("context_blocks") or payload.get("evidence_blocks") or []
+        )
+        if isinstance(block, dict)
+    ]
+    if blocks:
+        lines.append("")
+        lines.append("Retrieved context:")
+        for index, block in enumerate(
+            blocks[:_RETRIEVAL_EVIDENCE_MAX_BLOCKS], start=1
+        ):
+            label = retrieval_block_label(block)
+            content = retrieval_block_content(block)
+            lines.append(f"[{index}] Source: {label}")
+            relevance = retrieval_block_relevance(block)
+            if relevance:
+                lines.append(relevance)
+            if content:
+                lines.append(f"Excerpt: {content}")
+            lines.append("")
+        omitted = len(blocks) - _RETRIEVAL_EVIDENCE_MAX_BLOCKS
+        if omitted > 0:
+            lines.append(f"... {omitted} additional retrieved blocks omitted.")
+    else:
+        grounded_message = str(payload.get("grounded_user_message") or "").strip()
+        if grounded_message:
+            lines.append("")
+            lines.append("Retrieved context:")
+            lines.append(truncate_retrieval_content(grounded_message))
+
+    if payload.get("degraded"):
+        lines.append("")
+        lines.append("Retrieval degraded: true")
+
+    return "\n".join(lines).strip()
+
+
+def retrieval_block_key(block: dict[str, Any]) -> str:
+    for key in ("chunk_id", "citation_label", "source_uri"):
+        value = str(block.get(key) or "").strip()
+        if value:
+            return value
+    return json.dumps(block, sort_keys=True, default=str)
+
+
+def retrieval_block_label(block: dict[str, Any]) -> str:
+    for key in ("citation_label", "title", "source_uri", "chunk_id", "document_id"):
+        value = str(block.get(key) or "").strip()
+        if value:
+            return value
+    return "retrieved block"
+
+
+def retrieval_block_content(block: dict[str, Any]) -> str:
+    for key in ("content", "text", "excerpt", "snippet"):
+        value = str(block.get(key) or "").strip()
+        if value:
+            return truncate_retrieval_content(value)
+    return ""
+
+
+def retrieval_block_relevance(block: dict[str, Any]) -> str:
+    parts: list[str] = []
+    legs = block.get("retrieval_legs")
+    if isinstance(legs, list):
+        value = ", ".join(str(item).strip() for item in legs if str(item).strip())
+        if value:
+            parts.append(f"retrieval={value}")
+    entities = block.get("matched_entities")
+    if isinstance(entities, list):
+        value = ", ".join(str(item).strip() for item in entities if str(item).strip())
+        if value:
+            parts.append(f"entities={value}")
+    score = block.get("fusion_score")
+    if isinstance(score, (int, float)):
+        parts.append(f"score={score:.4g}")
+    return f"Metadata: {'; '.join(parts)}" if parts else ""
+
+
+def truncate_retrieval_content(content: str) -> str:
+    normalized = " ".join(str(content or "").split())
+    if len(normalized) <= _RETRIEVAL_EVIDENCE_MAX_CONTENT_CHARS:
+        return normalized
+    return (
+        normalized[: _RETRIEVAL_EVIDENCE_MAX_CONTENT_CHARS - 14].rstrip()
+        + " ...[truncated]"
+    )
 
 
 def parse_json_object(raw: str) -> dict[str, Any]:
@@ -325,4 +590,3 @@ def merge_search_payloads(
             "merged_results": len(merged_results),
         },
     }
-

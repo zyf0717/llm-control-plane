@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -179,6 +180,22 @@ def test_app_can_start_without_orchestration_subsystems():
 class FakeGraphLLMClient:
     async def complete(self, **kwargs):
         prompt = kwargs["prompt"]
+        if "Return strict JSON only" in prompt and '"retrieval_queries"' in prompt:
+            return {
+                "text": json.dumps(
+                    {
+                        "retrieval_queries": ["ship graph support"],
+                        "retrieval_prompt": "Answer ship graph support.",
+                        "reason": "test",
+                    }
+                ),
+                "metadata": {"endpoint": kwargs["endpoint"]},
+            }
+        if "Produce one repo-context query for citation retrieval." in prompt:
+            return {
+                "text": json.dumps({"query": "Find graph support code."}),
+                "metadata": {"endpoint": kwargs["endpoint"]},
+            }
         if "Return strict JSON only" in prompt or "corrected strict JSON" in prompt:
             return {
                 "text": json.dumps(
@@ -222,6 +239,51 @@ class FakeGraphSearchClient:
         }
 
 
+class FakeGraphRetrievalClient:
+    async def retrieve(self, **kwargs):
+        return {
+            "query": kwargs["query"],
+            "retrieval_endpoint": kwargs["retrieval_endpoint"],
+            "context_blocks": [
+                {
+                    "chunk_id": "chunk-1",
+                    "citation_label": "doc#chunk-1",
+                    "content": "retrieved graph evidence",
+                }
+            ],
+            "evidence_blocks": [],
+            "grounded_user_message": "retrieved graph evidence",
+            "warnings": [],
+            "degraded": False,
+        }
+
+
+class FakeGraphRepoContextClient:
+    async def explore_repository(self, **kwargs):
+        return SimpleNamespace(
+            text="Repo: repo\nCitations:\n- src/app.py:1\nAnswer:\nrepo evidence",
+            json={
+                "answer": "repo evidence",
+                "query": kwargs["query"],
+                "repo_root": "/tmp/repo",
+                "citations": [{"path": "src/app.py", "start_line": 1}],
+                "raw_locations": [
+                    {
+                        "path": "src/app.py",
+                        "start_line": 1,
+                        "end_line": 1,
+                        "text": "repo evidence",
+                        "truncated": False,
+                    }
+                ],
+                "turns_used": 1,
+                "truncated": False,
+                "warnings": [],
+            },
+            metadata={"kind": "repo_context", "repo_name": kwargs["repo_name"]},
+        )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("graph_id", "graph_input"),
@@ -229,6 +291,14 @@ class FakeGraphSearchClient:
         ("research_brief", {"question": "ship graph support"}),
         ("implementation_plan", {"goal": "ship graph support"}),
         ("threaded_search", {"latest_user_prompt": "ship graph support"}),
+        ("threaded_rag", {"latest_user_prompt": "ship graph support"}),
+        (
+            "repo_context",
+            {
+                "latest_user_prompt": "ship graph support",
+                "repo_name": "llm-control-plane",
+            },
+        ),
     ],
 )
 async def test_shipped_generated_graphs_execute_with_neutral_runtime_clients(
@@ -239,6 +309,8 @@ async def test_shipped_generated_graphs_execute_with_neutral_runtime_clients(
 ):
     monkeypatch.setattr(graph_common, "LLM_CLIENT", FakeGraphLLMClient())
     monkeypatch.setattr(graph_common, "SEARCH_CLIENT", FakeGraphSearchClient())
+    monkeypatch.setattr(graph_common, "RETRIEVAL_CLIENT", FakeGraphRetrievalClient())
+    monkeypatch.setattr(graph_common, "REPO_CONTEXT_CLIENT", FakeGraphRepoContextClient())
     registry = GraphRegistry()
     registry.load()
     store = SQLiteGraphRunStore(tmp_path / "graphs.sqlite3")
@@ -248,7 +320,12 @@ async def test_shipped_generated_graphs_execute_with_neutral_runtime_clients(
         created = await executor.create_run(
             graph_id,
             input=graph_input,
-            config={"configurable": {"thread_id": f"{graph_id}-thread"}},
+            config={
+                "configurable": {
+                    "thread_id": f"{graph_id}-thread",
+                    "retrieval_endpoint": "http://retrieval/api/retrieve/context",
+                }
+            },
         )
 
         snapshot = await executor.run(created["run_id"])
