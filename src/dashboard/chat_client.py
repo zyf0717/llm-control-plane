@@ -181,6 +181,10 @@ async def stream_chat_response(
                 extra_turn_messages=extra_turn_messages,
             )
         }
+        if endpoint_key != "smart":
+            models = endpoints_dict[endpoint_key].get("models", [])
+            if models and models[0].get("id"):
+                payload["model"] = models[0]["id"]
         headers = {
             "CF-Access-Client-Id": API_KEY_ID,
             "CF-Access-Client-Secret": API_KEY_SECRET,
@@ -262,6 +266,13 @@ async def stream_chat_response(
                                 md_code_wrap = False
                             yield f"{json.dumps(obj, indent=2)},\n"
                             continue
+
+                        if obj.get("type") == "proxy.error":
+                            if reasoning_chunk_found:
+                                yield "</em>\n\n"
+                            detail = obj.get("detail") or "Upstream request failed"
+                            yield f"Error: {detail}"
+                            break
 
                         choices = obj.get("choices", [])
                         if choices:

@@ -205,4 +205,79 @@ async def test_smart_endpoint_uses_smart_without_route_switch_opt_in(monkeypatch
     assert call.args[0] == "http://proxy.local/smart"
     assert "X-Allow-Route-Switch" not in call.kwargs["headers"]
     assert "X-Allow-Reasoning-Switch" not in call.kwargs["headers"]
+    assert "model" not in call.kwargs["json"]
     assert "".join(chunks) == "Smart answer"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_concrete_endpoint_sends_discovered_model(monkeypatch, stream):
+    monkeypatch.setattr(chat_client, "PROXY_BASE_URL", "http://proxy.local")
+    if stream:
+        response = _FakeStreamingResponse(
+            headers={},
+            lines=['data: {"choices":[{"delta":{"content":"42"}}]}', "data: [DONE]"],
+        )
+    else:
+        response = _FakeResponse(
+            headers={}, payload={"choices": [{"message": {"content": "42"}}]}
+        )
+
+    with patch("httpx.AsyncClient") as mock_client_class:
+        mock_client = Mock()
+        mock_client.post = AsyncMock(return_value=response)
+        mock_client.stream.return_value = _FakeStreamSource(response)
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        chunks = [
+            chunk
+            async for chunk in stream_chat_response(
+                endpoint_key="node-a",
+                text="What is 17 + 25?",
+                endpoints_dict={
+                    "node-a": {
+                        "models": [{"id": "Qwen3.8 Flash Next"}, {"id": "other"}]
+                    }
+                },
+                stream=stream,
+            )
+        ]
+
+    call = (mock_client.stream if stream else mock_client.post).call_args
+    assert call.kwargs["json"]["model"] == "Qwen3.8 Flash Next"
+    assert "".join(chunks) == "42"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("output_reasoning", [False, True])
+async def test_stream_chat_response_surfaces_proxy_error(monkeypatch, output_reasoning):
+    monkeypatch.setattr(chat_client, "PROXY_BASE_URL", "http://proxy.local")
+    response = _FakeStreamingResponse(
+        headers={},
+        lines=[
+            'data: {"choices":[{"delta":{"reasoning_content":"Thinking"}}]}',
+            'data: {"type":"proxy.error","status":400,"detail":"HTTP 400"}',
+            'data: {"choices":[{"delta":{"content":"must not render"}}]}',
+        ],
+    )
+    states = []
+
+    with patch("httpx.AsyncClient") as mock_client_class:
+        mock_client = Mock()
+        mock_client.stream.return_value = _FakeStreamSource(response)
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        chunks = [
+            chunk
+            async for chunk in stream_chat_response(
+                endpoint_key="smart",
+                text="hello",
+                endpoints_dict={},
+                output_reasoning=output_reasoning,
+                on_send_button_state=states.append,
+            )
+        ]
+
+    prefix = "<em>Thinking</em>\n\n" if output_reasoning else ""
+    assert "".join(chunks) == prefix + "Error: HTTP 400"
+    assert states == ["busy", "ready"]
