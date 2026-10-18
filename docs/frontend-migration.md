@@ -8,6 +8,12 @@ recommended frontend is **React with Vite**, with browser routing and a small se
 of established libraries. Production serves compiled assets alongside the Python
 API; Node is a development and build dependency.
 
+Evaluate existing LLM frontends before building chat components. The preferred
+reuse candidate is assistant-ui inside the proposed operator console; LibreChat
+and big-AGI are the leading complete-application alternatives. The assessment
+below separates component reuse, companion applications, and broader platform
+adoption because they have different backend and deployment costs.
+
 The first migration task is to extract application behavior currently embedded in
 Shiny. Changing the rendering framework alone would move conversation policy,
 prompt construction, and transcript persistence into browser code and duplicate
@@ -48,6 +54,139 @@ health probes but still includes those endpoints, despite the dashboard guide
 describing healthy-only choices. Establish fixtures from running code and tests,
 then correct these descriptions during contract work.
 
+## Existing LLM frontends and reuse options
+
+Assessment date: 18 October 2026. Capabilities, license files and repository status
+were checked against upstream sources; no candidate has been integrated or
+benchmarked against this backend. Fit and effort judgments below apply to this
+repository. Record the selected release/commit and its license when prototyping.
+
+### Chat and agent interfaces
+
+| Project and license | Existing frontend capability | Integration cost and suitable role |
+|---|---|---|
+| [assistant-ui](https://github.com/assistant-ui/assistant-ui), [MIT](https://github.com/assistant-ui/assistant-ui/blob/main/LICENSE) | React chat components and runtime adapters. Its [ExternalStoreRuntime](https://www.assistant-ui.com/docs/runtimes/custom/external-store) accepts application-owned messages and callbacks. This is a component library, not a complete operator application. | **First reuse candidate.** Connect the planned stream reducer and Python APIs through an adapter. Keep backend history and fork policy authoritative; disable edit/regenerate actions until corresponding backend operations exist. Build catalog, multi-slot coordination, workflow, graph and trace views locally. No additional chat database or hosted service is required by this integration approach. |
+| [LibreChat](https://github.com/LibreChat-AI/LibreChat), [MIT](https://github.com/LibreChat-AI/LibreChat/blob/main/LICENSE) | Complete React chat application with model selection, reasoning display, files, branching, agents and artifacts. [Custom endpoints](https://www.librechat.ai/docs/configuration/librechat_yaml/object_structure/custom_endpoint) support configurable base URLs, direct completion URLs and headers. | **Leading general chat application.** Its standard deployment includes a Node API and MongoDB, with additional services in the [default Compose stack](https://github.com/LibreChat-AI/LibreChat/blob/main/docker-compose.yml). Use as a companion through a compatibility adapter, or accept a substantial frontend fork to share this project's history and run views. Adopting its agents does not expose this project's YAML workflow or graph lifecycle automatically. |
+| [big-AGI Open](https://github.com/enricoros/big-AGI), [MIT](https://github.com/enricoros/big-AGI/blob/main/LICENSE) | React/Next.js multi-model workspace with Beam comparison/merge, personas, streaming and request inspection. The open repository is distinct from the hosted service's complete feature set. | **Leading experiment/comparison application.** Its concurrent model UX is relevant to Multi-Slot, but Beam comparison/synthesis does not establish parity with eight independent same-endpoint pane histories and burst tests. Evaluate as a companion or a source of reusable interaction patterns; adapting provider transport, history, metrics and run management remains work. Retaining the application also retains its Next.js deployment model. |
+| [Hugging Face Chat UI](https://github.com/huggingface/chat-ui), [Apache-2.0](https://github.com/huggingface/chat-ui/blob/main/LICENSE) | SvelteKit application powering HuggingChat. Current upstream supports an OpenAI-compatible base URL and model discovery; chat history, users, files and settings use MongoDB, including an embedded development option. | **Leading complete Svelte alternative.** Useful if a chat-first product and Svelte maintenance are preferred. It brings server routes and its own persistence; serving only its static assets from FastAPI is not a configuration change. Provider/retrieval selection, this project's diagnostics and both run consoles need adaptation. |
+| [LangChain Agent Chat UI](https://github.com/langchain-ai/agent-chat-ui), [MIT](https://github.com/langchain-ai/agent-chat-ui/blob/main/LICENSE) | Next.js chat application for a LangGraph server exposing a `messages` state key, using the LangGraph SDK and assistant/thread/run concepts. | **Graph-chat specialist.** This project's `/graphs` and `/graph-runs` APIs implement a different contract; several built-in graphs accept task-specific inputs such as `question`, not a chat `messages` state. Reuse needs a protocol/state adapter or a separately operated LangGraph server. It does not replace YAML workflow management, endpoint operations or multi-slot experiments. |
+| [AnythingLLM](https://github.com/Mintplex-Labs/anything-llm), [MIT](https://github.com/Mintplex-Labs/anything-llm/blob/master/LICENSE) | React/Vite workspace chat, document ingestion, citations, agents and provider configuration. The repository also includes a Node/Express server and document collector. | **Document/RAG application alternative.** Suitable if workspace/document management becomes the product focus. Keeping this project's retrieval and orchestration requires explicit ownership boundaries; adopting AnythingLLM's ingestion, routing or agents would also migrate backend responsibilities. Extracting its frontend alone is substantial API adaptation. |
+
+The preferred integration for assistant-ui is a small adapter over our feature
+state, with one runtime per active pane. Durable chat keeps stable backend
+conversation IDs; ephemeral multi-slot panes continue to omit those IDs.
+Keep structured reasoning, evidence and immutable metrics as message parts or
+custom components. Test whether its message grouping, branching model and runtime
+lifecycle preserve our transcript boundaries. Its optional cloud persistence and
+standard provider runtimes are not needed for this route. Keep the existing
+backend-extraction work regardless of which chat renderer wins.
+
+### Gateway consoles and workflow builders
+
+These projects address other parts of a control plane. Their consoles are coupled
+to their own management APIs, so adopting the full product changes the backend
+scope. They are useful comparisons when deciding how much of this project should
+remain custom.
+
+| Project | Existing operational UI | Architectural implication |
+|---|---|---|
+| [LiteLLM Admin UI](https://docs.litellm.ai/docs/proxy/ui) | Model configuration, virtual keys, usage/spend and a [gateway-backed chat page](https://docs.litellm.ai/docs/proxy/ui/chat_ui). Its [license](https://github.com/BerriAI/litellm/blob/main/LICENSE) is MIT outside the separately licensed enterprise directory. | Closest alternative if gateway administration becomes the primary requirement. The UI expects LiteLLM's gateway, database and management APIs; making it operate this Python proxy requires those adapters. Adopting the gateway itself is a separate backend migration, with this project's workflow/graph services still requiring a home. |
+| [Bifrost](https://github.com/maximhq/bifrost), [Apache-2.0](https://github.com/maximhq/bifrost/blob/dev/LICENSE) | Built-in gateway/provider configuration UI alongside routing, failover and caching. | A second relevant gateway-console comparison. The integrated UI expects Bifrost's gateway/configuration APIs. Evaluate whole-gateway adoption separately from copying views; it does not establish compatibility with our conversation pins, retrieval policy, run stores or per-call metrics. |
+| [Langflow](https://github.com/langflow-ai/langflow), [MIT](https://github.com/langflow-ai/langflow/blob/main/LICENSE) | Visual agent/workflow authoring, a testing playground and API/MCP execution. | Appropriate if visual workflow authoring becomes a requirement. Its flow definitions and runtime are a different model from our YAML DAGs and LangGraph subsystem. Adopting it is a workflow-platform decision; using only its editor would still require a deliberate schema and execution adapter. |
+
+### License and maintenance constraints
+
+Keep these candidates visible, but distinguish their additional terms and
+maintenance status from the permissively licensed shortlist:
+
+- **[Open WebUI](https://github.com/open-webui/open-webui):** a relevant complete
+  chat/RAG application with [OpenAI-compatible connections](https://docs.openwebui.com/getting-started/quick-start/connect-a-provider/starting-with-openai-compatible/)
+  and [Functions/Pipelines](https://docs.openwebui.com/features/extensibility/).
+  It could serve as a companion through the adapter described below. Its current
+  [Open WebUI License](https://github.com/open-webui/open-webui/blob/main/LICENSE)
+  includes a branding-preservation condition with exceptions. Treat it as a
+  custom-license option and assess the exact terms for a branded fork; do not
+  assume an unrestricted MIT/BSD license from older descriptions. Its own backend,
+  history and RAG integrations also remain part of full-application adoption.
+- **[LobeHub, formerly LobeChat](https://github.com/lobehub/lobehub):** a broader
+  agent/chat workspace. The [LobeHub Community License](https://github.com/lobehub/lobehub/blob/canary/LICENSE)
+  adds conditions to Apache-2.0, including a commercial-license requirement for
+  developing and distributing a derivative work. Assess it as a custom-license
+  product option, with its own backend and agent model, rather than as a
+  permissively licensed frontend starter.
+- **[Chatbot UI](https://github.com/mckaywrigley/chatbot-ui):** MIT-licensed
+  Next.js/Supabase chat application, but upstream repository metadata reports its
+  last push in August 2024 at this assessment date. Its persistence stack and
+  maintenance outlook make it a lower-priority migration base.
+- **[Chainlit](https://github.com/Chainlit/chainlit)** and
+  **[Open Agent Platform](https://github.com/langchain-ai/open-agent-platform)**
+  are relevant conversational/agent UI references, but their upstream repositories
+  are archived at this assessment date. Exclude them from the initial adoption
+  shortlist unless a maintained successor is identified and evaluated.
+
+### Compatibility work required by complete applications
+
+OpenAI-compatible request bodies do not make the current proxy a complete
+drop-in provider. `proxy.py` exposes `/models`, `/smart` and `/{endpoint}`;
+`request_processor.py` resolves routing from the path and reads custom control
+headers. There is no general `/v1/chat/completions` route that maps its `model`
+field to a configured endpoint. A frontend expecting that route needs an adapter.
+
+For a companion application, plan an additive Python compatibility facade with
+`GET /v1/models` and `POST /v1/chat/completions`. Give each endpoint/model pairing
+a stable public model alias, resolve that alias to the configured endpoint, and
+forward the original upstream model ID through shared proxy functions. Preserve
+streaming reasoning, usage and errors. Reserve `/v1` and check configured endpoint
+names for collisions when enabling this optional facade. LibreChat's
+direct-endpoint configuration can avoid some path adaptation for a fixed endpoint,
+but does not solve shared history or management-view integration.
+
+Choose conversation ownership explicitly:
+
+1. **Companion owns chat history.** Let it send its normal full message list and
+   omit `X-Conversation-ID`. This uses the proxy's stateless mode. Proxy-managed
+   durable history, route pins and conversation slot affinity are then unavailable
+   for those chats. Disable overlapping frontend-side retrieval/search/routing
+   features when the control plane should remain responsible for those actions.
+2. **Control plane owns chat history.** Implement an integration that maps stable
+   conversation IDs, sends new turns only, and routes edits/forks through backend
+   operations. Passing full-history messages together with `X-Conversation-ID`
+   will trigger this proxy's replay rejection. This requires deeper frontend
+   adaptation and reconciliation of any second conversation database.
+
+Complete apps still need custom views/adapters for workflow advance/retry,
+artifacts, graph resume, trace filtering, frozen response metrics and same-endpoint
+burst testing. Their native tool/agent displays are not evidence of parity with
+these management actions. Cost the compatibility layer, extra services, data
+ownership, ongoing upstream merges and feature gaps alongside saved UI work.
+No full application has been demonstrated to replace the entire dashboard here.
+
+### Reuse decision before implementation
+
+Add a **2–3 engineer-day reuse evaluation** to phase 0. This is planned work, not
+an instruction to install or deploy these applications now.
+
+1. Prototype assistant-ui against a deterministic backend stream with a normal
+   two-turn conversation, separate reasoning/evidence/metrics, an explicit fork,
+   and eight independent panes. Check that runtime adapters preserve server
+   ownership and do not require a hosted service or an incompatible wire protocol.
+2. Exercise a thin compatibility facade with LibreChat as the general-chat
+   reference and big-AGI as the comparison reference. Use fixtures to inspect
+   actual payloads, history replay, model aliases, custom metadata, errors and
+   disconnect behavior. Check the self-hosted repository features rather than
+   assuming hosted demos are fully available in the open edition.
+3. Record a feature-by-feature result for chat, pane/burst tests, workflow actions,
+   graph actions, metrics, traces and uploads. Compare required patches, runtime
+   services, storage changes and release maintenance, then choose a reuse route.
+
+Prefer **React/Vite plus assistant-ui components** if the adapter passes these
+checks. Keep custom React chat components as the fallback. Prefer **LibreChat as a
+companion** if a ready general chat product is sufficient; prefer **big-AGI as a
+companion** when comparative model experiments dominate. A full application fork,
+gateway replacement or workflow-platform adoption needs a revised architecture
+and estimate. The remaining sections describe the component-reuse/custom-console
+route and do not assume another application's backend can be removed unchanged.
+
 ## Framework decision
 
 Framework suitability here depends on managing concurrent streams, rich diagnostic
@@ -69,7 +208,7 @@ The alternatives support [SvelteKit SPAs](https://svelte.dev/docs/kit/single-pag
 [Vue SPAs](https://vuejs.org/guide/extras/ways-of-using-vue.html), and
 [Next.js static export](https://nextjs.org/docs/app/guides/static-exports).
 
-Use this initial frontend stack:
+Use this initial frontend stack for the component-reuse/custom-console route:
 
 | Concern | Choice |
 |---|---|
@@ -79,7 +218,7 @@ Use this initial frontend stack:
 | Server snapshots and catalogs | TanStack Query. Disable focus/reconnect refetch for model discovery and disable automatic retries for commands. Streams have their own lifecycle. |
 | Local state | Feature reducers and small context providers; add a global state library only if measured complexity warrants it. |
 | Components and styling | Semantic HTML, CSS variables and CSS modules; accessible library primitives only where needed for dialogs, menus or tabs. |
-| Model output | `react-markdown` with GFM support, raw HTML disabled; separate reasoning, evidence, error and metrics components. |
+| Model output | assistant-ui chat primitives if the reuse evaluation passes; otherwise `react-markdown` with GFM support. Keep raw HTML disabled and reasoning, evidence, errors and metrics separate. |
 | API types | [openapi-typescript](https://openapi-ts.dev/introduction) for documented HTTP contracts; explicit schemas/fixtures for stream frames and dynamic workflow/graph payloads. |
 | Streaming | `fetch`, `AbortController`, and an established SSE parser such as [eventsource-parser](https://github.com/rexxars/eventsource-parser). |
 | Verification | Vitest and Testing Library for behavior; Playwright for browser flows against deterministic backend fixtures. |
@@ -161,7 +300,7 @@ artifact and verify startup from outside the repository working directory.
 | Pure metric/cache normalization inside dashboard modules | Extract into a UI-independent Python module | Both Shiny and the browser consume the same normalized values during transition. |
 | `proxy.py` composition | Refactor narrowly | One app factory registers every route and lifecycle hook. Currently `create_app()` and the module-level app have different route coverage. |
 | `utils.py` config/health/file access | Move behind backend APIs | No browser access to config files, arbitrary paths or server-local URLs. |
-| `app_ui.py`, Shiny reactive state, chat rendering, formatters | Rewrite in TypeScript components | Browser owns layout, local drafts, view state and rendering. |
+| `app_ui.py`, Shiny reactive state, chat rendering, formatters | Rewrite application views in TypeScript; reuse accepted chat components | Browser owns layout, local drafts, view state and rendering. |
 | `multi_slot.py` pane state and task controls | Rewrite in TypeScript | Independent request controllers and reducers for up to eight panes. |
 | `chat_client.py`, `workflow_client.py`, `graph_client.py` | Replace with typed browser clients | Preserve protocol fixtures and response semantics rather than translating callbacks line by line. |
 | Shiny JavaScript DOM handlers, websocket heartbeat/diagnostics, theme plumbing | Remove after cutover | Normal browser events, fetch/SSE lifecycle, CSS theme tokens and request diagnostics. |
@@ -389,16 +528,19 @@ working stream. They are sequencing guidance, not a delivery commitment.
 
 | Phase | Scope | Exit condition | Effort |
 |---|---|---|---|
-| 0. Capture current behavior | Record sanitized representative chat SSE/JSON, search, workflow/graph snapshots and error fixtures; inventory existing dashboard regression cases and actual ingress behavior. Correct header/health contract discrepancies. | Written parity checklist, deterministic fixtures, selected frontend stack. | 1–2 days |
+| 0. Capture behavior and evaluate reuse | Record sanitized chat SSE/JSON, search, workflow/graph snapshots and error fixtures; inventory dashboard regressions and ingress behavior. Correct header/health discrepancies. Run the assistant-ui/LibreChat/big-AGI reuse evaluation above. | Written parity checklist, deterministic fixtures, documented reuse decision and selected frontend stack. | 3–5 days |
 | 1. Complete backend boundary | Consolidate app composition; extract catalog, metric normalization, prompt/search preparation and fork operation; type the APIs needed for chat. Keep Shiny using extracted functions. | Existing behavior passes Python tests; new routes work without importing Shiny; catalog and responses contain no service secrets. | 3–5 days |
-| 2. Prove one complete browser flow | Scaffold frontend, shell, typed client, streaming decoder and `/ui` serving; implement durable direct chat with reasoning, errors, metrics, forks and history reload. | Browser sends two turns, changes controls to fork, renders streamed and JSON replies, then reloads history. Legacy clients still work. | 3–5 days |
+| 2. Prove one complete browser flow | Scaffold frontend, selected chat-component integration, shell, typed client, streaming decoder and `/ui` serving; implement durable direct chat with reasoning, errors, metrics, forks and history reload. | Browser sends two turns, changes controls to fork, renders streamed and JSON replies, then reloads history. Legacy clients still work. | 3–5 days |
 | 3. Chat parity | Add ad hoc search, retrieval controls, uploads, raw JSON and multi-slot/burst behavior. | Search evidence remains ephemeral; eight concurrent panes remain isolated; stop/failure/settings behavior matches the checklist. | 3–5 days |
 | 4. Execution views | Extract workflow dispatch/transcript finalization; introduce tracked workflow/graph task ownership and observation; migrate run creation, advance/run, retry, artifacts and supported graph resume. | Leaving/reopening a view neither repeats execution nor loses the durable final transcript; workflows and graphs retain separate APIs. | 5–8 days |
 | 5. Operational parity and cutover | Finish traces, timezone/theme/logout behavior, ingress smoke checks, asset packaging, docs and entry point; switch the default UI. | Full parity checklist passes behind the real ingress; rollback path exercised; no Shiny-only product feature remains. | 2–4 days |
 | 6. Remove legacy | Delete unused dashboard code and Shiny dependencies, refresh `uv.lock`, remove obsolete tests and launch option after an agreed validation window. | Production starts with compiled assets and Python only; retained regression tests cover moved policies. | 1–2 days |
 
-Expected total: approximately **18–31 engineer-days**. The largest uncertainty is
-execution disconnect/finalization behavior, followed by undocumented deployment
+Expected total for the component-reuse/custom-console route: approximately
+**20–34 engineer-days**, including the added reuse evaluation. No implementation
+savings from an upstream frontend are assumed until the prototype demonstrates
+them. Full-product adoption requires its own estimate. The largest uncertainty
+is execution disconnect/finalization behavior, followed by undocumented deployment
 assumptions. Do not replace the full UI before proving phase 2; that slice tests
 the architecture with a useful end-to-end feature.
 
