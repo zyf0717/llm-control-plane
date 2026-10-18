@@ -187,6 +187,112 @@ gateway replacement or workflow-platform adoption needs a revised architecture
 and estimate. The remaining sections describe the component-reuse/custom-console
 route and do not assume another application's backend can be removed unchanged.
 
+## assistant-ui stack assessment
+
+**Recommended role: the chat component and runtime layer inside the React
+operator console.** It can replace ShinyChat and a substantial amount of custom
+chat interaction code. The application shell, operational views, transport adapter
+and Python services remain project-owned. This is a source/documentation
+assessment; integration and eight-pane behavior remain prototype acceptance gates.
+
+assistant-ui offers both ready-made styled elements and unstyled accessible
+[primitives](https://www.assistant-ui.com/docs/primitives). Use the primitives
+with the proposed CSS/theme for tighter control, or adopt selected styled
+elements together with their actual styling dependencies. Avoid adding two
+independent chat/composer implementations.
+
+### Replacement map
+
+| Existing or proposed stack area | What assistant-ui replaces | What this project still implements |
+|---|---|---|
+| `shinychat.chat_ui`, `Chat`, chat sections of `app_ui.py` and `app_server.py` | Transcript, message/composer widgets, message actions and their runtime bindings, using [Thread](https://www.assistant-ui.com/docs/primitives/thread) and [Composer](https://www.assistant-ui.com/docs/primitives/composer). | Endpoint/settings controls, submission policy, backend calls and the surrounding operator layout. Removing the rest of Shiny still requires migrating the other views. |
+| Incremental message rendering and scroll/focus behavior | Runtime-driven message updates, viewport auto-scroll, composer interaction and accessible chat structure. | Decoding network frames, accumulating canonical request state, associating events with request IDs, and preserving interrupted/error outcomes. A runtime can display streams without providing this backend's transport. |
+| Markdown, reasoning and search-result presentation | Standard text/Markdown rendering and message-part composition; custom reasoning/source renderers can use its message context. | Evidence cards, raw JSON view and exact visibility rules. [Bare message primitives](https://www.assistant-ui.com/docs/primitives/message) render reasoning and source parts only when renderers are supplied. Hidden workflow steps remain hidden. |
+| `multi_slot.py` chat widget in each pane | One reusable thread/composer with a separate runtime scope per pane. | Pane grid/count, burst scheduling, busy guards, settings snapshots, preserved drafts, Stop all, and successful-history selection. A library thread list is not a concurrent eight-pane scheduler. |
+| Upload controls and attachment chips | Attachment selection/display lifecycle through an [attachment adapter](https://www.assistant-ui.com/docs/guides/attachments). | UTF-8 reading and limits, filename/text payloads, removal cleanup, inline augmentation and workflow `uploaded_source_text` mapping. Built-in image/file support does not establish compatibility with the current text-upload contract. |
+| History conversation selector and read-only transcript | [Thread-list primitives](https://www.assistant-ui.com/docs/primitives/thread-list) and message rendering can supply the UI. | Fetching existing conversation APIs, stable ID mapping, reload/reconciliation and backend fork operations. Expose archive/delete/rename only after corresponding backend support exists. |
+| `response_metrics.py` footer rendering | Message metadata/context supplies a place to render a custom metrics component. | Existing Python normalization, frozen model configuration, per-call attribution, missing-value rules, cache diagnostics and a custom metrics footer. Its [timing hook](https://www.assistant-ui.com/docs/guides/message-timing) is experimental and does not replace this project's measurement definitions. |
+| Workflow-backed chat in `app_server.py` | Common transcript/message-part UI for visible intermediate/final output. | Dispatch, run creation, step visibility, transcript publication, retries and execution ownership. Use custom data parts for workflow progress; displaying a tool card does not implement a workflow executor. |
+| Workflow, graph and trace tabs; endpoint/retrieval/provider selectors | Shared chat output widgets can be reused within these views. | Catalog forms, timelines, artifacts, graph resume controls, trace filters and all domain-specific clients/actions. |
+| React, Vite, browser routing, query cache and theme | Chat-specific runtime context removes some local UI wiring. | React/Vite, React Router, TanStack Query for server snapshots, CSS/theme, URL state and application-level coordination remain. |
+| FastAPI, search, routing/retrieval, workflow/graph engines, SQLite and credentials | No backend replacement is proposed. | All existing domain services, persistence and upstream authentication remain in Python. |
+
+### Runtime and transport choice
+
+Use **ExternalStoreRuntime first** because the proposed frontend deliberately
+owns request state, immutable diagnostics and multi-pane coordination. Its
+[external-store API](https://www.assistant-ui.com/docs/api-reference/external-store/runtime)
+adapts that state to chat widgets; it does not eliminate our reducer or transport.
+The adapter supplies messages, running/error state and submit/cancel callbacks.
+Keep composer UI state in the library and avoid a second copy of its input state
+except where burst controls must preserve pane drafts.
+
+**LocalRuntime is a valid simpler alternative**, including for a Python backend.
+Its [ChatModelAdapter](https://www.assistant-ui.com/docs/runtimes/custom/local-runtime)
+can call our HTTP API and yield incremental results while the runtime owns local
+message state. It could replace more custom message/run bookkeeping, particularly
+in ephemeral panes. For durable chat, the adapter must still send new turns only,
+load canonical backend history, and route forks through Python. Compare it in the
+same spike; choose it if those policies stay simple. Start with one runtime
+strategy for both chat modes and split only if there is a clear reduction in code.
+
+The runtime adapter can call `/api/ui/v1/chat/stream` directly. Retain `fetch`,
+abort handling, the SSE parser and per-protocol event reducers in the browser API
+client. assistant-ui's supported protocol/framework runtimes provide different
+tradeoffs, but adopting AI SDK/DataStream/AssistantTransport would require a
+deliberate protocol adapter; the current stream does not become compatible by
+installing a package. The OpenAI `/v1` facade proposed for complete companion
+applications is not required for this integration. The LangGraph runtime also
+does not directly consume our custom `/graph-runs` contract.
+
+```mermaid
+flowchart LR
+    UI[assistant-ui thread, composer and message parts] <--> RT[Runtime adapter]
+    RT <--> ST[Project request and pane state]
+    ST <--> HTTP[Typed fetch and SSE client]
+    HTTP <--> API[FastAPI UI and existing domain APIs]
+    API --> PY[Python routing, search, execution and SQLite]
+```
+
+For ExternalStoreRuntime, the minimal package scope is `@assistant-ui/react` and,
+when using its Markdown renderer, `@assistant-ui/react-markdown`. The latter
+[depends on react-markdown](https://github.com/assistant-ui/assistant-ui/blob/main/packages/react-markdown/package.json),
+so it replaces our Markdown integration code rather than removing that renderer
+from the dependency tree. Core package peer dependencies are
+[React and React DOM](https://github.com/assistant-ui/assistant-ui/blob/main/packages/react/package.json);
+the proposed integration can retain a static Vite frontend and Python-only
+production server. No Vercel AI SDK or production Next.js server is required by
+this runtime choice. Keep Assistant Cloud unconfigured and retain SQLite history.
+
+### Adoption conditions
+
+Add these checks to the existing reuse spike, without increasing its scope to a
+full frontend migration:
+
+- Preserve separate search evidence, workflow outputs and final answers.
+  External message conversion can join adjacent assistant messages; select an
+  explicit join policy and verify that message IDs, metadata and metrics remain
+  associated with the right output. Diagnostic data must not enter model inputs.
+- Keep edit/regenerate/branch controls disabled until they invoke real backend
+  operations. The library's alternate-answer branches and our system-prompt/
+  reasoning conversation forks represent different state changes.
+- Keep runtime instances and active request state alive across route changes and
+  hidden panes. Eight panes must maintain separate input, messages, running state,
+  request IDs and abort controllers. Ignore late events from aborted requests.
+- Map cancellation to **Stop receiving** under current backend semantics.
+  Cancelling a runtime or fetch does not establish that inference or a run stopped.
+- Verify explicit reasoning/source rendering, upload augmentation, raw JSON,
+  preserved zero/missing metrics and backend history reload. Observe browser
+  network requests to verify the selected configuration uses only intended APIs.
+- Pin the tested package versions. Prefer documented stable entry points over
+  experimental timing, persistence or internal runtime APIs. Treat registry
+  component code copied into the project as code we must maintain.
+
+Adopt if these checks pass with a small adapter and custom message renderers.
+The expected saving is chat widget, interaction and rendering work; backend
+extraction, execution lifecycle fixes and operational views remain on the critical
+path. Keep the existing estimate until a working slice establishes actual savings.
+
 ## Framework decision
 
 Framework suitability here depends on managing concurrent streams, rich diagnostic
@@ -218,7 +324,7 @@ Use this initial frontend stack for the component-reuse/custom-console route:
 | Server snapshots and catalogs | TanStack Query. Disable focus/reconnect refetch for model discovery and disable automatic retries for commands. Streams have their own lifecycle. |
 | Local state | Feature reducers and small context providers; add a global state library only if measured complexity warrants it. |
 | Components and styling | Semantic HTML, CSS variables and CSS modules; accessible library primitives only where needed for dialogs, menus or tabs. |
-| Model output | assistant-ui chat primitives if the reuse evaluation passes; otherwise `react-markdown` with GFM support. Keep raw HTML disabled and reasoning, evidence, errors and metrics separate. |
+| Model output | assistant-ui chat primitives and `@assistant-ui/react-markdown` if the reuse evaluation passes; otherwise a direct `react-markdown` integration. Keep raw HTML disabled and reasoning, evidence, errors and metrics separate. |
 | API types | [openapi-typescript](https://openapi-ts.dev/introduction) for documented HTTP contracts; explicit schemas/fixtures for stream frames and dynamic workflow/graph payloads. |
 | Streaming | `fetch`, `AbortController`, and an established SSE parser such as [eventsource-parser](https://github.com/rexxars/eventsource-parser). |
 | Verification | Vitest and Testing Library for behavior; Playwright for browser flows against deterministic backend fixtures. |
