@@ -4,6 +4,7 @@
 
 - [Getting Started](getting-started.md): environment setup, runtime entry points, and developer workflow.
 - [Architecture](architecture.md): components, routing internals, smart routing semantics, reasoning extraction, and the end-to-end flow diagram.
+- [Frontend Migration Plan](frontend-migration.md): proposed browser architecture, framework comparison, keep/refactor/replace decisions, and staged migration gates.
 - [Configuration](configuration.md): `config.yaml` schema, workload preferences, RAG, and search service configuration.
 - [API Guide](api.md): proxy endpoints, request headers, streaming behavior, workflow APIs, and response metadata.
 - [Dashboard Guide](dashboard.md): Single-Slot chat, workflow dispatch, workflow run management, and runtime observability.

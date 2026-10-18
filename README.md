@@ -9,6 +9,7 @@ The repo is intentionally pragmatic rather than framework-heavy: it keeps routin
 - [Docs Index](docs/README.md)
 - [Getting Started](docs/getting-started.md)
 - [Architecture](docs/architecture.md)
+- [Frontend Migration Plan](docs/frontend-migration.md)
 - [Configuration](docs/configuration.md)
 - [API Guide](docs/api.md)
 - [Dashboard Guide](docs/dashboard.md)
