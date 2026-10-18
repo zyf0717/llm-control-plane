@@ -106,6 +106,39 @@ async def test_unavailable_endpoint_notifies_caller():
     assert errors == ["Endpoint 'missing' not available"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reasoning_key", ["reasoning", "reasoning_content"])
+async def test_first_token_includes_hidden_reasoning_and_slot_zero_is_retained(reasoning_key):
+    first_tokens = []
+    metadata = []
+    response = _FakeStreamingResponse(headers={}, lines=[])
+
+    async def lines():
+        yield 'data: {"choices":[{"delta":{"role":"assistant"}}]}'
+        assert first_tokens == []
+        yield "data: " + json.dumps({"choices": [{"delta": {reasoning_key: "Thinking"}}]})
+        assert first_tokens == [True]
+        yield 'data: {"choices":[{"delta":{"content":"Answer"}}],"id_slot":0}'
+        yield 'data: {"choices":[],"usage":{"completion_tokens":12}}'
+        yield 'data: [DONE]'
+
+    response.aiter_lines = lines
+    with patch("httpx.AsyncClient") as client_class:
+        client = Mock()
+        client_class.return_value.__aenter__.return_value = client
+        client.stream.return_value = _FakeStreamSource(response)
+        chunks = [chunk async for chunk in stream_chat_response(
+            endpoint_key="node", text="hello", endpoints_dict={"node": {}},
+            output_reasoning=False, on_first_token=lambda: first_tokens.append(True),
+            on_metadata=metadata.append,
+        )]
+
+    assert chunks == ["Answer"]
+    assert first_tokens == [True]
+    assert metadata[-1]["slot"] == {"id": 0}
+    assert metadata[-1]["usage"] == {"completion_tokens": 12}
+
+
 def test_build_chat_messages_includes_turn_local_search_evidence_after_system_prompt():
     messages = build_chat_messages(
         text="Need sources",
@@ -342,3 +375,52 @@ async def test_stream_chat_response_surfaces_proxy_error(monkeypatch, output_rea
     prefix = "<em>Thinking</em>\n\n" if output_reasoning else ""
     assert "".join(chunks) == prefix + "Error: HTTP 400"
     assert states == ["busy", "ready"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [True, False])
+async def test_json_output_still_reports_metrics(monkeypatch, stream):
+    monkeypatch.setattr(chat_client, "PROXY_BASE_URL", "http://proxy.local")
+    usage = {"prompt_tokens": 12, "completion_tokens": 3}
+    final = {"choices": [], "usage": usage, "id_slot": 0}
+    response = _FakeStreamingResponse(headers={}, lines=[
+        'data: {"choices":[{"delta":{"reasoning_content":"thinking"}}]}',
+        "data: " + json.dumps(final), "data: [DONE]",
+    ]) if stream else _FakeResponse(headers={}, payload=final)
+    metadata = []
+    first_tokens = []
+    with patch("httpx.AsyncClient") as client_class:
+        client = Mock()
+        client.stream.return_value = _FakeStreamSource(response)
+        client.post = AsyncMock(return_value=response)
+        client_class.return_value.__aenter__.return_value = client
+        chunks = [chunk async for chunk in stream_chat_response(
+            endpoint_key="smart", text="hello", endpoints_dict={}, stream=stream,
+            output_json=True, on_metadata=metadata.append,
+            on_first_token=lambda: first_tokens.append(True),
+        )]
+    assert "```json" in "".join(chunks)
+    assert metadata[-1]["usage"] == usage
+    assert metadata[-1]["slot"] == {"id": 0}
+    assert first_tokens == ([True] if stream else [])
+
+
+@pytest.mark.asyncio
+async def test_json_stream_marks_proxy_failure_and_stops(monkeypatch):
+    monkeypatch.setattr(chat_client, "PROXY_BASE_URL", "http://proxy.local")
+    response = _FakeStreamingResponse(headers={}, lines=[
+        'data: {"type":"proxy.error","detail":"connection lost"}',
+        'data: {"choices":[{"delta":{"content":"must not render"}}]}',
+    ])
+    errors = []
+    with patch("httpx.AsyncClient") as client_class:
+        client = Mock()
+        client.stream.return_value = _FakeStreamSource(response)
+        client_class.return_value.__aenter__.return_value = client
+        chunks = [chunk async for chunk in stream_chat_response(
+            endpoint_key="smart", text="hello", endpoints_dict={},
+            output_json=True, on_error=errors.append,
+        )]
+    assert errors == ["connection lost"]
+    assert "must not render" not in "".join(chunks)
+    assert "".join(chunks).endswith("```\n")

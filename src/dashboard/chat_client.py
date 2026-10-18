@@ -63,6 +63,11 @@ def _extract_metadata(
         if key in obj and isinstance(obj[key], dict):
             combined[key] = obj[key]
 
+    for key in ("id_slot", "slot_id"):
+        if obj.get(key) is not None:
+            combined["slot"] = {"id": obj[key]}
+            break
+
     is_auto_routing = (
         endpoint_key == "smart"
         or (
@@ -158,6 +163,7 @@ async def stream_chat_response(
     on_metadata: Optional[MetadataCallback] = None,
     on_send_button_state: Optional[StateCallback] = None,
     on_error: Optional[StateCallback] = None,
+    on_first_token: Optional[Callable[[], None]] = None,
 ) -> AsyncGenerator[str, None]:
     """Proxy a dashboard chat request and stream the response back to the UI."""
     text = (text or "Hello! What model are you?").strip()
@@ -256,6 +262,7 @@ async def stream_chat_response(
 
                     reasoning_chunk_found = False
                     md_code_wrap = True
+                    first_token_seen = False
 
                     async for line in response.aiter_lines():
                         if not line or not line.startswith("data: "):
@@ -269,23 +276,35 @@ async def stream_chat_response(
                         except json.JSONDecodeError:
                             continue
 
+                        choices = obj.get("choices") or []
+                        delta = choices[0].get("delta", {}) if choices else {}
+                        if not first_token_seen and any(
+                            delta.get(key) for key in ("content", "reasoning", "reasoning_content")
+                        ):
+                            first_token_seen = True
+                            if on_first_token:
+                                on_first_token()
+
+                        publish_metadata(obj)
+                        if obj.get("type") == "proxy.error" and on_error:
+                            on_error(str(obj.get("detail") or "Upstream request failed"))
+
                         if output_json:
                             if md_code_wrap:
                                 yield "```json\n"
                                 md_code_wrap = False
                             yield f"{json.dumps(obj, indent=2)},\n"
+                            if obj.get("type") == "proxy.error":
+                                break
                             continue
 
                         if obj.get("type") == "proxy.error":
                             if reasoning_chunk_found:
                                 yield "</em>\n\n"
                             detail = obj.get("detail") or "Upstream request failed"
-                            if on_error:
-                                on_error(str(detail))
                             yield f"Error: {detail}"
                             break
 
-                        choices = obj.get("choices", [])
                         if choices:
                             if output_reasoning:
                                 delta = choices[0].get("delta", {})
@@ -306,8 +325,6 @@ async def stream_chat_response(
                                     yield "</em>\n\n---\n\n"
                                     reasoning_chunk_found = False
                                 yield content_chunk
-
-                        publish_metadata(obj)
 
                     if not md_code_wrap:
                         yield "```\n"

@@ -12,6 +12,7 @@ from shiny import reactive, render, ui
 from shinychat import Chat, chat_ui
 
 from .chat_client import stream_chat_response
+from .response_metrics import response_metrics_ui
 from .utils import create_endpoint_display_choices
 
 MAX_PANES = 8
@@ -48,6 +49,8 @@ class SlotConversation:
     status: str = "Ready"
     started_at: float | None = None
     elapsed: float | None = None
+    ttft: float | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def prepare(self, text: str, settings: dict[str, Any]) -> dict[str, Any]:
         if self.busy:
@@ -64,6 +67,8 @@ class SlotConversation:
         self.status = "Running"
         self.started_at = time.perf_counter()
         self.elapsed = None
+        self.ttft = None
+        self.metadata = {}
         return request
 
     async def response(self, request: dict[str, Any]) -> AsyncIterator[str]:
@@ -74,8 +79,17 @@ class SlotConversation:
             nonlocal failed
             failed = True
 
+        def on_metadata(metadata):
+            self.metadata = deepcopy(metadata or {})
+
+        def on_first_token():
+            if self.ttft is None and self.started_at is not None:
+                self.ttft = max(0.0, time.perf_counter() - self.started_at)
+
         try:
-            async for chunk in stream_chat_response(**request, on_error=on_error):
+            async for chunk in stream_chat_response(
+                **request, on_error=on_error, on_metadata=on_metadata, on_first_token=on_first_token
+            ):
                 chunks.append(chunk)
                 yield chunk
             self.status = "Failed" if failed else "Completed"
@@ -92,6 +106,9 @@ class SlotConversation:
         except Exception as exc:
             self.status = "Failed"
             yield f"Error: {exc}"
+        finally:
+            if self.started_at is not None:
+                self.elapsed = max(0.0, time.perf_counter() - self.started_at)
 
     def finish(self, *, cancelled: bool = False, error: bool = False) -> None:
         """Finalize after the UI stream task ends, even if it never yielded a chunk."""
@@ -99,9 +116,21 @@ class SlotConversation:
             self.status = "Stopped"
         elif error:
             self.status = "Failed"
-        if self.started_at is not None:
+        if self.elapsed is None and self.started_at is not None:
             self.elapsed = max(0.0, time.perf_counter() - self.started_at)
         self.busy = False
+
+
+async def response_with_metrics(pane: SlotConversation, request: dict[str, Any]) -> AsyncIterator[Any]:
+    """Append UI telemetry within the same message, outside the model's history."""
+    try:
+        async for chunk in pane.response(request):
+            yield chunk
+    except asyncio.CancelledError:
+        yield response_metrics_ui(pane.metadata, elapsed=pane.elapsed, ttft=pane.ttft, status=pane.status)
+        raise
+    else:
+        yield response_metrics_ui(pane.metadata, elapsed=pane.elapsed, ttft=pane.ttft, status=pane.status)
 
 
 def multi_slot_ui():
@@ -122,13 +151,13 @@ def multi_slot_ui():
                 ),
                 ui.input_text("multiSlotTemperature", "Temperature", placeholder="Server default"),
                 ui.input_text("multiSlotMaxTokens", "Maximum output tokens", placeholder="Server default"),
-                ui.p("Settings apply to new requests; active responses keep their settings."),
+                ui.p("Generation settings apply to new requests; active responses keep their settings."),
+                ui.input_switch("multiSlotShowMetrics", "Show response metrics", True),
             ),
             ui.tags.details(
                 ui.tags.summary("Burst test"),
                 ui.input_text_area("multiSlotBroadcast", "Shared prompt", rows=4),
-                ui.input_action_button("multiSlotSendAll", "Send all"),
-                ui.p("Send once to each visible idle conversation. Individual drafts are preserved."),
+                ui.input_action_button("multiSlotSendAll", "Send all", width="100%"),
             ),
             ui.input_action_button("multiSlotStop", "Stop all"),
             ui.input_action_button("multiSlotReset", "Reset chats"),
@@ -230,7 +259,7 @@ def multi_slot_server(input, output, session, available_endpoints, refresh_endpo
         try:
             if append_user:
                 await chats[index].append_message({"role": "user", "content": request["text"]})
-            task = await chats[index].append_message_stream(pane.response(request))
+            task = await chats[index].append_message_stream(response_with_metrics(pane, request))
             tasks[index].set(task)
         except BaseException:
             pane.finish(error=True)
@@ -283,7 +312,7 @@ def multi_slot_server(input, output, session, available_endpoints, refresh_endpo
         revision.get()
         await session.send_custom_message(
             "multiSlotControls",
-            {"busy": any_busy()},
+            {"busy": any_busy(), "showMetrics": input.multiSlotShowMetrics()},
         )
 
     @reactive.effect

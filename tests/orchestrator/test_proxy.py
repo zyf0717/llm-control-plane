@@ -6,6 +6,7 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, Mock, patch
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -253,6 +254,32 @@ class TestEndpointRouting:
             "assistant_chars": 5,
             "assistant_persisted": True,
         }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("partial", [False, True])
+    async def test_stream_read_error_has_visible_detail(self, mock_request, partial):
+        upstream = _FakeStreamingResponse()
+
+        async def failed_lines():
+            if partial:
+                yield 'data: {"choices":[{"delta":{"content":"partial"}}]}'
+            raise httpx.ReadError("")
+
+        upstream.aiter_lines = failed_lines
+        with patch("httpx.AsyncClient") as client_class, patch.object(
+            proxy_module.logger, "exception"
+        ) as log_error:
+            client = Mock()
+            client.stream.return_value = _FakeStreamContext(upstream)
+            client_class.return_value.__aenter__.return_value = client
+            response = await ProxyHandler.stream_response(
+                mock_request, "https://test.example.com/v1/chat/completions", {}, None
+            )
+            content = b"".join([chunk async for chunk in response.body_iterator])
+
+        assert b"ReadError: upstream response stream failed" in content
+        assert (b"partial" in content) == partial
+        log_error.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_stream_history_finalization_survives_caller_cancellation(

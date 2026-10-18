@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from src.dashboard import multi_slot
-from src.dashboard.multi_slot import SlotConversation, parse_generation_settings
+from src.dashboard.multi_slot import SlotConversation, parse_generation_settings, response_with_metrics
 
 
 def test_generation_settings_keep_defaults_and_explicit_zero():
@@ -158,4 +158,82 @@ async def test_cancellation_closes_stream_and_keeps_partial_reply_out_of_history
     assert pane.status == "Stopped"
     assert not pane.busy
     assert pane.elapsed >= 0
+    assert pane.history == []
+
+
+@pytest.mark.asyncio
+async def test_metrics_are_frozen_per_response_and_excluded_from_model_history(monkeypatch):
+    clock = iter([10.0, 10.75, 12.0, 20.0])
+    monkeypatch.setattr(multi_slot.time, "perf_counter", lambda: next(clock))
+
+    async def fake_stream(**request):
+        request["on_first_token"]()
+        yield "Hello world"
+        request["on_metadata"]({
+            "usage": {"prompt_tokens": 17, "completion_tokens": 4},
+            "timings": {"predicted_per_second": 2.5},
+        })
+
+    monkeypatch.setattr(multi_slot, "stream_chat_response", fake_stream)
+    pane = SlotConversation()
+    chunks = [chunk async for chunk in response_with_metrics(pane, pane.prepare("hello", {}))]
+    pane.finish()
+
+    assert chunks[0] == "Hello world"
+    footer = str(chunks[1])
+    assert "TTFT 0.75s" in footer
+    assert "Total 2.00s" in footer
+    assert "Tokens 17 in / 4 out" in footer
+    assert "2.5 tok/s" in footer
+    follow_up = pane.prepare("more", {})
+    assert pane.metadata == {}
+    assert pane.ttft is None
+    assert follow_up["extra_turn_messages"] == [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "Hello world"},
+    ]
+    assert str(chunks[1]) == footer
+
+
+@pytest.mark.asyncio
+async def test_failed_response_has_metrics_without_a_false_first_token(monkeypatch):
+    async def fake_stream(**request):
+        request["on_error"]("connection lost")
+        yield "Error: connection lost"
+
+    monkeypatch.setattr(multi_slot, "stream_chat_response", fake_stream)
+    pane = SlotConversation()
+    chunks = [chunk async for chunk in response_with_metrics(pane, pane.prepare("hello", {}))]
+
+    assert "Failed" in str(chunks[-1])
+    assert "TTFT —" in str(chunks[-1])
+    assert pane.ttft is None
+    assert pane.history == []
+
+
+@pytest.mark.asyncio
+async def test_cancelled_stream_includes_metrics_and_still_propagates_cancellation(monkeypatch):
+    started = asyncio.Event()
+
+    async def fake_stream(**request):
+        request["on_first_token"]()
+        yield "partial"
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(multi_slot, "stream_chat_response", fake_stream)
+    pane = SlotConversation()
+    chunks = []
+
+    async def collect():
+        async for chunk in response_with_metrics(pane, pane.prepare("hello", {})):
+            chunks.append(chunk)
+
+    task = asyncio.create_task(collect())
+    await asyncio.wait_for(started.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert chunks[0] == "partial"
+    assert "Stopped" in str(chunks[-1])
     assert pane.history == []

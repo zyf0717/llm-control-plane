@@ -51,6 +51,7 @@ from src.dashboard.workflow_server_helpers import (
     merge_repo_context_repo_name,
     merge_uploaded_source_text,
     workflow_chat_response_text,
+    workflow_chat_step_metadata,
 )
 from src.search.safety import EPHEMERAL_WEB_SEARCH_EVIDENCE_MARKER
 
@@ -376,6 +377,21 @@ def test_workflow_chat_response_text_uses_last_completed_step_text():
     )
 
     assert text == "final answer"
+
+
+def test_workflow_metrics_use_only_the_response_step():
+    snapshot = {"steps": [
+        {"step_id": "planner", "output_json": {"metadata": {
+            "usage": {"prompt_tokens": 100, "completion_tokens": 20}
+        }}},
+        {"step_id": "answer", "output_json": {"metadata": {
+            "usage": {"prompt_tokens": 200, "completion_tokens": 30}
+        }}},
+    ]}
+    assert workflow_chat_step_metadata(snapshot, "answer") == {
+        "usage": {"prompt_tokens": 200, "completion_tokens": 30}
+    }
+    assert workflow_chat_step_metadata(snapshot, "missing") == {}
 
 
 def test_workflow_chat_response_text_falls_back_to_artifact_text():

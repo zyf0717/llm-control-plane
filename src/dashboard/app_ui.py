@@ -84,6 +84,18 @@ app_ui = ui.page_fluid(
 
         .multi-slot-grid > div { min-width: 0; }
 
+        .response-metrics {
+            margin-top: 0.75rem;
+            padding-top: 0.5rem;
+            border-top: 1px solid var(--bs-border-color);
+            color: var(--bs-secondary-color);
+            font-size: 0.8rem;
+        }
+
+        .response-metrics-summary { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; }
+        .response-metrics details { margin-top: 0.25rem; }
+        .hide-response-metrics .response-metrics { display: none; }
+
         @media (max-width: 767.98px) {
             .multi-slot-grid { grid-template-columns: 1fr; }
         }
@@ -237,6 +249,19 @@ app_ui = ui.page_fluid(
         }
         """),
     ui.tags.script("""
+        // Keep application traffic flowing through proxies during long model requests.
+        let dashboardHeartbeatTimer;
+        $(document).on("shiny:connected", function() {
+            clearInterval(dashboardHeartbeatTimer);
+            dashboardHeartbeatTimer = setInterval(function() {
+                Shiny.setInputValue("dashboardHeartbeat", Date.now(), {priority: "event"});
+            }, 20000);
+        });
+        $(document).on("shiny:disconnected", function() {
+            clearInterval(dashboardHeartbeatTimer);
+        });
+        Shiny.addCustomMessageHandler("dashboardHeartbeat", function(_message) {});
+
         function dashboardInputContainer(input) {
             return input.closest(".form-group, .shiny-input-container") || input.parentElement;
         }
@@ -316,7 +341,16 @@ app_ui = ui.page_fluid(
             });
         });
 
+        Shiny.addCustomMessageHandler("singleSlotMetrics", function(message) {
+            document.getElementById("chat").classList.toggle(
+                "hide-response-metrics", !message.showMetrics
+            );
+        });
+
         Shiny.addCustomMessageHandler("multiSlotControls", function(message) {
+            document.querySelector(".multi-slot-grid").classList.toggle(
+                "hide-response-metrics", !message.showMetrics
+            );
             ["multiSlotEndpoint", "multiSlotCount"].forEach(function(id) {
                 setDashboardSelectDisabled(id, message.busy);
             });
@@ -356,7 +390,7 @@ app_ui = ui.page_fluid(
         """),
     ui.navset_bar(
         ui.nav_panel(
-            "Single-Node",
+            "Single-Slot",
             ui.layout_sidebar(
                 ui.sidebar(
                     ui.tags.script("""
@@ -378,6 +412,7 @@ app_ui = ui.page_fluid(
                     ui.input_switch("stream", "Streaming", True),
                     ui.input_switch("outputJSON", "JSON output", False),
                     ui.input_switch("outputReasoning", "Show reasoning", True),
+                    ui.input_switch("showResponseMetrics", "Show response metrics", True),
                     ui.input_select(
                         "reasoningEffort",
                         "Reasoning Level",
@@ -460,7 +495,7 @@ app_ui = ui.page_fluid(
                 ),
                 fillable=True,
             ),
-            value="single_node",
+            value="single_slot",
         ),
         ui.nav_panel(
             "Multi-Slot",
@@ -697,7 +732,7 @@ app_ui = ui.page_fluid(
             value="traces",
         ),
         id="dashboardNav",
-        selected="single_node",
+        selected="single_slot",
         title="LLM Control Plane",
     ),
     theme=shinyswatch.theme.flatly,

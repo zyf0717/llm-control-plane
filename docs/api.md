@@ -238,7 +238,7 @@ Behavior:
 - may include filtered `reranking` metadata when reranking ran, including configured `backend` and actual `path` (`dedicated`, `llm`, or `none`)
 - includes `wrapped_results`, a JSON string marked as untrusted for downstream LLM use
 
-Single-Node dashboard search sends `count: 5` and `use_reranker: false`. Direct API callers can opt into inline reranking. Workflow search may either use the query refiner for plain search prompts or bypass it for workflow-planned JSON queries; workflow reranking must be represented as an explicit `rerank` workflow step, not as fields on a search step.
+Single-Slot dashboard search sends `count: 5` and `use_reranker: false`. Direct API callers can opt into inline reranking. Workflow search may either use the query refiner for plain search prompts or bypass it for workflow-planned JSON queries; workflow reranking must be represented as an explicit `rerank` workflow step, not as fields on a search step.
 
 See [Search Guide](search.md) for provider, query-refiner, and reranker details.
 

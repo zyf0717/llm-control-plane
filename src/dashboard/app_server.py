@@ -14,7 +14,9 @@ from shiny.types import SilentException
 load_dotenv()
 
 from .chat_client import stream_chat_response
+from .cache_telemetry import normalize_cache_telemetry
 from .multi_slot import multi_slot_server
+from .response_metrics import ResponseMetrics
 from .formatters import (
     format_all_available_models,
     format_cache_info,
@@ -83,6 +85,7 @@ from .workflow_server_helpers import (
     merge_uploaded_source_text,
     workflow_chat_response_text,
     workflow_chat_run_info,
+    workflow_chat_step_metadata,
     workflow_snapshot_status,
 )
 from .workflow_client import (
@@ -524,6 +527,17 @@ def build_fork_notice(
 
 
 def server(input, output, session):
+    @reactive.effect
+    @reactive.event(input.dashboardHeartbeat)
+    async def _heartbeat():
+        await session.send_custom_message("dashboardHeartbeat", {})
+
+    @reactive.effect
+    async def _response_metrics_visibility():
+        await session.send_custom_message(
+            "singleSlotMetrics", {"showMetrics": input.showResponseMetrics()}
+        )
+
     available_endpoints = reactive.Value({})
     endpoint_info = reactive.Value({})
     endpoint_display_mapping = reactive.Value({})
@@ -1876,6 +1890,7 @@ def server(input, output, session):
     async def _handle_chat_input_impl(
         user_input: str,
         finalize_runtime: Callable[[], None],
+        metrics: ResponseMetrics,
     ) -> bool:
         current_endpoints = available_endpoints.get()
         current_run_info = run_info.get() or {}
@@ -2109,6 +2124,8 @@ def server(input, output, session):
                             channel = str(event.get("channel") or "content")
                             if not content:
                                 continue
+                            if channel in {"content", "reasoning"}:
+                                metrics.on_first_token()
                             if visibility == "intermediate" and channel == "content":
                                 if open_intermediate_step != step_id:
                                     closing = await close_intermediate()
@@ -2135,6 +2152,11 @@ def server(input, output, session):
                             continue
 
                         if event_type == "step_completed":
+                            if visibility == "final" and isinstance(snapshot, dict):
+                                metadata = workflow_chat_step_metadata(snapshot, step_id)
+                                metrics.metadata = {
+                                    **metadata, "cache": normalize_cache_telemetry(metadata)
+                                }
                             content = str(event.get("content") or "")
                             streamed = bool(event.get("streamed"))
                             if visibility == "intermediate":
@@ -2166,6 +2188,7 @@ def server(input, output, session):
                             continue
 
                         if event_type == "error":
+                            metrics.on_error(str(event.get("error") or "workflow failed"))
                             if open_intermediate_step:
                                 yield await close_intermediate()
                             if final_reasoning_open:
@@ -2190,6 +2213,8 @@ def server(input, output, session):
                                     workflow_snapshot_status(final_snapshot)
                                     or "unknown"
                                 )
+                                if status in {"failed", "cancelled"}:
+                                    metrics.status = "Stopped" if status == "cancelled" else "Failed"
                                 workflow_status_message.set(
                                     f"Ran {run_id}: status {status}."
                                 )
@@ -2219,7 +2244,9 @@ def server(input, output, session):
                             return
 
                 await chat.append_message_stream(
-                    stream_with_finalizer(workflow_response_stream(), finalize_runtime)
+                    metrics.stream(
+                        stream_with_finalizer(workflow_response_stream(), finalize_runtime)
+                    )
                 )
                 runtime_deferred = True
                 if conversation_id and not bool(prompt_state.get("started")):
@@ -2235,9 +2262,12 @@ def server(input, output, session):
                     )
             except Exception as exc:
                 message = f"Workflow dispatch failed: {exc}"
+                metrics.on_error(message)
                 workflow_status_message.set(message)
                 await chat.append_message(
-                    {"role": "assistant", "content": f"Error: {message}"}
+                    {"role": "assistant", "content": ui.div(
+                        ui.markdown(f"Error: {message}"), metrics.footer()
+                    )}
                 )
             finally:
                 send_button_state.set("ready")
@@ -2282,6 +2312,7 @@ def server(input, output, session):
             run_info.set(merge_run_info({}, search_state))
 
         def publish_run_info(metadata: Optional[Dict[str, Any]]) -> None:
+            metrics.metadata = deepcopy(metadata or {})
             merged_info = merge_run_info(metadata, search_state)
             run_info.set(merged_info)
 
@@ -2301,9 +2332,11 @@ def server(input, output, session):
             retrieval_endpoint=retrieval_endpoint if retrieval_endpoint else None,
             on_metadata=publish_run_info,
             on_send_button_state=send_button_state.set,
+            on_error=metrics.on_error,
+            on_first_token=metrics.on_first_token,
         )
         await chat.append_message_stream(
-            stream_with_finalizer(response_stream, finalize_runtime)
+            metrics.stream(stream_with_finalizer(response_stream, finalize_runtime))
         )
 
         if conversation_id and not bool(prompt_state.get("started")):
@@ -2322,6 +2355,7 @@ def server(input, output, session):
     @chat.on_user_submit
     async def _handle_chat_input(user_input: str):
         task_started_at = time.perf_counter()
+        metrics = ResponseMetrics(started_at=task_started_at)
         last_runtime.set(None)
         runtime_finalized = False
 
@@ -2334,7 +2368,7 @@ def server(input, output, session):
 
         runtime_deferred = False
         try:
-            runtime_deferred = await _handle_chat_input_impl(user_input, finalize_runtime)
+            runtime_deferred = await _handle_chat_input_impl(user_input, finalize_runtime, metrics)
         finally:
             if not runtime_deferred:
                 finalize_runtime()
