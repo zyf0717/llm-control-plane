@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from src.logging_config import LOG_DIR_ENV
 from src.orchestrator import proxy_services as proxy_module
 from src.orchestrator.conversation_store import MemoryConversationStore
-from src.orchestrator.proxy import app
+from src.orchestrator.proxy import app, list_models
 from src.orchestrator.request_processor import RequestProcessor
 from src.orchestrator.upstream_proxy import ProxyHandler
 from src.orchestrator.utils import HeaderManager
@@ -1579,6 +1579,47 @@ class TestCanonicalConversationState:
 
 class TestModelsEndpoint:
     """Tests for the /models endpoint functionality."""
+
+    @pytest.mark.asyncio
+    async def test_list_models_cancels_stalled_probes_and_keeps_healthy_models(self):
+        endpoints = [
+            {"name": name, "url": f"https://{name}.example.com"}
+            for name in ["slow-a", "healthy", "slow-b"]
+        ]
+        cancelled = set()
+        real_timeout = asyncio.timeout
+
+        async def mock_get(url, **_kwargs):
+            if "slow-" in url:
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cancelled.add(url)
+            return _MockUpstreamResponse({"data": [{"id": "halogen-qwen3.8-flash-next"}]})
+
+        with (
+            patch("src.orchestrator.proxy_services.endpoints", endpoints),
+            patch("httpx.AsyncClient") as mock_client_class,
+            patch(
+                "src.orchestrator.proxy.asyncio.timeout",
+                side_effect=lambda _seconds: real_timeout(0.05),
+            ) as deadline,
+        ):
+            mock_client = AsyncMock()
+            mock_client.get.side_effect = mock_get
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            result = await asyncio.wait_for(list_models(), timeout=1.0)
+
+        assert [call.args for call in deadline.call_args_list] == [(5.0,)] * 3
+        assert cancelled == {
+            "https://slow-a.example.com/v1/models",
+            "https://slow-b.example.com/v1/models",
+        }
+        assert [(model["endpoint"], model["id"]) for model in result["data"]] == [
+            ("healthy", "halogen-qwen3.8-flash-next")
+        ]
+        assert proxy_module.reachable_endpoints == ["healthy"]
 
     @pytest.mark.asyncio
     async def test_list_models_success(self):

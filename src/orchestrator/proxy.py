@@ -325,7 +325,8 @@ async def list_models():
         try:
             headers = HeaderManager.create_auth_headers()
 
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            # Leave time for aggregation within the dashboard's 10-second timeout.
+            async with asyncio.timeout(5.0), httpx.AsyncClient(timeout=5.0) as client:
                 resp = None
                 for models_url in [f"{url}/v1/models"]:
                     try:
@@ -384,7 +385,7 @@ async def list_models():
 
                 return endpoint_models
 
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, TimeoutError) as exc:
             services.logger.warning("Failed to fetch models from %s: %s", name, exc)
             return []
         except Exception as exc:
