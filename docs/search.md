@@ -7,7 +7,7 @@ Search is a candidate-discovery subsystem exposed through `POST /search/web` and
 | Path | Query source | Rerank behavior |
 |---|---|---|
 | Direct API `/search/web` | Request body `query`, optionally refined | Reranker is off by default; send `use_reranker: true` to enable |
-| Dashboard Single-Node search | Latest user turn plus compact conversation context | Dashboard sends `count: 5` and `use_reranker: false` |
+| Dashboard Single-Slot search | Latest user turn plus compact conversation context | Dashboard sends `count: 5` and `use_reranker: false` |
 | Workflow `search` step | Rendered step prompt, possibly multiple planned queries | Search never reranks inline; use a separate `rerank` step |
 
 ## `/search/web`
@@ -78,10 +78,10 @@ Items may identify candidates by `index`, `id`, or position. Scores are normaliz
 
 For contextual workflows using a strong dedicated reranker, the current built-in pattern plans up to five search queries, requests up to twenty results per query, merges them, and reranks to ten final candidates.
 
-## Dashboard Single-Node Search
+## Dashboard Single-Slot Search
 
-The Single-Node tab search provider selector controls ad hoc search augmentation. When selected, the dashboard calls `/search/web`, renders a search-candidate preface, and injects one turn-local untrusted synthetic user message. That synthetic message is merged into the next real user turn by the proxy and is not persisted as durable conversation history.
+The Single-Slot tab search provider selector controls ad hoc search augmentation. When selected, the dashboard calls `/search/web`, renders a search-candidate preface, and injects one turn-local untrusted synthetic user message. That synthetic message is merged into the next real user turn by the proxy and is not persisted as durable conversation history.
 
-Single-Node search intentionally keeps `count: 5` and disables inline reranking. Use workflow dispatch or the Workflows tab for broader search plus explicit reranking.
+Single-Slot search intentionally keeps `count: 5` and disables inline reranking. Use workflow dispatch or the Workflows tab for broader search plus explicit reranking.
 
 TL;DR: `/search/web` is lightweight candidate discovery. Rerank is explicit: request it directly with `use_reranker: true`, or model it as a workflow `rerank` step.

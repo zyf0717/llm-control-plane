@@ -6,6 +6,7 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, Mock, patch
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -253,6 +254,32 @@ class TestEndpointRouting:
             "assistant_chars": 5,
             "assistant_persisted": True,
         }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("partial", [False, True])
+    async def test_stream_read_error_has_visible_detail(self, mock_request, partial):
+        upstream = _FakeStreamingResponse()
+
+        async def failed_lines():
+            if partial:
+                yield 'data: {"choices":[{"delta":{"content":"partial"}}]}'
+            raise httpx.ReadError("")
+
+        upstream.aiter_lines = failed_lines
+        with patch("httpx.AsyncClient") as client_class, patch.object(
+            proxy_module.logger, "exception"
+        ) as log_error:
+            client = Mock()
+            client.stream.return_value = _FakeStreamContext(upstream)
+            client_class.return_value.__aenter__.return_value = client
+            response = await ProxyHandler.stream_response(
+                mock_request, "https://test.example.com/v1/chat/completions", {}, None
+            )
+            content = b"".join([chunk async for chunk in response.body_iterator])
+
+        assert b"ReadError: upstream response stream failed" in content
+        assert (b"partial" in content) == partial
+        log_error.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_stream_history_finalization_survives_caller_cancellation(
@@ -1456,7 +1483,9 @@ class TestCanonicalConversationState:
         }
 
     def test_no_conversation_id_keeps_stateless_behavior(self, client):
-        mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
+        mock_endpoints = [{
+            "name": "primary", "url": "https://primary.example.com", "slot_affinity": True,
+        }]
         with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
@@ -1469,12 +1498,21 @@ class TestCanonicalConversationState:
             response = client.post(
                 "/primary",
                 headers={"X-Reasoning-Effort": "low"},
-                json={"messages": [{"role": "user", "content": "stateless"}]},
+                json={
+                    "messages": [{"role": "user", "content": "stateless"}],
+                    "temperature": 0.0,
+                    "max_tokens": 128,
+                },
             )
 
         assert response.status_code == 200
         assert proxy_module.conversation_store.conversations == {}
         assert proxy_module.conversation_store.conversation_control_states == {}
+        forwarded = mock_client.post.call_args.kwargs["json"]
+        assert forwarded["temperature"] == 0.0
+        assert forwarded["max_tokens"] == 128
+        assert "id_slot" not in forwarded
+        mock_client.get.assert_not_called()
 
     def test_skip_conversation_header_bypasses_state_and_message_persistence(self, client):
         mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
@@ -1611,7 +1649,7 @@ class TestModelsEndpoint:
 
             result = await asyncio.wait_for(list_models(), timeout=1.0)
 
-        assert [call.args for call in deadline.call_args_list] == [(5.0,)] * 3
+        assert [call.args for call in deadline.call_args_list] == [(2.0,)] * 3
         assert cancelled == {
             "https://slow-a.example.com/v1/models",
             "https://slow-b.example.com/v1/models",

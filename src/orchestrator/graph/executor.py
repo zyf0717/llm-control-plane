@@ -7,6 +7,8 @@ from typing import Any, AsyncIterator
 
 import jsonschema
 
+from src.llm_metrics import capture_llm_calls, capture_llm_stream
+
 from .registry import GraphRegistry
 from .store import SQLiteGraphRunStore
 
@@ -62,12 +64,14 @@ class GraphExecutor:
         spec = self.registry.get(run["graph_id"])
         await self.store.mark_status(run_id, "running")
         try:
-            output = await _invoke_graph(
-                spec.graph,
-                run["input"],
-                config=run["config"],
-            )
+            with capture_llm_calls() as calls:
+                output = await _invoke_graph(
+                    spec.graph,
+                    run["input"],
+                    config=run["config"],
+                )
         except Exception as exc:
+            await self._record_calls(run_id, calls)
             await self.store.mark_status(
                 run_id,
                 "failed",
@@ -79,6 +83,7 @@ class GraphExecutor:
                 raise KeyError(f"unknown graph run: {run_id}")
             return failed
 
+        await self._record_calls(run_id, calls)
         await self.store.mark_status(
             run_id,
             "completed",
@@ -124,13 +129,15 @@ class GraphExecutor:
             yield {"type": "snapshot", "run_id": run_id, "snapshot": snapshot}
 
         last_event: dict[str, Any] | None = None
+        recorded = 0
+        calls: list[dict] = []
         try:
             if hasattr(spec.graph, "astream"):
-                async for raw_event in spec.graph.astream(
+                async for raw_event in capture_llm_stream(spec.graph.astream(
                     run["input"],
                     config=run["config"],
                     stream_mode=stream_mode or "updates",
-                ):
+                ), calls):
                     event = _graph_stream_event(
                         raw_event,
                         run_id=run_id,
@@ -144,16 +151,21 @@ class GraphExecutor:
                         event_json=event,
                     )
                     yield event
+                    if len(calls) > recorded:
+                        pending = calls[recorded:]
+                        await self._record_calls(run_id, pending)
+                        recorded += len(pending)
+                        yield {"type": "snapshot", "run_id": run_id,
+                               "snapshot": await self.store.snapshot(run_id)}
             elif hasattr(spec.graph, "stream"):
-                for raw_event in await asyncio.to_thread(
-                    lambda: list(
-                        spec.graph.stream(
-                            run["input"],
-                            config=run["config"],
+                with capture_llm_calls(calls):
+                    raw_events = await asyncio.to_thread(
+                        lambda: list(spec.graph.stream(
+                            run["input"], config=run["config"],
                             stream_mode=stream_mode or "updates",
-                        )
+                        ))
                     )
-                ):
+                for raw_event in raw_events:
                     event = _graph_stream_event(
                         raw_event,
                         run_id=run_id,
@@ -167,6 +179,12 @@ class GraphExecutor:
                         event_json=event,
                     )
                     yield event
+                    if len(calls) > recorded:
+                        pending = calls[recorded:]
+                        await self._record_calls(run_id, pending)
+                        recorded += len(pending)
+                        yield {"type": "snapshot", "run_id": run_id,
+                               "snapshot": await self.store.snapshot(run_id)}
             else:
                 snapshot = await self.run(run_id)
                 yield {
@@ -178,6 +196,7 @@ class GraphExecutor:
                 }
                 return
         except Exception as exc:
+            await self._record_calls(run_id, calls[recorded:])
             await self.store.mark_status(run_id, "failed", error=str(exc), completed=True)
             failed = await self.store.snapshot(run_id)
             yield {
@@ -189,6 +208,7 @@ class GraphExecutor:
             }
             return
 
+        await self._record_calls(run_id, calls[recorded:])
         await self.store.mark_status(
             run_id,
             "completed",
@@ -225,13 +245,16 @@ class GraphExecutor:
             command = {"resume": resume}
         await self.store.mark_status(run_id, "running")
         try:
-            output = await _invoke_graph(spec.graph, command, config=run_config)
+            with capture_llm_calls() as calls:
+                output = await _invoke_graph(spec.graph, command, config=run_config)
         except Exception as exc:
+            await self._record_calls(run_id, calls)
             await self.store.mark_status(run_id, "failed", error=str(exc), completed=True)
             failed = await self.store.snapshot(run_id)
             if failed is None:
                 raise KeyError(f"unknown graph run: {run_id}")
             return failed
+        await self._record_calls(run_id, calls)
         await self.store.mark_status(
             run_id,
             "completed",
@@ -243,6 +266,13 @@ class GraphExecutor:
         if snapshot is None:
             raise KeyError(f"unknown graph run: {run_id}")
         return snapshot
+
+    async def _record_calls(self, run_id: str, calls: list[dict]) -> None:
+        for call in calls:
+            await self.store.append_event(
+                run_id, event_type="llm_call", node_name=None,
+                event_json={"type": "llm_call", "call": call},
+            )
 
 
 async def _invoke_graph(graph: Any, input_value: Any, *, config: dict[str, Any]) -> Any:

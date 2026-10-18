@@ -9,6 +9,8 @@ from typing import Optional
 
 import httpx
 
+from src.llm_metrics import CallMetrics, llm_response_metadata
+
 from .types import SearchArgs
 
 _ALLOWED_FRESHNESS = {"day", "week", "month", "none"}
@@ -90,50 +92,53 @@ class SearchQueryRefiner:
                 bool(args.source_text),
             )
 
-            async with httpx.AsyncClient(
-                timeout=self.config.timeout_ms / 1000
-            ) as client:
-                response = await client.post(
-                    endpoint,
-                    json=payload,
-                    headers=self.config.headers,
+            with CallMetrics(label="Query refinement", metadata={"endpoint": endpoint}) as call:
+                async with httpx.AsyncClient(
+                    timeout=self.config.timeout_ms / 1000
+                ) as client:
+                    response = await client.post(
+                        endpoint,
+                        json=payload,
+                        headers=self.config.headers,
+                    )
+                    response.raise_for_status()
+
+                data = response.json()
+                call.metadata.update(llm_response_metadata(data))
+                content = (
+                    data.get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
                 )
-                response.raise_for_status()
+                parsed = self._parse_json(content)
+                refined_queries = self._clean_queries(parsed, args.query)
+                if not refined_queries:
+                    logger.warning("search query refiner failed: warning=empty-query")
+                    call.on_error("empty query")
+                    return self._fallback(args, "empty-query")
 
-            content = (
-                response.json()
-                .get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-            )
-            parsed = self._parse_json(content)
-            refined_queries = self._clean_queries(parsed, args.query)
-            if not refined_queries:
-                logger.warning("search query refiner failed: warning=empty-query")
-                return self._fallback(args, "empty-query")
-
-            freshness = self._clean_freshness(parsed.get("freshness"))
-            logger.info(
-                "search query refiner completed: used=%s queries=%d freshness=%s",
-                refined_queries != [args.query]
-                or (freshness is not None and freshness != args.freshness),
-                len(refined_queries),
-                freshness,
-            )
-            return SearchQueryRefinement(
-                effective_query=refined_queries[0],
-                needs_search=bool(parsed.get("needs_search", True)),
-                freshness=freshness,
-                reason=self._clean_reason(parsed.get("reason")),
-                source_preferences=self._clean_source_preferences(
-                    parsed.get("source_preferences", [])
-                ),
-                queries=refined_queries,
-                used=(
+                freshness = self._clean_freshness(parsed.get("freshness"))
+                logger.info(
+                    "search query refiner completed: used=%s queries=%d freshness=%s",
                     refined_queries != [args.query]
-                    or (freshness is not None and freshness != args.freshness)
-                ),
-            )
+                    or (freshness is not None and freshness != args.freshness),
+                    len(refined_queries),
+                    freshness,
+                )
+                return SearchQueryRefinement(
+                    effective_query=refined_queries[0],
+                    needs_search=bool(parsed.get("needs_search", True)),
+                    freshness=freshness,
+                    reason=self._clean_reason(parsed.get("reason")),
+                    source_preferences=self._clean_source_preferences(
+                        parsed.get("source_preferences", [])
+                    ),
+                    queries=refined_queries,
+                    used=(
+                        refined_queries != [args.query]
+                        or (freshness is not None and freshness != args.freshness)
+                    ),
+                )
         except Exception as exc:
             logger.warning(
                 "search query refiner fallback activated: warning=%s",

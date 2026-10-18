@@ -96,7 +96,8 @@ Optional metadata fields:
 - `ram`
 - `soc`
 
-The metadata is surfaced through `/models` and shown in the dashboard runtime panel.
+Hardware metadata is surfaced through `/models`. Model configuration is captured
+in each response's Details.
 
 ## Orchestration Subsystems
 

@@ -5,6 +5,8 @@ from typing import Any, AsyncIterator, Dict, Optional
 
 import httpx
 
+from src.llm_metrics import CallMetrics, llm_response_metadata
+
 from src.search import SearchArgs, wrap_search_results
 from src.search.types import SearchResponse, SearchResult
 
@@ -66,42 +68,44 @@ class ProxyRuntimeLLMClient:
             body=payload,
             headers=headers,
         )
-        if endpoint_key == "smart":
-            from ..proxy import smart_route
+        with CallMetrics(metadata={"endpoint": endpoint_key}) as call:
+            if endpoint_key == "smart":
+                from ..proxy import smart_route
 
-            response = await smart_route(request)
-        else:
-            response = await proxy_request(endpoint_key, request)
-        response_body = getattr(response, "body", b"") or b""
-        try:
-            response_json = json.loads(response_body.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            response_json = {}
+                response = await smart_route(request)
+            else:
+                response = await proxy_request(endpoint_key, request)
+            response_body = getattr(response, "body", b"") or b""
+            try:
+                response_json = json.loads(response_body.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                response_json = {}
 
-        text = extract_assistant_text(response_json) or ""
-        response_headers = dict(getattr(response, "headers", {}) or {})
-        metadata = {
-            "endpoint": endpoint_key,
-            "status_code": getattr(response, "status_code", None),
-        }
-        for header_name, header_value in response_headers.items():
-            lower_name = str(header_name).lower()
-            if lower_name == "x-trace-id":
-                metadata["trace_id"] = str(header_value)
-            elif lower_name.startswith("x-route-"):
-                metadata.setdefault("routing", {})[
-                    lower_name.replace("x-route-", "").replace("-", "_")
-                ] = str(header_value)
-            elif lower_name.startswith("x-retrieval-"):
-                metadata.setdefault("retrieval", {})[
-                    lower_name.replace("x-retrieval-", "").replace("-", "_")
-                ] = str(header_value)
+            text = extract_assistant_text(response_json) or ""
+            response_headers = dict(getattr(response, "headers", {}) or {})
+            metadata = {
+                "endpoint": endpoint_key,
+                "status_code": getattr(response, "status_code", None),
+            }
+            for header_name, header_value in response_headers.items():
+                lower_name = str(header_name).lower()
+                if lower_name == "x-trace-id":
+                    metadata["trace_id"] = str(header_value)
+                elif lower_name.startswith("x-route-"):
+                    metadata.setdefault("routing", {})[
+                        lower_name.replace("x-route-", "").replace("-", "_")
+                    ] = str(header_value)
+                elif lower_name.startswith("x-retrieval-"):
+                    metadata.setdefault("retrieval", {})[
+                        lower_name.replace("x-retrieval-", "").replace("-", "_")
+                    ] = str(header_value)
 
-        for key in ("usage", "stats", "model_info", "runtime", "timings"):
-            if isinstance(response_json.get(key), dict):
-                metadata[key] = response_json[key]
+            metadata.update(llm_response_metadata(response_json))
+            call.metadata.update(metadata)
+            if (getattr(response, "status_code", 200) or 200) >= 400:
+                raise RuntimeError(f"LLM request failed (HTTP {response.status_code})")
 
-        return {"text": text, "metadata": metadata}
+            return {"text": text, "metadata": metadata}
 
     async def stream_complete(
         self,
@@ -143,43 +147,53 @@ class ProxyRuntimeLLMClient:
             body=payload,
             headers=headers,
         )
-        if endpoint_key == "smart":
-            from ..proxy import smart_route
+        with CallMetrics(metadata={"endpoint": endpoint_key}) as call:
+            if endpoint_key == "smart":
+                from ..proxy import smart_route
 
-            response = await smart_route(request)
-        else:
-            response = await proxy_request(endpoint_key, request)
+                response = await smart_route(request)
+            else:
+                response = await proxy_request(endpoint_key, request)
 
-        response_headers = dict(getattr(response, "headers", {}) or {})
-        metadata = _metadata_from_headers(endpoint_key, response_headers)
-        if metadata:
-            yield {"channel": "metadata", "metadata": metadata}
+            response_headers = dict(getattr(response, "headers", {}) or {})
+            metadata = _metadata_from_headers(endpoint_key, response_headers)
+            call.metadata.update(metadata)
+            if (getattr(response, "status_code", 200) or 200) >= 400:
+                raise RuntimeError(f"LLM request failed (HTTP {response.status_code})")
+            if metadata:
+                yield {"channel": "metadata", "metadata": dict(metadata)}
 
-        async for data in _iter_sse_data(response):
-            if data == "[DONE]":
-                break
-            try:
-                obj = json.loads(data)
-            except json.JSONDecodeError:
-                continue
-            if str(obj.get("type") or "").startswith("proxy."):
-                detail = obj.get("detail") or obj.get("error") or obj.get("type")
-                raise RuntimeError(str(detail))
-            for key in ("usage", "stats", "model_info", "runtime", "timings"):
-                if isinstance(obj.get(key), dict):
-                    yield {"channel": "metadata", "metadata": {key: obj[key]}}
-            choices = obj.get("choices") if isinstance(obj, dict) else []
-            if not choices:
-                continue
-            delta = choices[0].get("delta") if isinstance(choices[0], dict) else {}
-            if not isinstance(delta, dict):
-                continue
-            reasoning = delta.get("reasoning") or delta.get("reasoning_content")
-            if reasoning:
-                yield {"channel": "reasoning", "content": str(reasoning)}
-            content = delta.get("content")
-            if content:
-                yield {"channel": "content", "content": str(content)}
+            async for data in _iter_sse_data(response):
+                if data == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                if str(obj.get("type") or "").startswith("proxy."):
+                    detail = obj.get("detail") or obj.get("error") or obj.get("type")
+                    raise RuntimeError(str(detail))
+                new_metadata = {
+                    key: value for key, value in llm_response_metadata(obj).items()
+                    if call.metadata.get(key) != value
+                }
+                if new_metadata:
+                    call.metadata.update(new_metadata)
+                    yield {"channel": "metadata", "metadata": new_metadata}
+                choices = obj.get("choices") if isinstance(obj, dict) else []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta") if isinstance(choices[0], dict) else {}
+                if not isinstance(delta, dict):
+                    continue
+                reasoning = delta.get("reasoning") or delta.get("reasoning_content")
+                if reasoning:
+                    call.on_first_token()
+                    yield {"channel": "reasoning", "content": str(reasoning)}
+                content = delta.get("content")
+                if content:
+                    call.on_first_token()
+                    yield {"channel": "content", "content": str(content)}
 
 
 class ProxyRuntimeSearchClient:

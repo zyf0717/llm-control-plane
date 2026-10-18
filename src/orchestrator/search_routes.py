@@ -4,6 +4,8 @@ import json
 from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
+from src.llm_metrics import capture_llm_calls
 from src.search import SearchArgs, wrap_search_results
 
 from . import proxy_services as services
@@ -58,6 +60,7 @@ async def search_web(request: Request):
             detail=f"Unsupported search field(s): {fields}",
         )
 
+    calls: list[dict] = []
     try:
         args = SearchArgs(
             query=str(body.get("query", "")).strip(),
@@ -82,11 +85,16 @@ async def search_web(request: Request):
             ),
             rerank_source_text=body.get("rerank_source_text"),
         )
-        response = await services.search_service.search(args)
+        with capture_llm_calls() as calls:
+            response = await services.search_service.search(args)
     except ValueError as exc:
+        if calls:
+            return JSONResponse(status_code=400, content={"detail": str(exc), "llm_calls": calls})
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         status_code = 503 if "disabled" in str(exc).lower() else 500
+        if calls:
+            return JSONResponse(status_code=status_code, content={"detail": str(exc), "llm_calls": calls})
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
     payload = response.to_dict()

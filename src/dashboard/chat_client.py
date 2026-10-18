@@ -63,6 +63,14 @@ def _extract_metadata(
         if key in obj and isinstance(obj[key], dict):
             combined[key] = obj[key]
 
+    if isinstance(obj.get("model"), str) and obj["model"].strip():
+        combined["model"] = obj["model"]
+
+    for key in ("id_slot", "slot_id"):
+        if obj.get(key) is not None:
+            combined["slot"] = {"id": obj[key]}
+            break
+
     is_auto_routing = (
         endpoint_key == "smart"
         or (
@@ -149,12 +157,15 @@ async def stream_chat_response(
     reasoning_effort: str = "medium",
     output_reasoning: bool = False,
     conversation_id: Optional[str] = None,
-    current_routing_info: Optional[Dict[str, Any]] = None,
     system_prompt: Optional[str] = None,
     extra_turn_messages: Optional[list[dict[str, Any]]] = None,
     retrieval_endpoint: Optional[str] = None,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
     on_metadata: Optional[MetadataCallback] = None,
     on_send_button_state: Optional[StateCallback] = None,
+    on_error: Optional[StateCallback] = None,
+    on_first_token: Optional[Callable[[], None]] = None,
 ) -> AsyncGenerator[str, None]:
     """Proxy a dashboard chat request and stream the response back to the UI."""
     text = (text or "Hello! What model are you?").strip()
@@ -170,6 +181,8 @@ async def stream_chat_response(
             url = f"{PROXY_BASE_URL}/smart"
         else:
             if not endpoints_dict or endpoint_key not in endpoints_dict:
+                if on_error:
+                    on_error(f"Endpoint '{endpoint_key}' not available")
                 yield f"Error: Endpoint '{endpoint_key}' not available"
                 return
             url = f"{PROXY_BASE_URL}/{endpoint_key}"
@@ -181,6 +194,10 @@ async def stream_chat_response(
                 extra_turn_messages=extra_turn_messages,
             )
         }
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         if endpoint_key != "smart":
             models = endpoints_dict[endpoint_key].get("models", [])
             if models and models[0].get("id"):
@@ -198,7 +215,7 @@ async def stream_chat_response(
         if retrieval_endpoint:
             headers["X-Retrieval-Endpoint"] = retrieval_endpoint
         timeout = httpx.Timeout(connect=5, read=None, write=5, pool=10)
-        routing_info_holder = {"routing": current_routing_info or {}}
+        routing_info_holder: Dict[str, Any] = {}
         metadata_holder: Dict[str, Any] = {}
 
         def publish_metadata(
@@ -247,6 +264,7 @@ async def stream_chat_response(
 
                     reasoning_chunk_found = False
                     md_code_wrap = True
+                    first_token_seen = False
 
                     async for line in response.aiter_lines():
                         if not line or not line.startswith("data: "):
@@ -260,11 +278,26 @@ async def stream_chat_response(
                         except json.JSONDecodeError:
                             continue
 
+                        choices = obj.get("choices") or []
+                        delta = choices[0].get("delta", {}) if choices else {}
+                        if not first_token_seen and any(
+                            delta.get(key) for key in ("content", "reasoning", "reasoning_content")
+                        ):
+                            first_token_seen = True
+                            if on_first_token:
+                                on_first_token()
+
+                        publish_metadata(obj)
+                        if obj.get("type") == "proxy.error" and on_error:
+                            on_error(str(obj.get("detail") or "Upstream request failed"))
+
                         if output_json:
                             if md_code_wrap:
                                 yield "```json\n"
                                 md_code_wrap = False
                             yield f"{json.dumps(obj, indent=2)},\n"
+                            if obj.get("type") == "proxy.error":
+                                break
                             continue
 
                         if obj.get("type") == "proxy.error":
@@ -274,7 +307,6 @@ async def stream_chat_response(
                             yield f"Error: {detail}"
                             break
 
-                        choices = obj.get("choices", [])
                         if choices:
                             if output_reasoning:
                                 delta = choices[0].get("delta", {})
@@ -295,8 +327,6 @@ async def stream_chat_response(
                                     yield "</em>\n\n---\n\n"
                                     reasoning_chunk_found = False
                                 yield content_chunk
-
-                        publish_metadata(obj)
 
                     if not md_code_wrap:
                         yield "```\n"
@@ -337,8 +367,12 @@ async def stream_chat_response(
                     yield str(content)
     except httpx.HTTPStatusError as exc:
         reason = getattr(exc.response, "reason_phrase", "Unknown Error")
+        if on_error:
+            on_error(f"HTTP Error {exc.response.status_code}: {reason}")
         yield f"HTTP Error {exc.response.status_code}: {reason}"
     except httpx.RequestError as exc:
+        if on_error:
+            on_error(str(exc))
         yield f"Request Error: {str(exc)}"
     except Exception as exc:
         logger.exception(
@@ -346,6 +380,8 @@ async def stream_chat_response(
             type(exc).__name__,
             exc,
         )
+        if on_error:
+            on_error(str(exc))
         yield f"Error: {str(exc)}"
     finally:
         if on_send_button_state:

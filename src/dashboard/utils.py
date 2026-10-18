@@ -352,40 +352,6 @@ async def fetch_available_endpoints():
         return {}, {}
 
 
-def create_endpoint_display_choices(endpoints_data):
-    """Create display choices and mapping for endpoint dropdown."""
-    choices = {}
-    mapping = {}
-
-    for endpoint_name, endpoint_data in endpoints_data.items():
-        models = endpoint_data.get("models", [])
-        if models:
-            model_name = models[0].get("id", "")
-            if model_name:
-                display_name = f"{endpoint_name} ({model_name})"
-                choices[display_name] = endpoint_name
-                mapping[display_name] = endpoint_name
-            else:
-                choices[endpoint_name] = endpoint_name
-                mapping[endpoint_name] = endpoint_name
-        else:
-            choices[endpoint_name] = endpoint_name
-            mapping[endpoint_name] = endpoint_name
-
-    return choices, mapping
-
-
-def find_model_by_endpoint(endpoint_data, endpoint_key):
-    """Find the first model for a given endpoint."""
-    if not endpoint_data or not endpoint_key:
-        return None
-
-    for model in endpoint_data.get("data", []):
-        if model.get("endpoint") == endpoint_key:
-            return model
-    return None
-
-
 async def fetch_conversation_history(conversation_id):
     """Fetch conversation history for a given conversation_id."""
     try:

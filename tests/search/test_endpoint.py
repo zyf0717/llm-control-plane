@@ -4,9 +4,36 @@ from fastapi.testclient import TestClient
 
 from src.orchestrator.proxy import app
 from src.search.types import SearchResponse, SearchResult
+from src.llm_metrics import CallMetrics
 
 
 client = TestClient(app)
+
+
+def test_search_error_preserves_completed_llm_call_for_dashboard():
+    async def failed_search(args):
+        with CallMetrics(label="Query refinement", metadata={"model": "utility"}):
+            pass
+        raise RuntimeError("provider failed")
+
+    with patch("src.orchestrator.proxy_services.search_service.search", failed_search):
+        result = client.post("/search/web", json={"query": "alpha"})
+    assert result.status_code == 500
+    payload = result.json()
+    assert payload["detail"] == "provider failed"
+    assert len(payload["llm_calls"]) == 1
+    assert payload["llm_calls"][0]["metadata"]["model"] == "utility"
+
+    # The HTTP failure still carries telemetry into the dashboard failure state.
+    from src.dashboard.search_flow import build_search_failure_state
+    import httpx
+    response = httpx.Response(500, json=payload, request=httpx.Request("POST", "http://proxy/search/web"))
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        state = build_search_failure_state("stub", exc)
+    assert state["llm_calls"] == payload["llm_calls"]
+    assert state["show_preface"] is False
 
 
 def test_search_web_endpoint_returns_results():

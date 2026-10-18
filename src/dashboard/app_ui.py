@@ -1,28 +1,9 @@
 import shinyswatch
 from shiny import ui
+from shinychat import chat_ui
 
-
-def input_action_row(
-    input_control,
-    button_id,
-    button_label,
-    *,
-    col_widths=None,
-    button_class=None,
-):
-    """Render one input control with a trailing aligned action button."""
-    return ui.layout_columns(
-        input_control,
-        ui.div(
-            ui.input_action_button(
-                button_id,
-                button_label,
-                class_=button_class,
-            ),
-            style="display: flex; align-items: flex-end; height: 100%;",
-        ),
-        col_widths=col_widths or [10, 2],
-    )
+from .chat_controls import REASONING_LEVELS, endpoint_selector_ui, input_action_row
+from .multi_slot import multi_slot_ui
 
 
 app_ui = ui.page_fluid(
@@ -52,12 +33,6 @@ app_ui = ui.page_fluid(
             gap: 0.75rem;
         }
 
-        .dashboard-run-info {
-            flex: 1 1 auto;
-            min-height: 0;
-            overflow-y: auto;
-        }
-
         .dashboard-square-button {
             width: 2.375rem;
             height: 2.375rem;
@@ -70,6 +45,32 @@ app_ui = ui.page_fluid(
 
         .dashboard-full-width-action {
             width: 100%;
+        }
+
+        .multi-slot-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 1rem;
+            align-content: start;
+        }
+
+        .multi-slot-grid > div { min-width: 0; }
+
+        .response-metrics {
+            margin-top: 0.75rem;
+            padding-top: 0.5rem;
+            border-top: 1px solid var(--bs-border-color);
+            color: var(--bs-secondary-color);
+            font-size: 0.8rem;
+        }
+
+        .response-metrics-summary { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; }
+        .response-metrics details { margin-top: 0.25rem; }
+        .response-details-section { margin-top: 0.5rem; overflow-wrap: anywhere; }
+        .hide-response-metrics .response-metrics { display: none; }
+
+        @media (max-width: 767.98px) {
+            .multi-slot-grid { grid-template-columns: 1fr; }
         }
 
         .dashboard-workflow-upload-file .shiny-label-null {
@@ -208,10 +209,6 @@ app_ui = ui.page_fluid(
                 --dashboard-chat-height: min(60dvh, 32rem);
             }
 
-            .dashboard-run-info {
-                max-height: 20rem;
-            }
-
             .dashboard-step-row.cols-2,
             .dashboard-step-row.cols-3,
             .dashboard-step-row.cols-4,
@@ -221,6 +218,19 @@ app_ui = ui.page_fluid(
         }
         """),
     ui.tags.script("""
+        // Keep application traffic flowing through proxies during long model requests.
+        let dashboardHeartbeatTimer;
+        $(document).on("shiny:connected", function() {
+            clearInterval(dashboardHeartbeatTimer);
+            dashboardHeartbeatTimer = setInterval(function() {
+                Shiny.setInputValue("dashboardHeartbeat", Date.now(), {priority: "event"});
+            }, 20000);
+        });
+        $(document).on("shiny:disconnected", function() {
+            clearInterval(dashboardHeartbeatTimer);
+        });
+        Shiny.addCustomMessageHandler("dashboardHeartbeat", function(_message) {});
+
         function dashboardInputContainer(input) {
             return input.closest(".form-group, .shiny-input-container") || input.parentElement;
         }
@@ -259,70 +269,6 @@ app_ui = ui.page_fluid(
                     input.selectize.enable();
                 }
             }
-        }
-
-        function dashboardChatTabActive(chat) {
-            const tabPane = chat.closest(".tab-pane");
-            if (tabPane) return tabPane.classList.contains("active");
-            return Boolean(chat.offsetParent);
-        }
-
-        function setDashboardChatStreamAutoScroll(stream, enabled) {
-            if (enabled) {
-                if (!stream.hasAttribute("auto-scroll")) {
-                    stream.setAttribute("auto-scroll", "");
-                }
-            } else {
-                if (stream.hasAttribute("auto-scroll")) {
-                    stream.removeAttribute("auto-scroll");
-                }
-            }
-        }
-
-        function syncDashboardChatStreamAutoScroll() {
-            const chat = document.getElementById("chat");
-            if (!chat) return;
-            const enabled = dashboardChatTabActive(chat);
-            chat.querySelectorAll("shiny-chat-message shiny-markdown-stream").forEach(function(stream) {
-                setDashboardChatStreamAutoScroll(stream, enabled);
-            });
-        }
-
-        function initDashboardChatStreamAutoScrollGuard() {
-            const chat = document.getElementById("chat");
-            if (!chat || chat.dataset.dashboardAutoScrollGuard === "true") return;
-            chat.dataset.dashboardAutoScrollGuard = "true";
-
-            const syncSoon = function() {
-                window.requestAnimationFrame(syncDashboardChatStreamAutoScroll);
-            };
-
-            const chatObserver = new MutationObserver(syncSoon);
-            chatObserver.observe(chat, {
-                childList: true,
-                subtree: true,
-                attributes: true,
-                attributeFilter: ["auto-scroll"],
-            });
-
-            const tabPane = chat.closest(".tab-pane");
-            if (tabPane) {
-                const tabObserver = new MutationObserver(syncSoon);
-                tabObserver.observe(tabPane, {
-                    attributes: true,
-                    attributeFilter: ["class"],
-                });
-            }
-
-            document.addEventListener("shown.bs.tab", syncSoon);
-            document.addEventListener("hidden.bs.tab", syncSoon);
-            syncSoon();
-        }
-
-        if (document.readyState === "loading") {
-            document.addEventListener("DOMContentLoaded", initDashboardChatStreamAutoScrollGuard);
-        } else {
-            initDashboardChatStreamAutoScrollGuard();
         }
 
         Shiny.addCustomMessageHandler("workflowDispatchState", function(message) {
@@ -364,6 +310,25 @@ app_ui = ui.page_fluid(
             });
         });
 
+        Shiny.addCustomMessageHandler("singleSlotMetrics", function(message) {
+            document.getElementById("chat").classList.toggle(
+                "hide-response-metrics", !message.showMetrics
+            );
+        });
+
+        Shiny.addCustomMessageHandler("multiSlotControls", function(message) {
+            document.querySelector(".multi-slot-grid").classList.toggle(
+                "hide-response-metrics", !message.showMetrics
+            );
+            ["multiSlotEndpoint", "multiSlotCount"].forEach(function(id) {
+                setDashboardSelectDisabled(id, message.busy);
+            });
+            ["multiSlotRefresh", "multiSlotReset"].forEach(function(id) {
+                document.getElementById(id).disabled = message.busy;
+            });
+            document.getElementById("multiSlotStop").disabled = !message.busy;
+        });
+
         document.addEventListener("click", function(event) {
             const button = event.target.closest(".dashboard-step-button");
             if (!button) return;
@@ -394,7 +359,7 @@ app_ui = ui.page_fluid(
         """),
     ui.navset_bar(
         ui.nav_panel(
-            "Single-Node",
+            "Single-Slot",
             ui.layout_sidebar(
                 ui.sidebar(
                     ui.tags.script("""
@@ -402,32 +367,15 @@ app_ui = ui.page_fluid(
                     window.location.href = "https://llm-dashboard.paperclips.dev/cdn-cgi/access/logout";
                 });
                 """),
-                    input_action_row(
-                        ui.input_select(
-                            "endpoint",
-                            "Machine Endpoint",
-                            choices=[],
-                            width="100%",
-                        ),
-                        "refreshEndpoints",
-                        "🔄",
-                        button_class="dashboard-square-button",
-                    ),
+                    endpoint_selector_ui("endpoint", "endpointModels", refresh_id="refreshEndpoints"),
                     ui.input_switch("stream", "Streaming", True),
-                    ui.input_switch("autoScroll", "Auto-scroll", True),
                     ui.input_switch("outputJSON", "JSON output", False),
                     ui.input_switch("outputReasoning", "Show reasoning", True),
+                    ui.input_switch("showResponseMetrics", "Show response metrics", True),
                     ui.input_select(
                         "reasoningEffort",
                         "Reasoning Level",
-                        choices={
-                            "none": "none",
-                            "low": "low",
-                            "medium": "medium",
-                            "high": "high",
-                            "xhigh": "xhigh",
-                            "max": "max",
-                        },
+                        choices=REASONING_LEVELS,
                         selected="medium",
                     ),
                     ui.output_ui("system_prompt_ui"),
@@ -437,10 +385,13 @@ app_ui = ui.page_fluid(
                     width="320px",
                 ),
                 ui.layout_columns(
-                    ui.chat_ui(
+                    chat_ui(
                         "chat",
                         width="100%",
                         height="var(--dashboard-chat-height)",
+                        show_history=False,
+                        drawer=False,
+                        icon_assistant=True,
                     ),
                     ui.div(
                         input_action_row(
@@ -486,22 +437,18 @@ app_ui = ui.page_fluid(
                             width="100%",
                         ),
                         ui.output_ui("file_upload_ui"),
-                        ui.div(
-                            ui.output_ui("outputRunInfo"),
-                            class_="dashboard-run-info",
-                        ),
                         class_="dashboard-pane dashboard-side-panel",
                     ),
                     col_widths=[9, 3],
                 ),
                 fillable=True,
             ),
-            value="single_node",
+            value="single_slot",
         ),
         ui.nav_panel(
-            "Multi-Node",
-            ui.div("Multi-node UI coming soon!"),
-            value="multi_node",
+            "Multi-Slot",
+            multi_slot_ui(),
+            value="multi_slot",
         ),
         ui.nav_panel(
             "Workflows",
@@ -536,15 +483,7 @@ app_ui = ui.page_fluid(
                         ui.input_select(
                             "workflowReasoning",
                             "Reasoning",
-                            choices={
-                                "": "Default",
-                                "none": "none",
-                                "low": "low",
-                                "medium": "medium",
-                                "high": "high",
-                                "xhigh": "xhigh",
-                                "max": "max",
-                            },
+                            choices={"": "Default", **{level: level for level in REASONING_LEVELS}},
                             selected="",
                             width="100%",
                         ),
@@ -733,7 +672,7 @@ app_ui = ui.page_fluid(
             value="traces",
         ),
         id="dashboardNav",
-        selected="single_node",
+        selected="single_slot",
         title="LLM Control Plane",
     ),
     theme=shinyswatch.theme.flatly,

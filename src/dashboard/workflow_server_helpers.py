@@ -162,6 +162,17 @@ def workflow_chat_response_text(snapshot: dict[str, Any] | None) -> str:
     )
 
 
+def workflow_chat_step_metadata(snapshot: dict[str, Any], step_id: str) -> dict[str, Any]:
+    """Return telemetry for the response step, rather than summing workflow calls."""
+    for step in snapshot.get("steps") or []:
+        if step.get("step_id") != step_id:
+            continue
+        output = step.get("output_json")
+        metadata = output.get("metadata") if isinstance(output, dict) else None
+        return dict(metadata) if isinstance(metadata, dict) else {}
+    return {}
+
+
 def workflow_chat_run_info(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     run = snapshot.get("run") if isinstance(snapshot, dict) else {}
     run = run if isinstance(run, dict) else {}

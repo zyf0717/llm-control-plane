@@ -1,5 +1,7 @@
 import pytest
 
+from src.dashboard.chat_controls import resolve_endpoint_selection
+
 from src.dashboard.app_server import (
     build_retrieval_endpoint_choices,
     build_search_provider_choices,
@@ -8,7 +10,6 @@ from src.dashboard.app_server import (
     build_fork_notice,
     conversation_control_change_reasons,
     normalize_reasoning_effort,
-    resolve_endpoint_display_selection,
     resolve_first_search_provider_selection,
     resolve_retrieval_endpoint_selection,
     resolve_search_provider_selection,
@@ -27,7 +28,6 @@ from src.dashboard.app_server import (
     workflow_run_in_progress,
     workflow_snapshot_with_next_pending_running,
 )
-from src.dashboard.formatters import format_response_info, format_timings_info
 from src.dashboard.search_flow import (
     build_query_refiner_source_text,
     build_search_failure_state,
@@ -51,43 +51,9 @@ from src.dashboard.workflow_server_helpers import (
     merge_repo_context_repo_name,
     merge_uploaded_source_text,
     workflow_chat_response_text,
+    workflow_chat_step_metadata,
 )
 from src.search.safety import EPHEMERAL_WEB_SEARCH_EVIDENCE_MARKER
-
-
-def _fmt(value):
-    return str(value)
-
-
-def test_format_response_info_adds_draft_acceptance_rate_to_stats():
-    sections = format_response_info(
-        {"stats": {"draft_n": 184, "draft_n_accepted": 139}},
-        _fmt,
-    )
-
-    assert sections == [
-        "**Stats**<br>draft_n: 184<br>draft_n_accepted: 139"
-        "<br>draft_acceptance_rate: 75.54%"
-    ]
-
-
-def test_format_response_info_skips_draft_acceptance_rate_without_valid_total():
-    assert format_response_info(
-        {"stats": {"draft_n": 0, "draft_n_accepted": 0}},
-        _fmt,
-    ) == ["**Stats**<br>draft_n: 0<br>draft_n_accepted: 0"]
-
-
-def test_format_timings_info_adds_draft_acceptance_rate_to_timings():
-    sections = format_timings_info(
-        {"timings": {"draft_n": 172, "draft_n_accepted": 142}},
-        _fmt,
-    )
-
-    assert sections == [
-        "**Timings**<br>draft_n: 172<br>draft_n_accepted: 142"
-        "<br>draft_acceptance_rate: 82.56%"
-    ]
 
 
 def test_build_query_refiner_source_text_includes_prompt_history_and_current_request():
@@ -376,6 +342,21 @@ def test_workflow_chat_response_text_uses_last_completed_step_text():
     )
 
     assert text == "final answer"
+
+
+def test_workflow_metrics_use_only_the_response_step():
+    snapshot = {"steps": [
+        {"step_id": "planner", "output_json": {"metadata": {
+            "usage": {"prompt_tokens": 100, "completion_tokens": 20}
+        }}},
+        {"step_id": "answer", "output_json": {"metadata": {
+            "usage": {"prompt_tokens": 200, "completion_tokens": 30}
+        }}},
+    ]}
+    assert workflow_chat_step_metadata(snapshot, "answer") == {
+        "usage": {"prompt_tokens": 200, "completion_tokens": 30}
+    }
+    assert workflow_chat_step_metadata(snapshot, "missing") == {}
 
 
 def test_workflow_chat_response_text_falls_back_to_artifact_text():
@@ -1286,55 +1267,23 @@ def test_merge_run_info_adds_search_block_without_dropping_existing_metadata():
     }
 
 
-def test_resolve_endpoint_display_selection_uses_persisted_endpoint_key():
-    choices = {
-        "node-a (model-a)": "node-a",
-        "node-b (model-b)": "node-b",
+def test_resolve_endpoint_selection_uses_persisted_endpoint_key():
+    choices = {"node-a": "node-a", "node-b": "node-b"}
+    assert resolve_endpoint_selection(choices, preferred_endpoint_key="node-b") == "node-b"
+
+
+def test_resolve_endpoint_selection_keeps_utility_route_distinct_after_model_refresh():
+    endpoints = {
+        "node": {"models": [{"id": "updated-model"}]},
+        "node-utility": {"models": [{"id": "updated-utility-model"}]},
     }
-    mapping = dict(choices)
-
-    assert (
-        resolve_endpoint_display_selection(
-            choices,
-            mapping,
-            preferred_endpoint_key="node-a",
-        )
-        == "node-a (model-a)"
-    )
+    assert resolve_endpoint_selection(endpoints, preferred_endpoint_key="node-utility") == "node-utility"
 
 
-def test_resolve_endpoint_display_selection_uses_stored_endpoint_after_rebuild():
-    choices = {
-        "node-a (new-model-a)": "node-a",
-        "node-b (new-model-b)": "node-b",
-    }
-    mapping = dict(choices)
-
-    assert (
-        resolve_endpoint_display_selection(
-            choices,
-            mapping,
-            preferred_endpoint_key="node-b",
-        )
-        == "node-b (new-model-b)"
-    )
-
-
-def test_resolve_endpoint_display_selection_falls_back_when_endpoint_disappears():
-    choices = {
-        "node-a (model-a)": "node-a",
-        "node-c (model-c)": "node-c",
-    }
-    mapping = dict(choices)
-
-    assert (
-        resolve_endpoint_display_selection(
-            choices,
-            mapping,
-            preferred_endpoint_key="node-b",
-        )
-        == "node-a (model-a)"
-    )
+def test_resolve_endpoint_selection_falls_back_when_endpoint_disappears():
+    choices = {"node-a": "node-a", "node-c": "node-c"}
+    assert resolve_endpoint_selection(choices, preferred_endpoint_key="node-b") == "node-a"
+    assert resolve_endpoint_selection({}, preferred_endpoint_key="node-b") is None
 
 
 def test_normalize_reasoning_effort_defaults_missing_to_requested_default():

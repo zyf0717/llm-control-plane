@@ -87,7 +87,9 @@ class ProxyHandler:
                 if trace:
                     trace.status_code = 500
                     trace.error_class = type(e).__name__
-                await emit(create_error_sse_message("error", detail=str(e)))
+                services.logger.exception("Upstream stream failed: %s", target_url)
+                detail = str(e).strip() or f"{type(e).__name__}: upstream response stream failed"
+                await emit(create_error_sse_message("error", detail=detail))
             finally:
                 await RequestProcessor.finalize_stream_response(
                     conversation_id, acc.text(), trace

@@ -29,6 +29,7 @@ def build_search_success_state(search_response: Dict[str, Any]) -> Dict[str, Any
         "provider_label": format_search_provider_label(provider_id),
         "query": str(search_response.get("query") or "").strip(),
         "query_refinement": query_refinement,
+        "llm_calls": search_response.get("llm_calls", []),
         "degraded": bool(search_response.get("degraded", False)),
         "warnings": warnings,
         "results": results,
@@ -75,7 +76,13 @@ def build_query_refiner_source_text(
 
 def build_search_failure_state(provider_id: str, error: Any) -> Dict[str, Any]:
     """Build a non-blocking search failure state for metadata only."""
+    response = getattr(error, "response", None)
+    try:
+        calls = response.json().get("llm_calls", []) if response is not None else []
+    except (ValueError, AttributeError):
+        calls = []
     return {
+        "llm_calls": calls,
         "provider": str(provider_id or "").strip(),
         "provider_label": format_search_provider_label(provider_id),
         "degraded": True,
@@ -179,7 +186,7 @@ def build_search_preface(search_state: Optional[Dict[str, Any]]) -> Optional[str
 def merge_run_info(
     metadata: Optional[Dict[str, Any]], search_state: Optional[Dict[str, Any]]
 ) -> Optional[Dict[str, Any]]:
-    """Merge search metadata into the runtime panel payload."""
+    """Attach search diagnostics to this response's footer metadata."""
     merged = dict(metadata or {})
 
     if isinstance(search_state, dict):

@@ -6,6 +6,11 @@ from src.search.query_refiner import SearchQueryRefinement
 from src.search.reranker import SearchReranking
 from src.search.search_router import SearchConfig, SearchRouter, SearchProviderConfig
 from src.search.types import SearchArgs, SearchResponse, SearchResult
+from src.llm_metrics import capture_llm_calls
+from src.search.query_refiner import SearchQueryRefiner, SearchQueryRefinerConfig
+from src.search.safety import wrap_search_results
+import httpx
+from unittest.mock import AsyncMock
 
 
 class StubProvider:
@@ -25,6 +30,33 @@ class StubProvider:
         if self._error is not None:
             raise self._error
         return self._response
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [False, True])
+async def test_search_exposes_refiner_call_even_when_query_unchanged_or_failed(monkeypatch, failure):
+    payload = {"model": "utility", "usage": {"prompt_tokens": 25, "completion_tokens": 5},
+               "timings": {"prompt_per_second": 300},
+               "choices": [{"message": {"content": '{"query": "same"}'}}]}
+    response = httpx.Response(200, json=payload, request=httpx.Request("POST", "http://utility"))
+    post = AsyncMock(side_effect=httpx.ReadTimeout("lost")) if failure else AsyncMock(return_value=response)
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    provider = StubProvider("stub", SearchResponse(query="same", provider="stub", results=[]))
+    router = SearchRouter(SearchConfig(default_provider="stub"), providers={"stub": provider},
+                          provider_configs={"stub": SearchProviderConfig(enabled=True)},
+                          query_refiner=SearchQueryRefiner(SearchQueryRefinerConfig(
+                              enabled=True, model_endpoint="http://utility")))
+    with capture_llm_calls() as parent:
+        response = await router.search(SearchArgs(query="same"))
+    assert response.query_refinement["used"] is False
+    calls = response.to_dict()["llm_calls"]
+    assert len(calls) == len(parent) == 1
+    assert calls[0]["id"] == parent[0]["id"]
+    assert calls[0]["status"] == ("Failed" if failure else "Completed")
+    assert calls[0]["ttft"] is None
+    if not failure:
+        assert calls[0]["metadata"]["usage"]["prompt_tokens"] == 25
+    assert "llm_calls" not in wrap_search_results(response)
 
 
 @pytest.mark.asyncio
