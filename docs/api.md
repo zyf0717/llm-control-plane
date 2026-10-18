@@ -94,7 +94,7 @@ curl -X POST http://localhost:12340/conversations/retrieve \
 Set:
 
 ```text
-X-Reasoning-Effort: low | medium | high
+X-Reasoning-Effort: low | medium | high | xhigh | max
 ```
 
 The proxy pins the first valid reasoning effort per `X-Convo-ID`, injects a system message of the form `Reasoning: {value}`, and sets `reasoning_effort` in the request body. Later turns may omit the header and reuse the pinned value. Conflicting later values return `409` unless the client explicitly sends `X-Allow-Reasoning-Switch: true`. Without `X-Convo-ID`, reasoning remains per-request.

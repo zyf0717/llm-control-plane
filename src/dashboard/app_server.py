@@ -469,7 +469,7 @@ def normalize_reasoning_effort(
     default: str = "none",
 ) -> str:
     normalized = str(reasoning_effort or "").strip().lower()
-    valid_efforts = {"none", "low", "medium", "high"}
+    valid_efforts = {"none", "low", "medium", "high", "xhigh", "max"}
     if normalized in valid_efforts:
         return normalized
     return default if default in valid_efforts else "none"
