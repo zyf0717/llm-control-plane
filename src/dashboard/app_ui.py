@@ -55,12 +55,6 @@ app_ui = ui.page_fluid(
             gap: 0.75rem;
         }
 
-        .dashboard-endpoint-info {
-            flex: 1 1 auto;
-            min-height: 0;
-            overflow-y: auto;
-        }
-
         .dashboard-square-button {
             width: 2.375rem;
             height: 2.375rem;
@@ -235,10 +229,6 @@ app_ui = ui.page_fluid(
             :root {
                 --dashboard-panel-height: auto;
                 --dashboard-chat-height: min(60dvh, 32rem);
-            }
-
-            .dashboard-endpoint-info {
-                max-height: 20rem;
             }
 
             .dashboard-step-row.cols-2,
@@ -486,18 +476,6 @@ app_ui = ui.page_fluid(
                             width="100%",
                         ),
                         ui.output_ui("file_upload_ui"),
-                        ui.div(
-                            ui.accordion(
-                                ui.accordion_panel(
-                                    "Endpoint Hardware",
-                                    ui.output_ui("endpointHardware"),
-                                    value="hardware",
-                                ),
-                                id="endpointHardwareAccordion",
-                                open=False,
-                            ),
-                            class_="dashboard-endpoint-info",
-                        ),
                         class_="dashboard-pane dashboard-side-panel",
                     ),
                     col_widths=[9, 3],

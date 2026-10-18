@@ -4,7 +4,6 @@ import pytest
 
 from src.dashboard import response_metrics
 from src.dashboard.response_metrics import ResponseMetrics, response_metadata, response_metrics_ui
-from src.dashboard.formatters import format_hardware_info
 from src.dashboard.search_flow import merge_run_info
 
 
@@ -239,11 +238,3 @@ def test_equal_context_limits_are_not_repeated():
     assert info["loaded_context_length"] == 16384
     assert info["max_context_length"] == 32768
     assert "training_context_length" not in info
-
-
-def test_endpoint_hardware_contains_hardware_only():
-    assert format_hardware_info({
-        "id": "model-a", "quantization": "Q4_K_M", "gpu": "GPU", "ram": "128GB",
-        "usage": {"completion_tokens": 20}, "timings": {"predicted_per_second": 40},
-    }) == ["gpu: GPU", "ram: 128GB"]
-    assert format_hardware_info(None) == []

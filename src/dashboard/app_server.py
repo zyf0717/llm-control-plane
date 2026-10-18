@@ -16,7 +16,7 @@ load_dotenv()
 from .chat_client import stream_chat_response
 from .multi_slot import multi_slot_server
 from .response_metrics import ResponseMetrics, response_metadata
-from .formatters import format_hardware_info, format_history_json
+from .formatters import format_history_json
 from .prompt_state import (
     append_managed_retrieval_suffix,
     build_system_prompt_state,
@@ -1701,16 +1701,6 @@ def server(input, output, session):
     @render.text
     def graphStatusMessage():
         return graph_status_message.get()
-
-    @render.ui
-    @reactive.event(input.endpoint, available_endpoints)
-    def endpointHardware():
-        endpoint = available_endpoints.get().get(current_endpoint_key(), {})
-        models = endpoint.get("models") or []
-        hardware = format_hardware_info(models[0] if models else None)
-        if not hardware:
-            return ui.p("Hardware information unavailable.", class_="text-muted")
-        return ui.div(*(ui.div(line) for line in hardware))
 
     chat = Chat(id="chat", history=False)
 

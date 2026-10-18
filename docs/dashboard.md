@@ -18,7 +18,7 @@ The dashboard runs on `http://localhost:12341`, binds `127.0.0.1`, and communica
 - Repo-context repository selection for workflows that declare `repo_name`
 - Workflow run creation, stepping, streaming, retry, clearing, and artifact inspection
 - Conversation history viewer
-- System hardware panel and per-response diagnostics
+- Per-response metrics and diagnostics
 
 ## Refresh Behavior
 
@@ -26,7 +26,7 @@ The dashboard runs on `http://localhost:12341`, binds `127.0.0.1`, and communica
 
 - Loads from proxy `/models`
 - Has its own refresh action
-- Refreshing it updates the endpoint list and system hardware information
+- Refreshing it updates the endpoint list and model catalog for future responses
 
 ### RAG Endpoint Selector
 
@@ -131,11 +131,7 @@ The current design is intentional:
 
 That avoids stale retrieval content persisting across turns and keeps prompt responsibilities separate.
 
-## Endpoint Hardware and Response Details
-
-**Endpoint Hardware** shows the selected endpoint's GPU, VRAM, SoC, CPU, and RAM when
-available. It updates on endpoint selection and model refresh. Message submission,
-streaming tokens, and response completion do not refresh this panel.
+## Response Details
 
 Turn-specific information belongs to each response's footer. The summary shows
 elapsed time, TTFT, tokens, prefill, and generation rates. **Details** holds model
