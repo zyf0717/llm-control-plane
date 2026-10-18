@@ -133,3 +133,13 @@ That preserves:
 The RAG service owns retrieval, ranking, thresholding, and prompt assembly. The proxy reports endpoint, hit count, injection status, backend mode, truncation, and skip reason headers when available.
 
 TL;DR: the proxy is the integration point; the dashboard selects endpoints and shows metadata, but the proxy owns history, routing, reasoning, RAG injection, search, and orchestration subsystem wiring.
+
+## LLM call metrics
+
+`src/llm_metrics.py` captures response metadata and monotonic elapsed/first-token
+timing without a UI dependency. Task-local collection scopes include nested and
+concurrent calls. Search responses expose `llm_calls`; workflows persist them in
+step output metadata, and graphs persist `llm_call` events. The shared
+`src/dashboard/response_metrics.py` renders both chat and recorded calls. Telemetry
+is stripped before outputs become subsequent model inputs and is excluded from
+durable chat history. No token counts or throughput are inferred when absent.

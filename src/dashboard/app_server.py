@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 import uuid
@@ -15,7 +16,12 @@ load_dotenv()
 
 from .chat_client import stream_chat_response
 from .multi_slot import multi_slot_server
-from .response_metrics import ResponseMetrics, response_metadata
+from .response_metrics import (
+    ResponseMetrics,
+    call_metrics_ui,
+    response_metadata,
+    workflow_metrics_ui,
+)
 from .formatters import format_history_json
 from .prompt_state import (
     append_managed_retrieval_suffix,
@@ -1492,6 +1498,7 @@ def server(input, output, session):
                 if isinstance(snapshot, dict):
                     final_snapshot = snapshot
                     graph_run_snapshot.set(snapshot)
+                    await reactive.flush()
             if final_snapshot is None:
                 final_snapshot = await fetch_graph_run(run_id)
                 graph_run_snapshot.set(final_snapshot)
@@ -1901,13 +1908,14 @@ def server(input, output, session):
 
                 final_text_parts: list[str] = []
                 final_text_persisted = False
+                final_snapshot: dict[str, Any] | None = None
+                rendered_call_ids: set[str] = set()
 
                 async def workflow_response_stream():
-                    nonlocal final_text_persisted
+                    nonlocal final_text_persisted, final_snapshot
                     rendered_final = False
                     open_intermediate_step = ""
                     final_reasoning_open = False
-                    final_snapshot: dict[str, Any] | None = None
 
                     async def close_intermediate():
                         nonlocal open_intermediate_step
@@ -1973,13 +1981,6 @@ def server(input, output, session):
                             continue
 
                         if event_type == "step_completed":
-                            if visibility == "final" and isinstance(snapshot, dict):
-                                metadata = workflow_chat_step_metadata(snapshot, step_id)
-                                metrics.metadata = response_metadata(
-                                    {**metadata, "workflow": metrics.metadata.get("workflow", {})},
-                                    endpoints=current_endpoints,
-                                    endpoint_key=actual_endpoint_key,
-                                )
                             content = str(event.get("content") or "")
                             streamed = bool(event.get("streamed"))
                             if visibility == "intermediate":
@@ -2000,6 +2001,17 @@ def server(input, output, session):
                                 rendered_final = True
                                 final_text_parts.append(content)
                                 yield content
+                            if visibility != "hidden" and isinstance(snapshot, dict):
+                                calls = workflow_chat_step_metadata(snapshot, step_id).get("llm_calls", [])
+                                if calls:
+                                    if final_reasoning_open:
+                                        yield await close_final_reasoning()
+                                    # The last call produced this output; retries and other calls
+                                    # remain available in the workflow's Details → Steps.
+                                    call = calls[-1]
+                                    rendered_call_ids.add(call["id"])
+                                    yield call_metrics_ui(call, endpoints=current_endpoints,
+                                                          label=step_name)
                             if (
                                 workflow_dispatch_event_updates_run_details(event_type)
                                 and isinstance(snapshot, dict)
@@ -2066,9 +2078,24 @@ def server(input, output, session):
                                     final_text_persisted = True
                             return
 
-                await chat.append_message_stream(
-                    metrics.stream(workflow_response_stream())
-                )
+                def workflow_footer():
+                    metrics.finish()
+                    return workflow_metrics_ui(
+                        final_snapshot, elapsed=metrics.elapsed, status=metrics.status,
+                        rendered_ids=rendered_call_ids, endpoints=current_endpoints,
+                    )
+
+                async def workflow_with_metrics():
+                    try:
+                        async for chunk in metrics.stream(workflow_response_stream(), append_footer=False):
+                            yield chunk
+                    except asyncio.CancelledError:
+                        metrics.status = "Stopped"
+                        yield workflow_footer()
+                        raise
+                    yield workflow_footer()
+
+                await chat.append_message_stream(workflow_with_metrics())
                 if conversation_id and not bool(prompt_state.get("started")):
                     apply_system_prompt_view(
                         set_system_prompt_state(
@@ -2121,8 +2148,12 @@ def server(input, output, session):
                 search_state = build_search_failure_state(selected_search_provider, exc)
 
         search_preface = build_search_preface(search_state)
-        if search_preface:
-            await chat.append_message({"role": "assistant", "content": search_preface})
+        search_calls = (search_state or {}).get("llm_calls", [])
+        if search_preface or search_calls:
+            await chat.append_message({"role": "assistant", "content": ui.div(
+                ui.markdown(search_preface) if search_preface else None,
+                *(call_metrics_ui(call, endpoints=current_endpoints) for call in search_calls),
+            )})
 
         extra_turn_messages = [
             *forked_history,

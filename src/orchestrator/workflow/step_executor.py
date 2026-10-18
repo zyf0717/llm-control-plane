@@ -6,6 +6,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Protocol
 
+from src.llm_metrics import without_call_metrics
+
 from ..repo_context import RepoContextResult
 from .compression import (
     build_compression_prompt,
@@ -311,7 +313,7 @@ class WorkflowStepExecutor:
             results,
             use_query_refiner=use_query_refiner,
         )
-        text = json.dumps(result, indent=2)
+        text = json.dumps(without_call_metrics(result), indent=2)
         return WorkflowStepExecution(
             output={"text": text, "json": result, "metadata": {"kind": "search"}},
             artifact_text=text,
@@ -416,7 +418,7 @@ class WorkflowStepExecutor:
         }
         if not source_results:
             result["workflow_rerank"]["skipped"] = "no-results"
-        text = json.dumps(result, indent=2)
+        text = json.dumps(without_call_metrics(result), indent=2)
         return WorkflowStepExecution(
             output={"text": text, "json": result, "metadata": {"kind": "rerank"}},
             artifact_text=text,

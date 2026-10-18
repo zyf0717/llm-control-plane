@@ -5,6 +5,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
+from src.llm_metrics import capture_llm_calls, capture_llm_stream, without_call_metrics
+
 from .models import WorkflowRun, WorkflowSpec, WorkflowStepSpec
 from .registry import WorkflowRegistry
 from .search_results import reranking_path
@@ -133,11 +135,15 @@ class WorkflowExecutor:
         await self.store.mark_step_running(run_id, next_step.id, step_input)
         self._log_step_started(run, next_step)
         try:
-            execution = await self.step_executor.execute(
-                run, spec, next_step, step_input
-            )
+            with capture_llm_calls() as calls:
+                execution = await self.step_executor.execute(
+                    run, spec, next_step, step_input
+                )
         except Exception as exc:
-            await self.store.mark_step_failed(run_id, next_step.id, str(exc))
+            await self.store.mark_step_failed(
+                run_id, next_step.id, str(exc),
+                output={"metadata": {"llm_calls": calls}} if calls else None,
+            )
             logger.exception(
                 "workflow step failed: run_id=%s workflow_id=%s step_id=%s kind=%s",
                 run_id,
@@ -150,6 +156,8 @@ class WorkflowExecutor:
                 raise KeyError(f"unknown workflow run: {run_id}")
             return failed
 
+        if calls:
+            execution.output.setdefault("metadata", {})["llm_calls"] = calls
         await self.store.mark_step_completed(run_id, next_step.id, execution.output)
         self._log_step_completed(run, next_step, execution)
         if execution.artifact_text:
@@ -304,10 +312,11 @@ class WorkflowExecutor:
             yield {"type": "snapshot", "run_id": run_id, "snapshot": running_snapshot}
 
         execution: WorkflowStepExecution | None = None
+        calls: list[dict] = []
         try:
-            async for event in self.step_executor.stream(
+            async for event in capture_llm_stream(self.step_executor.stream(
                 run, spec, next_step, step_input, stream_llm=stream_llm
-            ):
+            ), calls):
                 if event.get("type") == "_execution_result":
                     execution = event["execution"]
                 else:
@@ -315,7 +324,10 @@ class WorkflowExecutor:
             if execution is None:
                 raise RuntimeError("workflow step produced no execution result")
         except Exception as exc:
-            await self.store.mark_step_failed(run_id, next_step.id, str(exc))
+            await self.store.mark_step_failed(
+                run_id, next_step.id, str(exc),
+                output={"metadata": {"llm_calls": calls}} if calls else None,
+            )
             logger.exception(
                 "workflow step failed: run_id=%s workflow_id=%s step_id=%s kind=%s",
                 run_id,
@@ -335,6 +347,8 @@ class WorkflowExecutor:
                 yield {"type": "snapshot", "run_id": run_id, "snapshot": failed}
             return
 
+        if calls:
+            execution.output.setdefault("metadata", {})["llm_calls"] = calls
         await self.store.mark_step_completed(run_id, next_step.id, execution.output)
         self._log_step_completed(run, next_step, execution)
         if execution.artifact_text:
@@ -445,13 +459,13 @@ class WorkflowExecutor:
     ) -> dict[str, Any]:
         run = snapshot.get("run") if isinstance(snapshot.get("run"), dict) else {}
         outputs = WorkflowExecutor._previous_outputs(spec, snapshot)
-        return {
+        return without_call_metrics({
             "params": dict(run.get("params") or {}),
             "previous_outputs": outputs,
             "outputs": outputs,
             "artifacts": list(snapshot.get("artifacts") or []),
             "current_step": step.to_dict(),
-        }
+        })
 
     @staticmethod
     def _previous_outputs(

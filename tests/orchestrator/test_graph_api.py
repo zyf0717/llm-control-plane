@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ from src.orchestrator.graph.registry import GraphRegistry
 from src.orchestrator.graph.store import SQLiteGraphRunStore
 from src.orchestrator.proxy import create_app
 from src.graphs import common as graph_common
+from src.llm_metrics import CallMetrics
 
 
 def write_fake_graph(path: Path) -> None:
@@ -86,6 +88,92 @@ defaults:
     registry = GraphRegistry(config_path=config_path, metadata_dir=metadata_dir)
     registry.load()
     return registry
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["run", "stream", "resume", "failure"])
+async def test_graph_records_all_calls_and_streams_completed_call_metrics(tmp_path, mode):
+    class MeasuredGraph:
+        async def ainvoke(self, input, config=None):
+            with CallMetrics(label="Planner"):
+                pass
+            with CallMetrics(label="Answer"):
+                if mode == "failure":
+                    raise RuntimeError("lost")
+            return {"answer": "done"}
+
+        async def astream(self, input, config=None, stream_mode=None):
+            with CallMetrics(label="Planner"):
+                pass
+            yield {"plan": {"text": "plan"}}
+            with CallMetrics(label="Answer"):
+                pass
+            yield {"answer": {"text": "done"}}
+
+    registry = build_registry(tmp_path)
+    registry.get("sample").graph = MeasuredGraph()
+    store = SQLiteGraphRunStore(tmp_path / "graphs.sqlite3")
+    await store.initialize()
+    try:
+        executor = GraphExecutor(registry, store)
+        run_id = (await executor.create_run("sample", input={"question": "hi"}))["run_id"]
+        if mode == "stream":
+            events = [event async for event in executor.stream(run_id)]
+            intermediate = [event["snapshot"] for event in events if event.get("type") == "snapshot"]
+            assert any(len([row for row in snap["events"] if row["event_type"] == "llm_call"]) == 1
+                       for snap in intermediate)
+            snapshot = events[-1]["snapshot"]
+        elif mode == "resume":
+            snapshot = await executor.resume(run_id, resume="yes")
+        else:
+            snapshot = await executor.run(run_id)
+        calls = [row["event"]["call"] for row in snapshot["events"] if row["event_type"] == "llm_call"]
+        assert [call["label"] for call in calls] == ["Planner", "Answer"]
+        assert len({call["id"] for call in calls}) == 2
+        assert calls[-1]["status"] == ("Failed" if mode == "failure" else "Completed")
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_graph_does_not_skip_parallel_calls_finishing_during_persistence(tmp_path):
+    gate = asyncio.Event()
+
+    class ParallelGraph:
+        async def astream(self, *args, **kwargs):
+            async def delayed_call():
+                await gate.wait()
+                with CallMetrics(label="parallel"):
+                    pass
+            self.pending = asyncio.create_task(delayed_call())
+            with CallMetrics(label="first"):
+                pass
+            yield {"first": {}}
+            await self.pending
+            yield {"second": {}}
+
+    graph = ParallelGraph()
+    registry = build_registry(tmp_path)
+    registry.get("sample").graph = graph
+    store = SQLiteGraphRunStore(tmp_path / "graphs.sqlite3")
+    await store.initialize()
+    try:
+        executor = GraphExecutor(registry, store)
+        record = executor._record_calls
+
+        async def slow_record(run_id, calls):
+            gate.set()
+            await graph.pending
+            await record(run_id, calls)
+
+        executor._record_calls = slow_record
+        run_id = (await executor.create_run("sample", input={"question": "hi"}))["run_id"]
+        events = [event async for event in executor.stream(run_id)]
+        calls = [row["event"]["call"] for row in events[-1]["snapshot"]["events"]
+                 if row["event_type"] == "llm_call"]
+        assert [call["label"] for call in calls] == ["first", "parallel"]
+    finally:
+        await store.close()
 
 
 @pytest.mark.asyncio

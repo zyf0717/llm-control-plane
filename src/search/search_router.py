@@ -8,6 +8,8 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Optional
 
+from src.llm_metrics import capture_llm_calls
+
 from .http_client import SearchHttpClient, SearchHttpClientConfig
 from .normalize import dedupe_results
 from .query_refiner import SearchQueryRefiner
@@ -84,6 +86,12 @@ class SearchRouter:
         self._rate_limit_lock = asyncio.Lock()
 
     async def search(self, args: SearchArgs) -> SearchResponse:
+        with capture_llm_calls() as calls:
+            response = await self._search(args)
+        response.llm_calls = calls
+        return response
+
+    async def _search(self, args: SearchArgs) -> SearchResponse:
         self._validate_args(args)
         if not self.config.enabled:
             raise RuntimeError("Search module is disabled")

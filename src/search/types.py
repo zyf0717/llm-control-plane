@@ -68,6 +68,7 @@ class SearchResponse:
     original_query: Optional[str] = None
     query_refinement: dict[str, object] = field(default_factory=dict)
     reranking: dict[str, object] = field(default_factory=dict)
+    llm_calls: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
@@ -76,6 +77,8 @@ class SearchResponse:
             payload.pop("original_query", None)
         if not self.query_refinement:
             payload.pop("query_refinement", None)
+        if not self.llm_calls:
+            payload.pop("llm_calls", None)
         if not self.reranking:
             payload.pop("reranking", None)
         return payload

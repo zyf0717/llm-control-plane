@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from src.llm_metrics import CallMetrics
 
 from src.orchestrator.repo_context import RepoContextResult
 from src.orchestrator.workflow.executor import WorkflowExecutor, render_template
@@ -39,6 +40,80 @@ class SequenceLLMClient:
         self.prompts.append(kwargs)
         text = self.texts.pop(0) if self.texts else ""
         return {"text": text, "metadata": {"endpoint": kwargs["endpoint"]}}
+
+
+class MeasuredLLMClient(SequenceLLMClient):
+    async def complete(self, **kwargs):
+        with CallMetrics(metadata={"model": "test-model", "usage": {"completion_tokens": 7}}):
+            return await super().complete(**kwargs)
+
+    async def stream_complete(self, **kwargs):
+        with CallMetrics(metadata={"model": "test-model", "usage": {"completion_tokens": 7}}) as call:
+            result = await super().complete(**kwargs)
+            call.on_first_token()
+            yield {"channel": "metadata", "metadata": result["metadata"]}
+            yield {"channel": "content", "content": result["text"]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", [False, True])
+async def test_workflow_retains_repair_calls_including_failed_steps(tmp_path, invalid):
+    write_structured_plan_workflow(tmp_path / "structured.yaml", max_attempts=1)
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    llm = MeasuredLLMClient(["invalid", "still invalid" if invalid else '{"queries": ["ok"]}'])
+    try:
+        executor = WorkflowExecutor(registry, store, llm)
+        created = await executor.create_run("structured_plan_sample", params={"goal": "ship"}, endpoint="node")
+        snapshot = await executor.advance(created["run"]["run_id"])
+        assert snapshot["run"]["status"] == ("failed" if invalid else "completed")
+        calls = snapshot["steps"][0]["output_json"]["metadata"]["llm_calls"]
+        assert len(calls) == 2
+        assert len({call["id"] for call in calls}) == 2
+        assert all(call["metadata"]["usage"]["completion_tokens"] == 7 for call in calls)
+        assert all("llm_calls" not in prompt["prompt"] for prompt in llm.prompts)
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_workflow_call_records_do_not_enter_later_step_inputs(tmp_path, stream):
+    path = tmp_path / "sample.yaml"
+    write_workflow(path)
+    # Serialize the entire prior output to exercise the prompt boundary.
+    path.write_text(path.read_text()
+                    .replace("{{ outputs.first_out.text }}", "{{ outputs.first_out }}")
+                    .replace("id: first\n", "id: first\n    chat_visibility: intermediate\n")
+                    .replace("id: second\n", "id: second\n    chat_visibility: final\n"))
+    registry = WorkflowRegistry(tmp_path)
+    registry.load()
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    await store.initialize()
+    llm = MeasuredLLMClient(["first answer", "second answer"])
+    try:
+        executor = WorkflowExecutor(registry, store, llm)
+        created = await executor.create_run("sample", params={"goal": "ship"}, endpoint="node")
+        run_id = created["run"]["run_id"]
+        if stream:
+            events = []
+            async for event in executor.run_to_completion_stream(run_id):
+                events.append(event)
+                with CallMetrics(label="consumer work"):
+                    pass
+            snapshot = events[-1]["snapshot"]
+        else:
+            snapshot = await executor.run_to_completion(run_id)
+        assert snapshot["run"]["status"] == "completed"
+        assert all(len(step["output_json"]["metadata"]["llm_calls"]) == 1 for step in snapshot["steps"])
+        assert all((step["output_json"]["metadata"]["llm_calls"][0]["ttft"] is not None) == stream
+                   for step in snapshot["steps"])
+        assert "llm_calls" not in str(snapshot["steps"][1]["input_json"])
+        assert "llm_calls" not in llm.prompts[1]["prompt"]
+    finally:
+        await store.close()
 
 
 class StreamingLLMClient:

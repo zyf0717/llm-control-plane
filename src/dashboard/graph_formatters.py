@@ -5,6 +5,8 @@ from typing import Any
 
 from shiny import ui
 
+from .response_metrics import call_metrics_ui
+
 
 def format_graph_choices(graphs: list[dict[str, Any]]) -> dict[str, str]:
     return {
@@ -63,6 +65,8 @@ def format_graph_run_details(snapshot: dict[str, Any] | None) -> ui.Tag:
                 )
             )
         ),
+        *(call_metrics_ui(event["event"]["call"], label=event.get("node_name"))
+          for event in events if event.get("event_type") == "llm_call"),
         ui.card(
             ui.tags.pre(
                 json.dumps(snapshot, indent=2, default=str),

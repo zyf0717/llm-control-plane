@@ -13,6 +13,8 @@ from typing import Dict, List, Optional
 import httpx
 import yaml
 
+from src.llm_metrics import CallMetrics, llm_response_metadata
+
 from .utils import HeaderManager
 
 logger = logging.getLogger(__name__)
@@ -102,28 +104,30 @@ Respond with ONLY the category name and nothing else.
                 "stream": False,
             }
 
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                headers = HeaderManager.create_auth_headers()
-                headers["Content-Type"] = "application/json"
+            with CallMetrics(label="Routing classification", metadata={"endpoint": classification_endpoint_url}) as call:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    headers = HeaderManager.create_auth_headers()
+                    headers["Content-Type"] = "application/json"
 
-                response = await client.post(
-                    classification_endpoint_url, json=payload, headers=headers
-                )
-                response.raise_for_status()
-
-                result = response.json()
-                if "choices" in result and result["choices"]:
-                    content = (
-                        result["choices"][0]
-                        .get("message", {})
-                        .get("content", "")
-                        .strip()
-                        .lower()
+                    response = await client.post(
+                        classification_endpoint_url, json=payload, headers=headers
                     )
+                    response.raise_for_status()
 
-                    for workload_type in WorkloadType:
-                        if workload_type.value in content:
-                            return workload_type
+                    result = response.json()
+                    call.metadata.update(llm_response_metadata(result))
+                    if "choices" in result and result["choices"]:
+                        content = (
+                            result["choices"][0]
+                            .get("message", {})
+                            .get("content", "")
+                            .strip()
+                            .lower()
+                        )
+
+                        for workload_type in WorkloadType:
+                            if workload_type.value in content:
+                                return workload_type
 
         except (httpx.RequestError, httpx.HTTPStatusError, KeyError) as e:
             logger.warning("LLM classification failed: %s", e)

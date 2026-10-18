@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import httpx
+
+from src.llm_metrics import CallMetrics, llm_response_metadata
 from jsonschema import Draft202012Validator
 
 from .types import SearchResult
@@ -284,50 +286,53 @@ class SearchReranker:
                 len(candidates),
             )
 
-            async with httpx.AsyncClient(
-                timeout=self.config.timeout_ms / 1000
-            ) as client:
-                response = await client.post(
-                    endpoint,
-                    json=payload,
-                    headers=self.config.headers,
-                )
-                response.raise_for_status()
+            with CallMetrics(label="LLM reranking", metadata={"endpoint": endpoint}) as call:
+                async with httpx.AsyncClient(
+                    timeout=self.config.timeout_ms / 1000
+                ) as client:
+                    response = await client.post(
+                        endpoint,
+                        json=payload,
+                        headers=self.config.headers,
+                    )
+                    response.raise_for_status()
 
-            content = (
-                response.json()
-                .get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-            )
-            parsed = self._parse_json(content)
-            ordered = self._apply_ranking(candidates, parsed)
-            if not ordered:
-                logger.warning(
-                    "search reranker failed: path=%s warning=empty-ranking",
+                data = response.json()
+                call.metadata.update(llm_response_metadata(data))
+                content = (
+                    data.get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
+                )
+                parsed = self._parse_json(content)
+                ordered = self._apply_ranking(candidates, parsed)
+                if not ordered:
+                    logger.warning(
+                        "search reranker failed: path=%s warning=empty-ranking",
+                        backend,
+                    )
+                    call.on_error("empty ranking")
+                    return self._fallback(results[:top_k], "empty-ranking", backend=backend)
+
+                reranked = [*ordered, *passthrough][:top_k]
+                self._repair_ranks(reranked)
+                self._annotate_reranker_path(reranked, backend)
+                logger.info(
+                    "search reranker completed: path=%s results=%d degraded=%s warning=%s",
                     backend,
+                    len(reranked),
+                    degraded_on_success,
+                    success_warning,
                 )
-                return self._fallback(results[:top_k], "empty-ranking", backend=backend)
-
-            reranked = [*ordered, *passthrough][:top_k]
-            self._repair_ranks(reranked)
-            self._annotate_reranker_path(reranked, backend)
-            logger.info(
-                "search reranker completed: path=%s results=%d degraded=%s warning=%s",
-                backend,
-                len(reranked),
-                degraded_on_success,
-                success_warning,
-            )
-            return SearchReranking(
-                results=reranked,
-                used=True,
-                degraded=degraded_on_success,
-                warning=success_warning,
-                model=self.config.model,
-                backend=backend,
-                path=backend,
-            )
+                return SearchReranking(
+                    results=reranked,
+                    used=True,
+                    degraded=degraded_on_success,
+                    warning=success_warning,
+                    model=self.config.model,
+                    backend=backend,
+                    path=backend,
+                )
         except Exception as exc:
             logger.warning(
                 "search reranker failed: path=%s warning=%s",

@@ -2,13 +2,46 @@ import asyncio
 
 import pytest
 
-from src.dashboard import response_metrics
+from src import llm_metrics
 from src.dashboard.response_metrics import ResponseMetrics, response_metadata, response_metrics_ui
 from src.dashboard.search_flow import merge_run_info
+from src.dashboard.response_metrics import call_metrics_ui, workflow_metrics_ui
 
 
 def render(metadata):
     return str(response_metrics_ui(metadata, elapsed=5.0, ttft=1.0, status="Completed"))
+
+
+def test_workflow_uses_per_call_times_and_hides_only_unrendered_calls():
+    calls = [{"id": "hidden", "label": "LLM", "elapsed": 2.0, "ttft": None,
+              "metadata": {"usage": {"completion_tokens": 10}}},
+             {"id": "visible", "elapsed": 3.0, "ttft": 0.5,
+              "metadata": {"usage": {"completion_tokens": 20}}}]
+    snapshot = {"steps": [{"step_id": "plan", "output_json": {"metadata": {"llm_calls": calls}}}]}
+    html = str(workflow_metrics_ui(snapshot, elapsed=12, status="Completed", rendered_ids={"visible"}))
+    assert "Workflow total 12.00s" in html
+    assert "Steps" in html
+    assert "Total 2.00s" in html
+    assert "Tokens — in / 10 out" in html
+    assert "20 out" not in html
+    visible = str(call_metrics_ui(calls[1], label="Final answer"))
+    assert "Final answer" in visible
+    assert "Total 3.00s" in visible
+    assert "Tokens — in / 20 out" in visible
+
+
+def test_utility_footer_resolves_model_config_by_endpoint_url_and_retains_its_label():
+    call = {"label": "Query refinement", "elapsed": 1.0, "metadata": {
+        "endpoint": "http://utility/v1/chat/completions", "model": "actual",
+        "timings": {"speculation": {"head": {"drafted": 10, "accepted": 7}}},
+    }}
+    html = str(call_metrics_ui(call, endpoints={"utility": {
+        "endpoint_url": "http://utility", "models": [{"id": "actual", "quantization": "Q4"}],
+    }}))
+    assert "Query refinement" in html
+    assert "MTP draft acceptance: 70.00%" in html
+    assert "Quantization: Q4" in html
+    assert "TTFT —" in html
 
 
 def test_metrics_keep_zero_values_and_use_upstream_rate():
@@ -101,7 +134,7 @@ def test_model_information_is_displayed_as_escaped_text():
 @pytest.mark.asyncio
 async def test_response_metrics_are_frozen_per_turn_after_source_finishes(monkeypatch):
     clock = iter([11.0, 14.0])
-    monkeypatch.setattr(response_metrics.time, "perf_counter", lambda: next(clock))
+    monkeypatch.setattr(llm_metrics.time, "perf_counter", lambda: next(clock))
     metrics = ResponseMetrics(started_at=10.0)
     finalized = []
 
@@ -127,7 +160,7 @@ async def test_response_metrics_are_frozen_per_turn_after_source_finishes(monkey
 @pytest.mark.asyncio
 @pytest.mark.parametrize("raises", [False, True])
 async def test_response_failure_footer_does_not_invent_ttft(raises):
-    metrics = ResponseMetrics(started_at=response_metrics.time.perf_counter())
+    metrics = ResponseMetrics(started_at=llm_metrics.time.perf_counter())
 
     async def source():
         if raises:
@@ -143,7 +176,7 @@ async def test_response_failure_footer_does_not_invent_ttft(raises):
 
 @pytest.mark.asyncio
 async def test_cancelled_response_keeps_footer_and_propagates_cancellation():
-    metrics = ResponseMetrics(started_at=response_metrics.time.perf_counter())
+    metrics = ResponseMetrics(started_at=llm_metrics.time.perf_counter())
     started = asyncio.Event()
     chunks = []
     finalized = []

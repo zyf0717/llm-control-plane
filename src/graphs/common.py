@@ -6,6 +6,8 @@ from typing import Any
 
 import jsonschema
 
+from src.llm_metrics import without_call_metrics
+
 from src.orchestrator.config import CONFIG_FILE, load_config
 from src.orchestrator.repo_context import RepoContextClient, load_repo_context_config
 from src.orchestrator.runtime import (
@@ -95,9 +97,9 @@ def output_from_payload(
         "text": (
             text
             if text is not None
-            else json.dumps(payload, indent=2, default=str)
+            else json.dumps(without_call_metrics(payload), indent=2, default=str)
         ),
-        "json": payload,
+        "json": without_call_metrics(payload),
         "metadata": {"kind": kind, **dict(metadata or {})},
     }
 

@@ -4,6 +4,9 @@ from datetime import UTC, datetime, tzinfo
 from typing import Any
 
 from shiny import ui
+from src.llm_metrics import without_call_metrics
+
+from .response_metrics import call_metrics_ui
 
 from .utils import HISTORY_DISPLAY_TIMEZONE
 
@@ -356,8 +359,14 @@ def format_step_detail(step: dict[str, Any]) -> ui.Tag:
     error = str(step.get("error") or "").strip()
     boxes = [
         _format_step_detail_box("Input", step.get("input_json")),
-        _format_step_detail_box("Output", step.get("output_json")),
+        _format_step_detail_box("Output", without_call_metrics(step.get("output_json"))),
     ]
+    output = step.get("output_json") or {}
+    calls = output.get("metadata", {}).get("llm_calls", [])
+    if calls:
+        boxes.append(ui.div(
+            *(call_metrics_ui(call) for call in calls), style="grid-column: 1 / -1;",
+        ))
     if error:
         boxes.append(
             ui.tags.div(

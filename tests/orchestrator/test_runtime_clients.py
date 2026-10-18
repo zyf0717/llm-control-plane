@@ -6,6 +6,7 @@ from starlette.responses import JSONResponse, StreamingResponse
 
 from src.orchestrator import upstream_proxy
 from src.orchestrator.runtime.clients import ProxyRuntimeLLMClient
+from src.llm_metrics import capture_llm_calls
 
 
 @pytest.mark.asyncio
@@ -32,18 +33,43 @@ async def test_workflow_model_metadata_survives_without_entering_prompt(monkeypa
     client = ProxyRuntimeLLMClient()
     request = dict(endpoint="node", prompt="hello", conversation_id="workflow",
                    skip_conversation=True)
+    with capture_llm_calls() as calls:
+        if stream:
+            events = [event async for event in client.stream_complete(**request)]
+        else:
+            result = await client.complete(**request)
+    assert len(calls) == 1
+    assert calls[0]["metadata"]["model"] == "served-model"
+    assert calls[0]["elapsed"] >= 0
+    assert (calls[0]["ttft"] is not None) == stream
     if stream:
-        events = [event async for event in client.stream_complete(**request)]
         metadata = {}
         for event in events:
             metadata.update(event.get("metadata", {}))
         assert sum("model" in event.get("metadata", {}) for event in events) == 1
         assert "".join(event.get("content", "") for event in events) == "hello world"
     else:
-        result = await client.complete(**request)
         metadata = result["metadata"]
         assert result["text"] == "hello world"
     for key, value in reported.items():
         assert metadata[key] == value
     sent = await proxy.call_args.args[1].json()
     assert sent["messages"] == [{"role": "user", "content": "hello"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_upstream_http_error_is_a_failed_call(monkeypatch, stream):
+    monkeypatch.setattr(upstream_proxy, "proxy_request", AsyncMock(
+        return_value=JSONResponse({"error": "unavailable"}, status_code=503)))
+    client = ProxyRuntimeLLMClient()
+    with capture_llm_calls() as calls:
+        with pytest.raises(RuntimeError, match="HTTP 503"):
+            request = dict(endpoint="node", prompt="hi", conversation_id="test")
+            if stream:
+                _ = [event async for event in client.stream_complete(**request)]
+            else:
+                await client.complete(**request)
+    assert len(calls) == 1
+    assert calls[0]["status"] == "Failed"
+    assert calls[0]["ttft"] is None

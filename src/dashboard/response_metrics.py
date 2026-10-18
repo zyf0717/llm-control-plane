@@ -4,54 +4,43 @@ import asyncio
 import json
 import logging
 import math
-import time
 from collections.abc import AsyncIterable, AsyncIterator
 from copy import deepcopy
-from dataclasses import dataclass, field
 from typing import Any
 
 from shiny import ui
+from src.llm_metrics import CallMetrics
 
 from .cache_telemetry import normalize_cache_telemetry
 
 
-@dataclass(slots=True)
-class ResponseMetrics:
+class ResponseMetrics(CallMetrics):
     """Collect one turn's telemetry separately from its text and durable history."""
 
-    started_at: float
-    metadata: dict[str, Any] = field(default_factory=dict)
-    ttft: float | None = None
-    status: str = "Completed"
-
-    def on_first_token(self) -> None:
-        if self.ttft is None:
-            self.ttft = max(0.0, time.perf_counter() - self.started_at)
-
-    def on_error(self, _message: str) -> None:
-        self.status = "Failed"
-
     def footer(self):
+        self.finish()
         return response_metrics_ui(
             self.metadata,
-            elapsed=max(0.0, time.perf_counter() - self.started_at),
+            elapsed=self.elapsed,
             ttft=self.ttft,
             status=self.status,
         )
 
-    async def stream(self, source: AsyncIterable[str]) -> AsyncIterator[Any]:
+    async def stream(self, source: AsyncIterable[Any], *, append_footer: bool = True) -> AsyncIterator[Any]:
         try:
             async for chunk in source:
                 yield chunk
         except asyncio.CancelledError:
             self.status = "Stopped"
-            yield self.footer()
+            if append_footer:
+                yield self.footer()
             raise
         except Exception as exc:
             self.on_error(str(exc))
             logging.getLogger(__name__).exception("Chat response stream failed")
             yield f"Error: {exc}"
-        yield self.footer()
+        if append_footer:
+            yield self.footer()
 
 
 def _number(value: Any) -> float | None:
@@ -80,6 +69,11 @@ def response_metadata(
     info = deepcopy(metadata or {})
     endpoint = _mapping(info.get("routing")).get("decision") or info.get("endpoint") or endpoint_key
     if endpoint:
+        info["endpoint"] = endpoint
+    if endpoint not in (endpoints or {}) and isinstance(endpoint, str):
+        base_url = endpoint.removesuffix("/v1/chat/completions").rstrip("/")
+        endpoint = next((key for key, value in (endpoints or {}).items()
+                         if str(value.get("endpoint_url", "")).rstrip("/") == base_url), endpoint)
         info["endpoint"] = endpoint
     candidates = _mapping((endpoints or {}).get(endpoint)).get("models") or []
     reported = _mapping(info.get("model_info"))
@@ -128,7 +122,43 @@ def _detail_section(title: str, info: dict, fields: dict[str, str]):
     return ui.div(ui.strong(title), *rows, class_="response-details-section") if rows else None
 
 
-def response_metrics_ui(metadata: dict, *, elapsed: float | None, ttft: float | None, status: str):
+def call_metrics_ui(call: dict, *, endpoints: dict | None = None, label: str | None = None):
+    """Use the same footer for live chat and recorded internal calls."""
+    return response_metrics_ui(
+        response_metadata(call.get("metadata"), endpoints=endpoints),
+        elapsed=call.get("elapsed"), ttft=call.get("ttft"),
+        status=call.get("status", "Completed"), label=label or call.get("label"),
+    )
+
+
+def workflow_metrics_ui(snapshot: dict | None, *, elapsed: float, status: str,
+                        rendered_ids: set[str], endpoints: dict | None = None):
+    """Whole-workflow elapsed time, with remaining calls under Details → Steps."""
+    steps = []
+    for step in (snapshot or {}).get("steps", []):
+        output = _mapping(step.get("output_json"))
+        calls = _mapping(output.get("metadata")).get("llm_calls", [])
+        for index, call in enumerate(calls):
+            if call.get("id") not in rendered_ids:
+                steps.append(call_metrics_ui(
+                    call, endpoints=endpoints,
+                    label=f"{step['step_id']} · {call.get('label', 'LLM')} {index + 1}",
+                ))
+    run = _mapping((snapshot or {}).get("run"))
+    workflow = _detail_section("Workflow", run, {"workflow_id": "ID", "run_id": "Run", "status": "Status"})
+    return ui.div(
+        ui.div(ui.span(f"Workflow total {elapsed:.2f}s"),
+               *([ui.span(status)] if status != "Completed" else []),
+               class_="response-metrics-summary"),
+        ui.tags.details(ui.tags.summary("Details"), workflow,
+                        ui.tags.details(ui.tags.summary("Steps"), *steps) if steps else None)
+        if workflow is not None or steps else None,
+        class_="response-metrics",
+    )
+
+
+def response_metrics_ui(metadata: dict, *, elapsed: float | None, ttft: float | None, status: str,
+                        label: str | None = None):
     usage = _mapping(metadata.get("usage"))
     timings = _mapping(metadata.get("timings"))
     cache = _mapping(metadata.get("cache"))
@@ -175,7 +205,7 @@ def response_metrics_ui(metadata: dict, *, elapsed: float | None, ttft: float | 
     head = _mapping(_mapping(timings.get("speculation")).get("head"))
     if head:
         drafted, accepted = _count(head.get("drafted")), _count(head.get("accepted"))
-        label = "MTP draft acceptance"
+        draft_label = "MTP draft acceptance"
         has_draft_counts = True
     else:
         counts = (
@@ -183,14 +213,14 @@ def response_metrics_ui(metadata: dict, *, elapsed: float | None, ttft: float | 
             else _mapping(metadata.get("stats"))
         )
         drafted, accepted = _count(counts.get("draft_n")), _count(counts.get("draft_n_accepted"))
-        label = "Draft acceptance"
+        draft_label = "Draft acceptance"
         has_draft_counts = "draft_n" in counts or "draft_n_accepted" in counts
     if has_draft_counts:
         valid = drafted is not None and accepted is not None and accepted <= drafted
         acceptance = f"{100 * accepted / drafted:.2f}%" if valid and drafted else "—"
         counts_text = f" ({accepted:,} / {drafted:,})" if valid else ""
         details.append(ui.tags.div(
-            f"{label}: {acceptance}{counts_text}",
+            f"{draft_label}: {acceptance}{counts_text}",
             title="Accepted / proposed draft tokens. MTP uses head-only counts; Draft acceptance includes all reported draft sources.",
         ))
 
@@ -240,6 +270,7 @@ def response_metrics_ui(metadata: dict, *, elapsed: float | None, ttft: float | 
 
     return ui.div(
         ui.div(
+            *([ui.strong(label)] if label else []),
             *([ui.span(status)] if status != "Completed" else []),
             ui.span(
                 f"TTFT {seconds(ttft)}",

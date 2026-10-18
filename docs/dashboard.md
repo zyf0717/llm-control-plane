@@ -82,8 +82,21 @@ Single-Slot replies include the same response metrics footer as Multi-Slot. **Sh
 response metrics**, directly below **Show reasoning** in the sidebar, is on by default
 and controls existing and future footers. Metrics are display-only and are excluded
 from persisted conversation history. Non-streaming replies show `—` for time to first
-token because token arrival cannot be observed. Workflow token counts and throughput
-refer to the final response step; total elapsed time includes workflow setup and steps.
+token because token arrival cannot be observed.
+
+Search query refinement and LLM reranking each use that same footer beneath the search
+candidates. Visible workflow outputs have a footer for the call that produced them.
+The workflow ends with a separate **Workflow total** elapsed time; **Details → Steps**
+holds hidden calls, repairs, retries, and compression calls. Token counts, TTFT, and
+throughput always refer to an individual call; they are never averaged across steps.
+Failed calls retain any telemetry received before failure. A successful LLM generation
+can still belong to a failed step if its output fails validation.
+
+The Workflows tab shows recorded calls in each step's detail panel. The Graphs tab
+shows the same footers for recorded calls, including calls completed during streaming.
+The external repo-context subprocess does not expose per-call telemetry; its internal
+LLM calls cannot yet be shown. Search providers, retrieval, and dedicated rerankers do
+not generate LLM footers.
 
 ## Multi-Slot Tab
 

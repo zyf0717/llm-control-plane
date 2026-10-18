@@ -308,7 +308,9 @@ class SQLiteWorkflowStore:
                 await conn.rollback()
                 raise
 
-    async def mark_step_failed(self, run_id: str, step_id: str, error: str) -> None:
+    async def mark_step_failed(
+        self, run_id: str, step_id: str, error: str, *, output: dict | None = None,
+    ) -> None:
         conn = self._require_connection()
         now = _utc_now()
         async with self._write_lock:
@@ -317,10 +319,10 @@ class SQLiteWorkflowStore:
                 await conn.execute(
                     """
                     UPDATE workflow_step_runs
-                    SET status = 'failed', error = ?, completed_at = ?
+                    SET status = 'failed', error = ?, completed_at = ?, output_json = ?
                     WHERE run_id = ? AND step_id = ?
                     """,
-                    (str(error), now, run_id, step_id),
+                    (str(error), now, json.dumps(output) if output is not None else None, run_id, step_id),
                 )
                 await conn.execute(
                     """
