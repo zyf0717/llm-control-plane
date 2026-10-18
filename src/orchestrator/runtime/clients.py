@@ -100,6 +100,8 @@ class ProxyRuntimeLLMClient:
         for key in ("usage", "stats", "model_info", "runtime", "timings"):
             if isinstance(response_json.get(key), dict):
                 metadata[key] = response_json[key]
+        if isinstance(response_json.get("model"), str) and response_json["model"].strip():
+            metadata["model"] = response_json["model"]
 
         return {"text": text, "metadata": metadata}
 
@@ -153,7 +155,7 @@ class ProxyRuntimeLLMClient:
         response_headers = dict(getattr(response, "headers", {}) or {})
         metadata = _metadata_from_headers(endpoint_key, response_headers)
         if metadata:
-            yield {"channel": "metadata", "metadata": metadata}
+            yield {"channel": "metadata", "metadata": dict(metadata)}
 
         async for data in _iter_sse_data(response):
             if data == "[DONE]":
@@ -165,6 +167,12 @@ class ProxyRuntimeLLMClient:
             if str(obj.get("type") or "").startswith("proxy."):
                 detail = obj.get("detail") or obj.get("error") or obj.get("type")
                 raise RuntimeError(str(detail))
+            if (
+                isinstance(obj.get("model"), str) and obj["model"].strip()
+                and obj["model"] != metadata.get("model")
+            ):
+                metadata["model"] = obj["model"]
+                yield {"channel": "metadata", "metadata": {"model": obj["model"]}}
             for key in ("usage", "stats", "model_info", "runtime", "timings"):
                 if isinstance(obj.get(key), dict):
                     yield {"channel": "metadata", "metadata": {key: obj[key]}}

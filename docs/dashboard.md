@@ -18,7 +18,7 @@ The dashboard runs on `http://localhost:12341`, binds `127.0.0.1`, and communica
 - Repo-context repository selection for workflows that declare `repo_name`
 - Workflow run creation, stepping, streaming, retry, clearing, and artifact inspection
 - Conversation history viewer
-- Runtime metadata panel
+- System hardware panel and per-response diagnostics
 
 ## Refresh Behavior
 
@@ -26,7 +26,7 @@ The dashboard runs on `http://localhost:12341`, binds `127.0.0.1`, and communica
 
 - Loads from proxy `/models`
 - Has its own refresh action
-- Refreshing it updates the endpoint list and hardware/model metadata view
+- Refreshing it updates the endpoint list and system hardware information
 
 ### RAG Endpoint Selector
 
@@ -93,9 +93,12 @@ usage; replies stream concurrently without blocking other panes. Each pane shows
 request status and elapsed time, including any upstream queue time.
 
 Each response ends with a metrics footer showing time to first token (including
-reasoning), total elapsed time, input/output tokens, and server-reported generation
-throughput. Unavailable values show `—`. Expand **Details** for reported reasoning
-tokens, cached input tokens, and upstream slot ID when available. **Show response
+reasoning), total elapsed time, input/output tokens, then server-reported **Prefill**
+and **Generation** throughput in tok/s. Unavailable values show `—`. Expand **Details**
+for reported reasoning tokens, cached input tokens, MTP draft acceptance, model
+information, and upstream slot ID. MTP acceptance uses accepted/proposed head tokens;
+endpoints reporting only aggregate draft counts show **Draft acceptance** instead.
+Zero proposed tokens show `—`, rather than a percentage. **Show response
 metrics** under Generation settings is on by default and controls both existing and
 future footers. Metrics are kept out of the conversation sent to the model.
 
@@ -128,17 +131,20 @@ The current design is intentional:
 
 That avoids stale retrieval content persisting across turns and keeps prompt responsibilities separate.
 
-## Runtime Panel
+## Endpoint Hardware and Response Details
 
-The runtime panel may show:
+**Endpoint Hardware** shows the selected endpoint's GPU, VRAM, SoC, CPU, and RAM when
+available. It updates on endpoint selection and model refresh. Message submission,
+streaming tokens, and response completion do not refresh this panel.
 
-- elapsed time
-- trace ID
-- routing decision and workload type
-- token usage and timings
-- selected model and hardware metadata
-- search provider, result count, degraded state, and warnings
-- RAG endpoint, hit count, injection result, and skip reason
+Turn-specific information belongs to each response's footer. The summary shows
+elapsed time, TTFT, tokens, prefill, and generation rates. **Details** holds model
+configuration, cache reuse, draft acceptance, trace ID, actual endpoint and workload,
+workflow/run status, and search/RAG diagnostics when applicable. Model configuration
+is captured from the matching endpoint's model catalog and response metadata for
+that turn; changing endpoints or refreshing models does not rewrite earlier footers.
+Raw usage, timing, runtime, and cache dumps are omitted to avoid repeating the same
+values. Search candidate links remain in the transcript.
 
 ## Workflow Tab
 

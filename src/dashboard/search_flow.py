@@ -179,7 +179,7 @@ def build_search_preface(search_state: Optional[Dict[str, Any]]) -> Optional[str
 def merge_run_info(
     metadata: Optional[Dict[str, Any]], search_state: Optional[Dict[str, Any]]
 ) -> Optional[Dict[str, Any]]:
-    """Merge search metadata into the runtime panel payload."""
+    """Attach search diagnostics to this response's footer metadata."""
     merged = dict(metadata or {})
 
     if isinstance(search_state, dict):

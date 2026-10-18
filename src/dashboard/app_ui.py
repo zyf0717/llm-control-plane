@@ -55,7 +55,7 @@ app_ui = ui.page_fluid(
             gap: 0.75rem;
         }
 
-        .dashboard-run-info {
+        .dashboard-endpoint-info {
             flex: 1 1 auto;
             min-height: 0;
             overflow-y: auto;
@@ -94,6 +94,7 @@ app_ui = ui.page_fluid(
 
         .response-metrics-summary { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; }
         .response-metrics details { margin-top: 0.25rem; }
+        .response-details-section { margin-top: 0.5rem; overflow-wrap: anywhere; }
         .hide-response-metrics .response-metrics { display: none; }
 
         @media (max-width: 767.98px) {
@@ -236,7 +237,7 @@ app_ui = ui.page_fluid(
                 --dashboard-chat-height: min(60dvh, 32rem);
             }
 
-            .dashboard-run-info {
+            .dashboard-endpoint-info {
                 max-height: 20rem;
             }
 
@@ -486,8 +487,16 @@ app_ui = ui.page_fluid(
                         ),
                         ui.output_ui("file_upload_ui"),
                         ui.div(
-                            ui.output_ui("outputRunInfo"),
-                            class_="dashboard-run-info",
+                            ui.accordion(
+                                ui.accordion_panel(
+                                    "Endpoint Hardware",
+                                    ui.output_ui("endpointHardware"),
+                                    value="hardware",
+                                ),
+                                id="endpointHardwareAccordion",
+                                open=False,
+                            ),
+                            class_="dashboard-endpoint-info",
                         ),
                         class_="dashboard-pane dashboard-side-panel",
                     ),

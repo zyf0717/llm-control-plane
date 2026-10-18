@@ -12,7 +12,7 @@ from shiny import reactive, render, ui
 from shinychat import Chat, chat_ui
 
 from .chat_client import stream_chat_response
-from .response_metrics import response_metrics_ui
+from .response_metrics import response_metadata, response_metrics_ui
 from .utils import create_endpoint_display_choices
 
 MAX_PANES = 8
@@ -80,7 +80,9 @@ class SlotConversation:
             failed = True
 
         def on_metadata(metadata):
-            self.metadata = deepcopy(metadata or {})
+            self.metadata = response_metadata(
+                metadata, endpoints=request.get("endpoints_dict"), endpoint_key=request.get("endpoint_key")
+            )
 
         def on_first_token():
             if self.ttft is None and self.started_at is not None:

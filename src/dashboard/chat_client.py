@@ -63,6 +63,9 @@ def _extract_metadata(
         if key in obj and isinstance(obj[key], dict):
             combined[key] = obj[key]
 
+    if isinstance(obj.get("model"), str) and obj["model"].strip():
+        combined["model"] = obj["model"]
+
     for key in ("id_slot", "slot_id"):
         if obj.get(key) is not None:
             combined["slot"] = {"id": obj[key]}
@@ -154,7 +157,6 @@ async def stream_chat_response(
     reasoning_effort: str = "medium",
     output_reasoning: bool = False,
     conversation_id: Optional[str] = None,
-    current_routing_info: Optional[Dict[str, Any]] = None,
     system_prompt: Optional[str] = None,
     extra_turn_messages: Optional[list[dict[str, Any]]] = None,
     retrieval_endpoint: Optional[str] = None,
@@ -213,7 +215,7 @@ async def stream_chat_response(
         if retrieval_endpoint:
             headers["X-Retrieval-Endpoint"] = retrieval_endpoint
         timeout = httpx.Timeout(connect=5, read=None, write=5, pool=10)
-        routing_info_holder = {"routing": current_routing_info or {}}
+        routing_info_holder: Dict[str, Any] = {}
         metadata_holder: Dict[str, Any] = {}
 
         def publish_metadata(

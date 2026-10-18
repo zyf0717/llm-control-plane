@@ -1,14 +1,18 @@
 """Render per-response telemetry without adding it to model context."""
 
 import asyncio
+import json
 import logging
 import math
 import time
 from collections.abc import AsyncIterable, AsyncIterator
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
 from shiny import ui
+
+from .cache_telemetry import normalize_cache_telemetry
 
 
 @dataclass(slots=True)
@@ -69,6 +73,61 @@ def _mapping(value: Any) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def response_metadata(
+    metadata: dict | None, *, endpoints: dict | None = None, endpoint_key: str | None = None,
+) -> dict:
+    """Freeze response diagnostics with the matching endpoint's model configuration."""
+    info = deepcopy(metadata or {})
+    endpoint = _mapping(info.get("routing")).get("decision") or info.get("endpoint") or endpoint_key
+    if endpoint:
+        info["endpoint"] = endpoint
+    candidates = _mapping((endpoints or {}).get(endpoint)).get("models") or []
+    reported = _mapping(info.get("model_info"))
+    name = info.get("model") or reported.get("id")
+    model = next((item for item in candidates if item.get("id") == name), {}) if name else (
+        candidates[0] if candidates else {}
+    )
+    meta = _mapping(model.get("meta"))
+    fields = {
+        "id": model.get("id"),
+        "arch": model.get("arch"),
+        "quantization": model.get("quantization", meta.get("ftype")),
+        "max_context_length": model.get("max_context_length", model.get("max_model_len")),
+        "loaded_context_length": model.get("loaded_context_length", model.get("context_length", meta.get("n_ctx"))),
+        "training_context_length": meta.get("n_ctx_train"),
+        "state": model.get("state"),
+    }
+    info["model_info"] = {key: value for key, value in fields.items() if value is not None}
+    info["model_info"].update(reported)
+    model_info = info["model_info"]
+    for key in ("max_context_length", "training_context_length"):
+        if key in model_info and model_info[key] == model_info.get("loaded_context_length"):
+            model_info.pop(key)
+    if "training_context_length" in model_info and model_info["training_context_length"] == model_info.get("max_context_length"):
+        model_info.pop("training_context_length")
+    cache = normalize_cache_telemetry(info)
+    if cache["status"] != "unknown":
+        info["cache"] = cache
+    return info
+
+
+def _detail_value(value: Any) -> str:
+    if isinstance(value, list):
+        return "; ".join(str(item) for item in value)
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value).lower() if isinstance(value, bool) else str(value)
+
+
+def _detail_section(title: str, info: dict, fields: dict[str, str]):
+    rows = [
+        ui.div(f"{label}: {_detail_value(info[key])}")
+        for key, label in fields.items()
+        if key in info and info[key] is not None and info[key] != "" and info[key] != []
+    ]
+    return ui.div(ui.strong(title), *rows, class_="response-details-section") if rows else None
+
+
 def response_metrics_ui(metadata: dict, *, elapsed: float | None, ttft: float | None, status: str):
     usage = _mapping(metadata.get("usage"))
     timings = _mapping(metadata.get("timings"))
@@ -87,13 +146,17 @@ def response_metrics_ui(metadata: dict, *, elapsed: float | None, ttft: float | 
         output_tokens = _count(usage.get("output_tokens"))
     if output_tokens is None:
         output_tokens = _count(timings.get("predicted_n"))
-    rate = _number(timings.get("predicted_per_second"))
+    prefill_rate = _number(timings.get("prompt_per_second"))
+    generation_rate = _number(timings.get("predicted_per_second"))
 
     def tokens(value):
         return "—" if value is None else f"{value:,}"
 
     def seconds(value):
         return "—" if value is None else f"{value:.2f}s"
+
+    def rate(value):
+        return "—" if value is None else f"{value:.1f}"
 
     details = []
     reasoning = _count(_mapping(usage.get("completion_tokens_details")).get("reasoning_tokens"))
@@ -103,10 +166,77 @@ def response_metrics_ui(metadata: dict, *, elapsed: float | None, ttft: float | 
         details.append(ui.tags.div(f"Reasoning tokens: {reasoning:,}"))
     cached_tokens = _count(cache.get("cache_tokens"))
     if cached_tokens is not None:
-        details.append(ui.tags.div(f"Cached input tokens: {cached_tokens:,}"))
+        ratio = _number(cache.get("cache_ratio"))
+        reused = f" ({ratio:.1%} reused)" if ratio is not None and ratio <= 1 else ""
+        details.append(ui.tags.div(f"Cached input tokens: {cached_tokens:,}{reused}"))
+    if cache.get("fields_disagree"):
+        details.append(ui.div("Cache counts differ between usage and timings."))
+
+    head = _mapping(_mapping(timings.get("speculation")).get("head"))
+    if head:
+        drafted, accepted = _count(head.get("drafted")), _count(head.get("accepted"))
+        label = "MTP draft acceptance"
+        has_draft_counts = True
+    else:
+        counts = (
+            timings if any(key in timings for key in ("draft_n", "draft_n_accepted"))
+            else _mapping(metadata.get("stats"))
+        )
+        drafted, accepted = _count(counts.get("draft_n")), _count(counts.get("draft_n_accepted"))
+        label = "Draft acceptance"
+        has_draft_counts = "draft_n" in counts or "draft_n_accepted" in counts
+    if has_draft_counts:
+        valid = drafted is not None and accepted is not None and accepted <= drafted
+        acceptance = f"{100 * accepted / drafted:.2f}%" if valid and drafted else "—"
+        counts_text = f" ({accepted:,} / {drafted:,})" if valid else ""
+        details.append(ui.tags.div(
+            f"{label}: {acceptance}{counts_text}",
+            title="Accepted / proposed draft tokens. MTP uses head-only counts; Draft acceptance includes all reported draft sources.",
+        ))
+
     slot_id = _count(slot.get("id"))
     if slot_id is not None:
         details.append(ui.tags.div(f"Upstream slot: {slot_id}"))
+
+    model_info = _mapping(metadata.get("model_info"))
+    model = metadata.get("model") or model_info.get("id") or model_info.get("name")
+    if model:
+        details.append(ui.tags.div(f"Model: {model}"))
+    for key, value in model_info.items():
+        if value is None or value == "" or (key in {"id", "name"} and value == model):
+            continue
+        details.append(ui.tags.div(f"{key.replace('_', ' ').capitalize()}: {_detail_value(value)}"))
+
+    trace_id = _mapping(metadata.get("trace")).get("id") or metadata.get("trace_id")
+    if trace_id:
+        details.append(ui.div(f"Trace ID: {trace_id}"))
+    routing = _mapping(metadata.get("routing"))
+    endpoint = routing.get("decision") or metadata.get("endpoint")
+    if endpoint:
+        details.append(ui.div(f"Endpoint: {endpoint}"))
+    if routing.get("strategy"):
+        details.append(ui.div(f"Workload: {routing['strategy']}"))
+
+    search = dict(_mapping(metadata.get("search")))
+    if search.get("queries"):
+        search.pop("query", None)
+    for title, info, fields in (
+        ("Workflow", _mapping(metadata.get("workflow")), {
+            "workflow_id": "ID", "run_id": "Run", "status": "Status",
+        }),
+        ("Search", search, {
+            "provider": "Provider", "result_count": "Results", "query": "Query", "queries": "Queries",
+            "degraded": "Degraded", "warnings": "Warnings",
+        }),
+        ("RAG", _mapping(metadata.get("retrieval")), {
+            "endpoint": "Endpoint", "hits": "Hits", "injected": "Injected",
+            "mode": "Mode", "truncated": "Truncated", "confidence": "Confidence",
+            "threshold": "Threshold", "method": "Method", "reason": "Reason",
+        }),
+    ):
+        section = _detail_section(title, info, fields)
+        if section is not None:
+            details.append(section)
 
     return ui.div(
         ui.div(
@@ -121,7 +251,11 @@ def response_metrics_ui(metadata: dict, *, elapsed: float | None, ttft: float | 
             ),
             ui.span(f"Tokens {tokens(input_tokens)} in / {tokens(output_tokens)} out"),
             ui.span(
-                "— tok/s" if rate is None else f"{rate:.1f} tok/s",
+                f"Prefill {rate(prefill_rate)} tok/s",
+                title="Prompt-processing throughput reported by the endpoint; cached tokens are excluded when the endpoint reports processed prompt tokens.",
+            ),
+            ui.span(
+                f"Generation {rate(generation_rate)} tok/s",
                 title="Generation throughput reported by the endpoint; — means unavailable.",
             ),
             class_="response-metrics-summary",

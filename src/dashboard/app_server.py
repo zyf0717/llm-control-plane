@@ -3,7 +3,7 @@ import time
 import uuid
 from copy import deepcopy
 from datetime import datetime
-from typing import Any, AsyncIterable, AsyncIterator, Callable, Dict, Optional
+from typing import Any, Dict, Optional
 
 import shinyswatch
 from dotenv import load_dotenv
@@ -14,18 +14,9 @@ from shiny.types import SilentException
 load_dotenv()
 
 from .chat_client import stream_chat_response
-from .cache_telemetry import normalize_cache_telemetry
 from .multi_slot import multi_slot_server
-from .response_metrics import ResponseMetrics
-from .formatters import (
-    format_all_available_models,
-    format_cache_info,
-    format_hardware_info,
-    format_history_json,
-    format_model_details,
-    format_response_info,
-    format_timings_info,
-)
+from .response_metrics import ResponseMetrics, response_metadata
+from .formatters import format_hardware_info, format_history_json
 from .prompt_state import (
     append_managed_retrieval_suffix,
     build_system_prompt_state,
@@ -54,7 +45,6 @@ from .utils import (
     fetch_conversation_history,
     fetch_conversation_control_state,
     fetch_search_results,
-    find_model_by_endpoint,
     read_trace_events,
 )
 from .graph_client import (
@@ -112,22 +102,6 @@ THREADED_SEARCH_WORKFLOW_ID = "threaded_search"
 THREADED_RAG_WORKFLOW_ID = "threaded_rag"
 REPO_CONTEXT_WORKFLOW_ID = "repo_context"
 ENDED_WORKFLOW_RUN_STATUSES = {"completed", "failed", "cancelled"}
-
-
-def elapsed_seconds_since(started_at: float, *, now: float | None = None) -> float:
-    current = time.perf_counter() if now is None else float(now)
-    return max(0.0, current - float(started_at))
-
-
-async def stream_with_finalizer(
-    stream: AsyncIterable[str],
-    finalizer: Callable[[], None],
-) -> AsyncIterator[str]:
-    try:
-        async for chunk in stream:
-            yield chunk
-    finally:
-        finalizer()
 
 
 def resolve_endpoint_display_selection(
@@ -539,13 +513,9 @@ def server(input, output, session):
         )
 
     available_endpoints = reactive.Value({})
-    endpoint_info = reactive.Value({})
     endpoint_display_mapping = reactive.Value({})
     selected_endpoint_key_state = reactive.Value("")
-    last_runtime = reactive.Value(None)
-    run_info = reactive.Value(None)
     send_button_state = reactive.Value("ready")
-    info_accordion_open = reactive.Value(True)
     file_upload_key = reactive.Value(0)
     current_files = reactive.Value({"key": 0, "files": None})
     workflow_file_upload_key = reactive.Value(0)
@@ -669,9 +639,8 @@ def server(input, output, session):
         return state
 
     async def update_endpoints_and_data() -> None:
-        endpoints, data = await fetch_available_endpoints()
+        endpoints, _ = await fetch_available_endpoints()
         available_endpoints.set(endpoints)
-        endpoint_info.set(data)
 
         choices, mapping = create_endpoint_display_choices(endpoints)
         endpoint_display_mapping.set(mapping)
@@ -1534,12 +1503,10 @@ def server(input, output, session):
 
     @reactive.Effect
     @reactive.event(input.endpoint)
-    def _clear_info_on_endpoint_change():
+    def _remember_endpoint_selection():
         endpoint_key = current_endpoint_key()
         if endpoint_key:
             selected_endpoint_key_state.set(endpoint_key)
-        run_info.set(None)
-        last_runtime.set(None)
 
     @reactive.Effect
     @reactive.event(input.conversationID)
@@ -1711,11 +1678,6 @@ def server(input, output, session):
     async def _logout():
         await session.send_custom_message("logout", {})
 
-    @reactive.Effect
-    @reactive.event(input.info_accordion)
-    def _track_accordion_state():
-        info_accordion_open.set("info_panel" in (input.info_accordion() or []))
-
     @render.ui
     def workflowSpecDetails():
         return format_workflow_spec(workflow_spec.get())
@@ -1741,162 +1703,28 @@ def server(input, output, session):
         return graph_status_message.get()
 
     @render.ui
-    def outputRunInfo():
-        return ui.accordion(
-            ui.accordion_panel(
-                "Runtime & System Information",
-                ui.output_ui("info_content"),
-                value="info_panel",
-            ),
-            id="info_accordion",
-            open=False,
-        )
-
-    @render.ui
-    @reactive.event(run_info, last_runtime, endpoint_info, input.endpoint)
-    def info_content():
-        info = run_info.get()
-        runtime = last_runtime.get()
-        endpoint_data = endpoint_info.get()
-        current_endpoint = current_endpoint_key()
-
-        def fmt(value: Any) -> str:
-            if isinstance(value, (int, float)):
-                return f"{value:.2f}" if value != int(value) else str(int(value))
-            return str(value)
-
-        sections = []
-        if runtime is not None:
-            sections.append(f"**Elapsed Time**: {runtime:.2f}s")
-
-        if info and "trace" in info:
-            trace = info["trace"]
-            if isinstance(trace, dict) and trace.get("id"):
-                sections.append(f"**Trace**<br>Trace ID: {trace['id']}")
-
-        if info and "workflow" in info:
-            workflow = info["workflow"]
-            if isinstance(workflow, dict):
-                workflow_lines = []
-                if workflow.get("workflow_id"):
-                    workflow_lines.append(f"Workflow: {workflow['workflow_id']}")
-                if workflow.get("run_id"):
-                    workflow_lines.append(f"Run: {workflow['run_id']}")
-                if workflow.get("status"):
-                    workflow_lines.append(f"Status: {workflow['status']}")
-                if workflow_lines:
-                    sections.append("**Workflow**<br>" + "<br>".join(workflow_lines))
-
-        routing_info = None
-        if info and "routing" in info:
-            routing_info = info["routing"]
-            routing_lines = []
-            routing_fields = {
-                "decision": lambda value: f"Selected Node: {value}",
-                "strategy": lambda value: f"Workload: {value}",
-            }
-            for field, formatter in routing_fields.items():
-                if field in routing_info:
-                    routing_lines.append(formatter(routing_info[field]))
-            if routing_lines:
-                sections.append(
-                    "**Smart Routing Decision**<br>" + "<br>".join(routing_lines)
-                )
-
-        if info and "retrieval" in info:
-            retrieval = info["retrieval"]
-            retrieval_lines = []
-            if retrieval.get("endpoint"):
-                retrieval_lines.append(f"Endpoint: {retrieval['endpoint']}")
-            if retrieval.get("injected"):
-                retrieval_lines.append(f"Injected: {retrieval['injected']}")
-            if retrieval.get("confidence"):
-                retrieval_lines.append(f"Confidence: {retrieval['confidence']}")
-            if retrieval.get("threshold"):
-                retrieval_lines.append(f"Threshold: {retrieval['threshold']}")
-            if retrieval.get("hits"):
-                retrieval_lines.append(f"Hits: {retrieval['hits']}")
-            if retrieval.get("method"):
-                retrieval_lines.append(f"Method: {retrieval['method']}")
-            if retrieval.get("reason") and retrieval.get("injected") == "false":
-                retrieval_lines.append(f"Skipped: {retrieval['reason']}")
-            if retrieval_lines:
-                sections.append("**Retrieval**<br>" + "<br>".join(retrieval_lines))
-
-        if info and "search" in info:
-            search = info["search"]
-            search_lines = []
-            if search.get("provider"):
-                search_lines.append(f"Provider: {search['provider']}")
-            queries = search.get("queries")
-            if isinstance(queries, list) and queries:
-                search_lines.append(
-                    "Queries: " + "; ".join(str(query) for query in queries)
-                )
-            elif search.get("query"):
-                search_lines.append(f"Query: {search['query']}")
-            if "result_count" in search:
-                search_lines.append(f"Results: {search['result_count']}")
-            if "degraded" in search:
-                search_lines.append(f"Degraded: {search['degraded']}")
-            warnings = search.get("warnings") or []
-            if warnings:
-                search_lines.append(
-                    f"Warnings: {'; '.join(str(item) for item in warnings)}"
-                )
-            if search_lines:
-                sections.append("**Search**<br>" + "<br>".join(search_lines))
-
-        if info:
-            sections.extend(format_cache_info(info, fmt))
-            sections.extend(format_response_info(info, fmt))
-            sections.extend(format_timings_info(info, fmt))
-
-        endpoint_for_model_info = current_endpoint
-        if routing_info and "decision" in routing_info:
-            endpoint_for_model_info = routing_info["decision"]
-
-        model = find_model_by_endpoint(endpoint_data, endpoint_for_model_info)
-        if not model and routing_info and "decision" in routing_info:
-            model = find_model_by_endpoint(endpoint_data, routing_info["decision"])
-
-        if current_endpoint == "smart" and not routing_info:
-            all_models = format_all_available_models(endpoint_data)
-            if all_models:
-                sections.append(
-                    "**Available Models (smart routing)**<br><br>"
-                    + "<br>".join(all_models)
-                )
-        elif model:
-            hardware_info = format_hardware_info(model, routing_info)
-            if hardware_info:
-                sections.append("**Hardware**<br>" + "<br>".join(hardware_info))
-            model_details = format_model_details(model)
-            if model_details:
-                sections.append("**Model Info**<br>" + "<br>".join(model_details))
-        elif not model and not routing_info:
-            all_models = format_all_available_models(endpoint_data)
-            if all_models:
-                sections.append(
-                    "**Available Models**<br><br>" + "<br>".join(all_models)
-                )
-
-        if not sections:
-            return ui.div()
-        return ui.markdown("<br><br>".join(sections))
+    @reactive.event(input.endpoint, available_endpoints)
+    def endpointHardware():
+        endpoint = available_endpoints.get().get(current_endpoint_key(), {})
+        models = endpoint.get("models") or []
+        hardware = format_hardware_info(models[0] if models else None)
+        if not hardware:
+            return ui.p("Hardware information unavailable.", class_="text-muted")
+        return ui.div(*(ui.div(line) for line in hardware))
 
     chat = Chat(id="chat", history=False)
 
     async def _handle_chat_input_impl(
         user_input: str,
-        finalize_runtime: Callable[[], None],
         metrics: ResponseMetrics,
-    ) -> bool:
-        current_endpoints = available_endpoints.get()
-        current_run_info = run_info.get() or {}
+    ) -> None:
+        current_endpoints = deepcopy(available_endpoints.get())
         selected_endpoint_key = current_endpoint_key()
         conversation_id = current_active_conversation_id() or None
         actual_endpoint_key = selected_endpoint_key
+        metrics.metadata = response_metadata(
+            {}, endpoints=current_endpoints, endpoint_key=actual_endpoint_key
+        )
         latest_user_prompt = str(user_input or "").strip()
         search_query = latest_user_prompt
         workflow_dispatch_input = _input_value(input, "workflowDispatch")
@@ -1975,7 +1803,6 @@ def server(input, output, session):
 
         if workflow_dispatch_id:
             send_button_state.set("busy")
-            runtime_deferred = False
             try:
                 endpoint_for_workflow = str(actual_endpoint_key or "").strip()
                 if not endpoint_for_workflow:
@@ -2045,6 +1872,9 @@ def server(input, output, session):
                 run_id = str(created.get("run_id") or "").strip()
                 if not run_id:
                     raise ValueError("workflow API did not return run_id")
+                metrics.metadata["workflow"] = {
+                    "workflow_id": workflow_dispatch_id, "run_id": run_id, "status": "created",
+                }
 
                 if conversation_id:
                     await append_conversation_messages(
@@ -2112,6 +1942,7 @@ def server(input, output, session):
                         snapshot = event.get("snapshot")
                         if isinstance(snapshot, dict):
                             final_snapshot = snapshot
+                            metrics.metadata.update(workflow_chat_run_info(snapshot))
 
                         visibility = str(event.get("chat_visibility") or "hidden")
                         step_id = str(event.get("step_id") or "")
@@ -2154,9 +1985,11 @@ def server(input, output, session):
                         if event_type == "step_completed":
                             if visibility == "final" and isinstance(snapshot, dict):
                                 metadata = workflow_chat_step_metadata(snapshot, step_id)
-                                metrics.metadata = {
-                                    **metadata, "cache": normalize_cache_telemetry(metadata)
-                                }
+                                metrics.metadata = response_metadata(
+                                    {**metadata, "workflow": metrics.metadata.get("workflow", {})},
+                                    endpoints=current_endpoints,
+                                    endpoint_key=actual_endpoint_key,
+                                )
                             content = str(event.get("content") or "")
                             streamed = bool(event.get("streamed"))
                             if visibility == "intermediate":
@@ -2220,7 +2053,7 @@ def server(input, output, session):
                                 )
                                 if workflow_dispatch_event_updates_run_details(event_type):
                                     await apply_workflow_snapshot(final_snapshot)
-                                run_info.set(workflow_chat_run_info(final_snapshot))
+                                metrics.metadata.update(workflow_chat_run_info(final_snapshot))
                                 if not rendered_final:
                                     rendered_final = True
                                     final_text = workflow_chat_response_text(final_snapshot)
@@ -2244,11 +2077,8 @@ def server(input, output, session):
                             return
 
                 await chat.append_message_stream(
-                    metrics.stream(
-                        stream_with_finalizer(workflow_response_stream(), finalize_runtime)
-                    )
+                    metrics.stream(workflow_response_stream())
                 )
-                runtime_deferred = True
                 if conversation_id and not bool(prompt_state.get("started")):
                     apply_system_prompt_view(
                         set_system_prompt_state(
@@ -2271,7 +2101,7 @@ def server(input, output, session):
                 )
             finally:
                 send_button_state.set("ready")
-            return runtime_deferred
+            return
 
         search_state = None
         selected_search_provider = str(
@@ -2308,13 +2138,15 @@ def server(input, output, session):
             *forked_history,
             *build_search_turn_messages(search_state),
         ]
-        if search_state:
-            run_info.set(merge_run_info({}, search_state))
 
-        def publish_run_info(metadata: Optional[Dict[str, Any]]) -> None:
-            metrics.metadata = deepcopy(metadata or {})
-            merged_info = merge_run_info(metadata, search_state)
-            run_info.set(merged_info)
+        def publish_response_metadata(metadata: Optional[Dict[str, Any]]) -> None:
+            metrics.metadata = response_metadata(
+                merge_run_info(metadata, search_state),
+                endpoints=current_endpoints, endpoint_key=actual_endpoint_key,
+            )
+
+        if search_state:
+            publish_response_metadata({})
 
         retrieval_endpoint = _input_value(input, "retrievalEndpoint")
         response_stream = stream_chat_response(
@@ -2326,17 +2158,16 @@ def server(input, output, session):
             reasoning_effort=current_reasoning,
             output_reasoning=bool(_input_value(input, "outputReasoning", False)),
             conversation_id=conversation_id,
-            current_routing_info=current_run_info.get("routing", {}),
             system_prompt=system_prompt_to_send,
             extra_turn_messages=extra_turn_messages,
             retrieval_endpoint=retrieval_endpoint if retrieval_endpoint else None,
-            on_metadata=publish_run_info,
+            on_metadata=publish_response_metadata,
             on_send_button_state=send_button_state.set,
             on_error=metrics.on_error,
             on_first_token=metrics.on_first_token,
         )
         await chat.append_message_stream(
-            metrics.stream(stream_with_finalizer(response_stream, finalize_runtime))
+            metrics.stream(response_stream)
         )
 
         if conversation_id and not bool(prompt_state.get("started")):
@@ -2350,28 +2181,11 @@ def server(input, output, session):
                     locked=False,
                 )
             )
-        return True
 
     @chat.on_user_submit
     async def _handle_chat_input(user_input: str):
-        task_started_at = time.perf_counter()
-        metrics = ResponseMetrics(started_at=task_started_at)
-        last_runtime.set(None)
-        runtime_finalized = False
-
-        def finalize_runtime() -> None:
-            nonlocal runtime_finalized
-            if runtime_finalized:
-                return
-            runtime_finalized = True
-            last_runtime.set(elapsed_seconds_since(task_started_at))
-
-        runtime_deferred = False
-        try:
-            runtime_deferred = await _handle_chat_input_impl(user_input, finalize_runtime, metrics)
-        finally:
-            if not runtime_deferred:
-                finalize_runtime()
+        metrics = ResponseMetrics(started_at=time.perf_counter())
+        await _handle_chat_input_impl(user_input, metrics)
 
     @reactive.Effect
     @reactive.event(input.send)

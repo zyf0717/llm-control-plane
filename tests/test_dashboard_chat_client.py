@@ -118,7 +118,7 @@ async def test_first_token_includes_hidden_reasoning_and_slot_zero_is_retained(r
         assert first_tokens == []
         yield "data: " + json.dumps({"choices": [{"delta": {reasoning_key: "Thinking"}}]})
         assert first_tokens == [True]
-        yield 'data: {"choices":[{"delta":{"content":"Answer"}}],"id_slot":0}'
+        yield 'data: {"choices":[{"delta":{"content":"Answer"}}],"id_slot":0,"model":"served-model"}'
         yield 'data: {"choices":[],"usage":{"completion_tokens":12}}'
         yield 'data: [DONE]'
 
@@ -137,6 +137,7 @@ async def test_first_token_includes_hidden_reasoning_and_slot_zero_is_retained(r
     assert first_tokens == [True]
     assert metadata[-1]["slot"] == {"id": 0}
     assert metadata[-1]["usage"] == {"completion_tokens": 12}
+    assert metadata[-1]["model"] == "served-model"
 
 
 def test_build_chat_messages_includes_turn_local_search_evidence_after_system_prompt():
@@ -382,7 +383,8 @@ async def test_stream_chat_response_surfaces_proxy_error(monkeypatch, output_rea
 async def test_json_output_still_reports_metrics(monkeypatch, stream):
     monkeypatch.setattr(chat_client, "PROXY_BASE_URL", "http://proxy.local")
     usage = {"prompt_tokens": 12, "completion_tokens": 3}
-    final = {"choices": [], "usage": usage, "id_slot": 0}
+    final = {"choices": [], "usage": usage, "id_slot": 0, "model": "served-model",
+             "model_info": {"quantization": "Q4_K_M"}}
     response = _FakeStreamingResponse(headers={}, lines=[
         'data: {"choices":[{"delta":{"reasoning_content":"thinking"}}]}',
         "data: " + json.dumps(final), "data: [DONE]",
@@ -402,6 +404,8 @@ async def test_json_output_still_reports_metrics(monkeypatch, stream):
     assert "```json" in "".join(chunks)
     assert metadata[-1]["usage"] == usage
     assert metadata[-1]["slot"] == {"id": 0}
+    assert metadata[-1]["model"] == "served-model"
+    assert metadata[-1]["model_info"] == {"quantization": "Q4_K_M"}
     assert first_tokens == ([True] if stream else [])
 
 

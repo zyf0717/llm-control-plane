@@ -375,17 +375,6 @@ def create_endpoint_display_choices(endpoints_data):
     return choices, mapping
 
 
-def find_model_by_endpoint(endpoint_data, endpoint_key):
-    """Find the first model for a given endpoint."""
-    if not endpoint_data or not endpoint_key:
-        return None
-
-    for model in endpoint_data.get("data", []):
-        if model.get("endpoint") == endpoint_key:
-            return model
-    return None
-
-
 async def fetch_conversation_history(conversation_id):
     """Fetch conversation history for a given conversation_id."""
     try:
