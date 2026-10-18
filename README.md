@@ -19,12 +19,11 @@ The repo is intentionally pragmatic rather than framework-heavy: it keeps routin
 ## Quick Start
 
 ```bash
-conda env create -f environment.yml
-conda activate llm-control-plane
-python llm_control_plane.py
+uv sync --locked
+uv run --locked python llm_control_plane.py
 ```
 
-`environment.yml` bootstraps the editable local package from `pyproject.toml`.
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) first.
 
 - Proxy: `http://localhost:12340` (binds `0.0.0.0`)
 - Dashboard: `http://localhost:12341` (binds `127.0.0.1`)
@@ -48,9 +47,11 @@ python llm_control_plane.py
 ## Development
 
 ```bash
-pytest
+uv run --locked pytest
 ```
 
-Project dependencies now live in `pyproject.toml`; the conda file is only a thin wrapper for local env creation.
+Project dependencies live in `pyproject.toml` and are locked in `uv.lock`. uv manages
+the local `.venv`; `.python-version` selects Python 3.12. The default sync includes
+the development dependency group.
 
 Ad hoc Single-Node search may use the query refiner but intentionally disables inline reranking. Direct `/search/web` callers can opt into reranking with `use_reranker: true`. Workflow search can either use the query refiner or workflow-planned queries; workflow reranking is always an explicit workflow step.

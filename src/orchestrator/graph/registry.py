@@ -109,7 +109,7 @@ class GraphRegistry:
             if exc.name == "langgraph":
                 raise RuntimeError(
                     "LangGraph dependency is required for configured graphs; "
-                    "install project dependencies in the llm-control-plane conda env"
+                    "install project dependencies with uv sync --locked"
                 ) from exc
             raise
         current: Any = module

@@ -3,11 +3,18 @@
 ## Setup
 
 ```bash
-conda env create -f environment.yml
-conda activate llm-control-plane
+uv sync --locked
 ```
 
-The conda environment installs the editable local project from `pyproject.toml`.
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) first. Run commands
+from the repository root. uv creates `.venv` using the Python 3.12 selection in
+`.python-version`, installs the editable project, and includes development tools.
+`pyproject.toml` declares dependencies; the checked-in `uv.lock` records exact versions.
+
+For a runtime-only installation, use `uv sync --locked --no-dev`. To update a package,
+run `uv lock --upgrade-package PACKAGE`, then `uv sync --locked`; check in the updated
+lock file after validation. Use `uv add PACKAGE` to add a runtime dependency or
+`uv add --dev PACKAGE` to add a development tool.
 
 ## Configuration Files
 
@@ -37,7 +44,7 @@ HISTORY_DB_PATH=var/history.sqlite3
 ## Run
 
 ```bash
-python llm_control_plane.py
+uv run --locked python llm_control_plane.py
 ```
 
 Runtime endpoints:
@@ -48,7 +55,7 @@ Runtime endpoints:
 ## Test
 
 ```bash
-pytest
+uv run --locked pytest
 ```
 
 ## Where to Read Next
@@ -60,4 +67,5 @@ pytest
 - [Search Guide](search.md)
 - [Workflow Guide](workflows.md)
 
-TL;DR: create the conda env, set the Cloudflare and proxy env vars, run `python llm_control_plane.py`, then use the focused docs for the operational details.
+Run `uv sync --locked`, set the Cloudflare and proxy environment variables, then start
+the application with `uv run --locked python llm_control_plane.py`.

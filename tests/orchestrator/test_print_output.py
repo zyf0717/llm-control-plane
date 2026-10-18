@@ -1,27 +1,26 @@
 import json
 import os
 
-import requests
+import httpx
 from dotenv import load_dotenv
 
-load_dotenv()
-API_KEY_ID = os.getenv("API_KEY_ID")
-API_KEY_SECRET = os.getenv("API_KEY_SECRET")
-LLM_API_URL = os.getenv("GPT_OSS_20B_API_URL")
 
-# Test GET /models endpoint with .env headers
-url = "https://llm.paperclips.dev/models"
+def main() -> None:
+    """Manually inspect /models without making requests during test collection."""
+    load_dotenv()
+    headers = {
+        "CF-Access-Client-Id": os.getenv("API_KEY_ID", ""),
+        "CF-Access-Client-Secret": os.getenv("API_KEY_SECRET", ""),
+        "Content-Type": "application/json",
+    }
+    url = os.getenv("PROXY_BASE_URL", "https://llm.paperclips.dev").rstrip("/") + "/models"
+    try:
+        response = httpx.get(url, headers=headers, timeout=30)
+        print("Status:", response.status_code)
+        print("Response:", json.dumps(response.json(), indent=2))
+    except httpx.RequestError as exc:
+        print("Request failed:", exc)
 
-# Load all .env variables as headers (underscores -> hyphens)
-env_headers = {
-    "CF-Access-Client-Id": API_KEY_ID,
-    "CF-Access-Client-Secret": API_KEY_SECRET,
-    "Content-Type": "application/json",
-}
 
-try:
-    r = requests.get(url, headers=env_headers, timeout=30)
-    print("Status:", r.status_code)
-    print("Response:", json.dumps(r.json(), indent=2))
-except requests.exceptions.RequestException as e:
-    print("Request failed:", e)
+if __name__ == "__main__":
+    main()

@@ -1,5 +1,8 @@
 import shinyswatch
 from shiny import ui
+from shinychat import chat_ui
+
+from .multi_slot import multi_slot_ui
 
 
 def input_action_row(
@@ -70,6 +73,19 @@ app_ui = ui.page_fluid(
 
         .dashboard-full-width-action {
             width: 100%;
+        }
+
+        .multi-slot-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 1rem;
+            align-content: start;
+        }
+
+        .multi-slot-grid > div { min-width: 0; }
+
+        @media (max-width: 767.98px) {
+            .multi-slot-grid { grid-template-columns: 1fr; }
         }
 
         .dashboard-workflow-upload-file .shiny-label-null {
@@ -261,70 +277,6 @@ app_ui = ui.page_fluid(
             }
         }
 
-        function dashboardChatTabActive(chat) {
-            const tabPane = chat.closest(".tab-pane");
-            if (tabPane) return tabPane.classList.contains("active");
-            return Boolean(chat.offsetParent);
-        }
-
-        function setDashboardChatStreamAutoScroll(stream, enabled) {
-            if (enabled) {
-                if (!stream.hasAttribute("auto-scroll")) {
-                    stream.setAttribute("auto-scroll", "");
-                }
-            } else {
-                if (stream.hasAttribute("auto-scroll")) {
-                    stream.removeAttribute("auto-scroll");
-                }
-            }
-        }
-
-        function syncDashboardChatStreamAutoScroll() {
-            const chat = document.getElementById("chat");
-            if (!chat) return;
-            const enabled = dashboardChatTabActive(chat);
-            chat.querySelectorAll("shiny-chat-message shiny-markdown-stream").forEach(function(stream) {
-                setDashboardChatStreamAutoScroll(stream, enabled);
-            });
-        }
-
-        function initDashboardChatStreamAutoScrollGuard() {
-            const chat = document.getElementById("chat");
-            if (!chat || chat.dataset.dashboardAutoScrollGuard === "true") return;
-            chat.dataset.dashboardAutoScrollGuard = "true";
-
-            const syncSoon = function() {
-                window.requestAnimationFrame(syncDashboardChatStreamAutoScroll);
-            };
-
-            const chatObserver = new MutationObserver(syncSoon);
-            chatObserver.observe(chat, {
-                childList: true,
-                subtree: true,
-                attributes: true,
-                attributeFilter: ["auto-scroll"],
-            });
-
-            const tabPane = chat.closest(".tab-pane");
-            if (tabPane) {
-                const tabObserver = new MutationObserver(syncSoon);
-                tabObserver.observe(tabPane, {
-                    attributes: true,
-                    attributeFilter: ["class"],
-                });
-            }
-
-            document.addEventListener("shown.bs.tab", syncSoon);
-            document.addEventListener("hidden.bs.tab", syncSoon);
-            syncSoon();
-        }
-
-        if (document.readyState === "loading") {
-            document.addEventListener("DOMContentLoaded", initDashboardChatStreamAutoScrollGuard);
-        } else {
-            initDashboardChatStreamAutoScrollGuard();
-        }
-
         Shiny.addCustomMessageHandler("workflowDispatchState", function(message) {
             const active = Boolean(message && message.active);
             const searchProviderEnabled = Boolean(
@@ -362,6 +314,16 @@ app_ui = ui.page_fluid(
             ["advanceWorkflowRun", "runWorkflowToCompletion", "workflowRetryStepID", "retryWorkflowStep"].forEach(function(id) {
                 setDashboardControlDisabled(id, disabled);
             });
+        });
+
+        Shiny.addCustomMessageHandler("multiSlotControls", function(message) {
+            ["multiSlotEndpoint", "multiSlotCount"].forEach(function(id) {
+                setDashboardSelectDisabled(id, message.busy);
+            });
+            ["multiSlotRefresh", "multiSlotReset"].forEach(function(id) {
+                document.getElementById(id).disabled = message.busy;
+            });
+            document.getElementById("multiSlotStop").disabled = !message.busy;
         });
 
         document.addEventListener("click", function(event) {
@@ -414,7 +376,6 @@ app_ui = ui.page_fluid(
                         button_class="dashboard-square-button",
                     ),
                     ui.input_switch("stream", "Streaming", True),
-                    ui.input_switch("autoScroll", "Auto-scroll", True),
                     ui.input_switch("outputJSON", "JSON output", False),
                     ui.input_switch("outputReasoning", "Show reasoning", True),
                     ui.input_select(
@@ -437,10 +398,13 @@ app_ui = ui.page_fluid(
                     width="320px",
                 ),
                 ui.layout_columns(
-                    ui.chat_ui(
+                    chat_ui(
                         "chat",
                         width="100%",
                         height="var(--dashboard-chat-height)",
+                        show_history=False,
+                        drawer=False,
+                        icon_assistant=True,
                     ),
                     ui.div(
                         input_action_row(
@@ -499,9 +463,9 @@ app_ui = ui.page_fluid(
             value="single_node",
         ),
         ui.nav_panel(
-            "Multi-Node",
-            ui.div("Multi-node UI coming soon!"),
-            value="multi_node",
+            "Multi-Slot",
+            multi_slot_ui(),
+            value="multi_slot",
         ),
         ui.nav_panel(
             "Workflows",

@@ -224,3 +224,6 @@ config.yaml
 
 # Agents
 AGENTS.md
+
+# Playwright CLI
+.playwright-cli/

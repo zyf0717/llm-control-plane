@@ -8,11 +8,13 @@ from typing import Any, AsyncIterable, AsyncIterator, Callable, Dict, Optional
 import shinyswatch
 from dotenv import load_dotenv
 from shiny import reactive, render, ui
+from shinychat import Chat
 from shiny.types import SilentException
 
 load_dotenv()
 
 from .chat_client import stream_chat_response
+from .multi_slot import multi_slot_server
 from .formatters import (
     format_all_available_models,
     format_cache_info,
@@ -684,6 +686,8 @@ def server(input, output, session):
             selected=workflow_selected,
             session=session,
         )
+
+    multi_slot_server(input, output, session, available_endpoints, update_endpoints_and_data)
 
     async def single_node_dispatch_spec(
         workflow_dispatch_id: str,
@@ -1533,22 +1537,12 @@ def server(input, output, session):
     def _handle_json_toggle():
         if input.outputJSON():
             ui.update_switch("stream", value=False)
-            ui.update_switch("autoScroll", value=False)
-
-    @reactive.Effect
-    @reactive.event(input.autoScroll)
-    def _handle_autoscroll_toggle():
-        if input.autoScroll():
-            ui.update_switch("outputJSON", value=False)
-            ui.update_switch("stream", value=True)
 
     @reactive.Effect
     @reactive.event(input.stream)
     def _handle_stream_toggle():
         if input.stream():
             ui.update_switch("outputJSON", value=False)
-        else:
-            ui.update_switch("autoScroll", value=False)
 
     @reactive.Effect
     @reactive.event(input.generateConversationID)
@@ -1877,7 +1871,7 @@ def server(input, output, session):
             return ui.div()
         return ui.markdown("<br><br>".join(sections))
 
-    chat = ui.Chat(id="chat")
+    chat = Chat(id="chat", history=False)
 
     async def _handle_chat_input_impl(
         user_input: str,

@@ -153,8 +153,11 @@ async def stream_chat_response(
     system_prompt: Optional[str] = None,
     extra_turn_messages: Optional[list[dict[str, Any]]] = None,
     retrieval_endpoint: Optional[str] = None,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
     on_metadata: Optional[MetadataCallback] = None,
     on_send_button_state: Optional[StateCallback] = None,
+    on_error: Optional[StateCallback] = None,
 ) -> AsyncGenerator[str, None]:
     """Proxy a dashboard chat request and stream the response back to the UI."""
     text = (text or "Hello! What model are you?").strip()
@@ -170,6 +173,8 @@ async def stream_chat_response(
             url = f"{PROXY_BASE_URL}/smart"
         else:
             if not endpoints_dict or endpoint_key not in endpoints_dict:
+                if on_error:
+                    on_error(f"Endpoint '{endpoint_key}' not available")
                 yield f"Error: Endpoint '{endpoint_key}' not available"
                 return
             url = f"{PROXY_BASE_URL}/{endpoint_key}"
@@ -181,6 +186,10 @@ async def stream_chat_response(
                 extra_turn_messages=extra_turn_messages,
             )
         }
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         if endpoint_key != "smart":
             models = endpoints_dict[endpoint_key].get("models", [])
             if models and models[0].get("id"):
@@ -271,6 +280,8 @@ async def stream_chat_response(
                             if reasoning_chunk_found:
                                 yield "</em>\n\n"
                             detail = obj.get("detail") or "Upstream request failed"
+                            if on_error:
+                                on_error(str(detail))
                             yield f"Error: {detail}"
                             break
 
@@ -337,8 +348,12 @@ async def stream_chat_response(
                     yield str(content)
     except httpx.HTTPStatusError as exc:
         reason = getattr(exc.response, "reason_phrase", "Unknown Error")
+        if on_error:
+            on_error(f"HTTP Error {exc.response.status_code}: {reason}")
         yield f"HTTP Error {exc.response.status_code}: {reason}"
     except httpx.RequestError as exc:
+        if on_error:
+            on_error(str(exc))
         yield f"Request Error: {str(exc)}"
     except Exception as exc:
         logger.exception(
@@ -346,6 +361,8 @@ async def stream_chat_response(
             type(exc).__name__,
             exc,
         )
+        if on_error:
+            on_error(str(exc))
         yield f"Error: {str(exc)}"
     finally:
         if on_send_button_state:

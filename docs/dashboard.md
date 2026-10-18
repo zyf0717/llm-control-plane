@@ -14,6 +14,7 @@ The dashboard runs on `http://localhost:12341`, binds `127.0.0.1`, and communica
 - Reasoning effort selector
 - File upload for inline prompt augmentation
 - Single-Node workflow dispatch
+- Multi-Slot concurrent conversations on one endpoint, with optional burst submission
 - Repo-context repository selection for workflows that declare `repo_name`
 - Workflow run creation, stepping, streaming, retry, clearing, and artifact inspection
 - Conversation history viewer
@@ -76,6 +77,31 @@ When Single-Node workflow dispatch is enabled, the dashboard creates and runs a 
 For the built-in `repo_context` workflow, selecting a non-`None` Repo Context Repository on Single-Node automatically selects Workflow Dispatch `repo_context`; dispatch maps the submitted message to `query` and the selected repository to `repo_name`.
 
 System prompt and reasoning are first-turn conversation controls. If either changes after a conversation has started, the dashboard automatically forks to a new conversation id, copies prior durable user/assistant history behind the new system prompt, prints an explicit fork notice in the chat, and sends the next turn under the forked id.
+
+## Multi-Slot Tab
+
+Multi-Slot provides 1–8 independent chat panes against one concrete endpoint, with four
+panes shown initially. Send messages in individual panes to exercise asynchronous
+usage; replies stream concurrently without blocking other panes. Each pane shows its
+request status and elapsed time, including any upstream queue time.
+
+Generation settings are shared: reasoning defaults to `medium`, while blank temperature
+and maximum output token controls use upstream defaults. Temperature zero is sent
+explicitly. Settings changes affect new requests, including every request in the next
+burst; active requests keep their original settings.
+
+Expand **Burst test** to send a shared prompt once to every visible idle pane. Each
+request includes that pane's own history. Busy panes are skipped and individual drafts
+are preserved. **Stop all** cancels dashboard streams; whether inference stops
+immediately depends on the upstream server. Reset chats, endpoint refresh, endpoint
+changes, and pane-count changes are disabled while requests are running.
+
+Histories live only in the dashboard session. Hidden panes retain their history;
+**Reset chats**, changing endpoints, or starting a new dashboard session clears it.
+Failed and cancelled replies remain visible but are excluded from subsequent request
+history. These requests omit conversation IDs and explicit slot IDs, so proxy
+conversation persistence and affinity do not apply. Pane numbers identify conversations;
+the upstream server assigns physical slots and may queue requests beyond its capacity.
 
 ## RAG Semantics
 

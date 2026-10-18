@@ -45,6 +45,67 @@ def test_build_chat_messages_with_user_only():
     assert messages == [{"role": "user", "content": "Hello"}]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("settings", [{}, {"temperature": 0.0, "max_tokens": 128}])
+async def test_generation_settings_are_optional_and_stateless(monkeypatch, settings):
+    monkeypatch.setattr(chat_client, "PROXY_BASE_URL", "http://proxy.local")
+    response = _FakeStreamingResponse(
+        headers={},
+        lines=['data: {"choices":[{"delta":{"content":"Answer"}}]}', 'data: [DONE]'],
+    )
+    with patch("httpx.AsyncClient") as client_class:
+        client = Mock()
+        client_class.return_value.__aenter__.return_value = client
+        client.stream.return_value = _FakeStreamSource(response)
+        chunks = [chunk async for chunk in stream_chat_response(
+            endpoint_key="node", text="hello",
+            endpoints_dict={"node": {"models": [{"id": "test-model"}]}},
+            extra_turn_messages=[{"role": "assistant", "content": "prior response"}],
+            **settings,
+        )]
+
+    assert chunks == ["Answer"]
+    payload = client.stream.call_args.kwargs["json"]
+    assert {key: payload[key] for key in settings} == settings
+    assert ("temperature" in payload) == ("temperature" in settings)
+    assert ("max_tokens" in payload) == ("max_tokens" in settings)
+    assert payload["messages"] == [
+        {"role": "assistant", "content": "prior response"},
+        {"role": "user", "content": "hello"},
+    ]
+    assert "X-Conversation-ID" not in client.stream.call_args.kwargs["headers"]
+    assert "id_slot" not in payload
+
+
+@pytest.mark.asyncio
+async def test_stream_error_notifies_caller(monkeypatch):
+    monkeypatch.setattr(chat_client, "PROXY_BASE_URL", "http://proxy.local")
+    response = _FakeStreamingResponse(
+        headers={}, lines=['data: {"type":"proxy.error","detail":"server stopped"}'],
+    )
+    errors = []
+    with patch("httpx.AsyncClient") as client_class:
+        client = Mock()
+        client_class.return_value.__aenter__.return_value = client
+        client.stream.return_value = _FakeStreamSource(response)
+        chunks = [chunk async for chunk in stream_chat_response(
+            endpoint_key="node", text="hello", endpoints_dict={"node": {}},
+            on_error=errors.append,
+        )]
+    assert chunks == ["Error: server stopped"]
+    assert errors == ["server stopped"]
+
+
+@pytest.mark.asyncio
+async def test_unavailable_endpoint_notifies_caller():
+    errors = []
+    chunks = [chunk async for chunk in stream_chat_response(
+        endpoint_key="missing", text="hello", endpoints_dict={}, on_error=errors.append,
+    )]
+    assert chunks == ["Error: Endpoint 'missing' not available"]
+    assert errors == ["Endpoint 'missing' not available"]
+
+
 def test_build_chat_messages_includes_turn_local_search_evidence_after_system_prompt():
     messages = build_chat_messages(
         text="Need sources",

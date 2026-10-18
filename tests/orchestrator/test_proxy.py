@@ -1456,7 +1456,9 @@ class TestCanonicalConversationState:
         }
 
     def test_no_conversation_id_keeps_stateless_behavior(self, client):
-        mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
+        mock_endpoints = [{
+            "name": "primary", "url": "https://primary.example.com", "slot_affinity": True,
+        }]
         with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
@@ -1469,12 +1471,21 @@ class TestCanonicalConversationState:
             response = client.post(
                 "/primary",
                 headers={"X-Reasoning-Effort": "low"},
-                json={"messages": [{"role": "user", "content": "stateless"}]},
+                json={
+                    "messages": [{"role": "user", "content": "stateless"}],
+                    "temperature": 0.0,
+                    "max_tokens": 128,
+                },
             )
 
         assert response.status_code == 200
         assert proxy_module.conversation_store.conversations == {}
         assert proxy_module.conversation_store.conversation_control_states == {}
+        forwarded = mock_client.post.call_args.kwargs["json"]
+        assert forwarded["temperature"] == 0.0
+        assert forwarded["max_tokens"] == 128
+        assert "id_slot" not in forwarded
+        mock_client.get.assert_not_called()
 
     def test_skip_conversation_header_bypasses_state_and_message_persistence(self, client):
         mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
