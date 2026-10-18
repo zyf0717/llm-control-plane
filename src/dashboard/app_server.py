@@ -14,6 +14,7 @@ from shiny.types import SilentException
 
 load_dotenv()
 
+from .chat_controls import REASONING_LEVELS, endpoint_models_text, resolve_endpoint_selection
 from .chat_client import stream_chat_response
 from .multi_slot import multi_slot_server
 from .response_metrics import (
@@ -42,7 +43,6 @@ from .trace_formatters import format_trace_summary
 from .utils import (
     append_conversation_messages,
     create_history_select_choices,
-    create_endpoint_display_choices,
     fetch_conversation_summaries,
     fetch_available_endpoints,
     fetch_available_repo_context_repositories,
@@ -108,22 +108,6 @@ THREADED_SEARCH_WORKFLOW_ID = "threaded_search"
 THREADED_RAG_WORKFLOW_ID = "threaded_rag"
 REPO_CONTEXT_WORKFLOW_ID = "repo_context"
 ENDED_WORKFLOW_RUN_STATUSES = {"completed", "failed", "cancelled"}
-
-
-def resolve_endpoint_display_selection(
-    choices: Dict[str, str],
-    mapping: Dict[str, str],
-    *,
-    preferred_endpoint_key: Optional[str],
-) -> Optional[str]:
-    """Resolve a persisted endpoint key against the current machine snapshot."""
-    preferred_endpoint = str(preferred_endpoint_key or "").strip()
-    if preferred_endpoint:
-        for display_value, endpoint_key in mapping.items():
-            if endpoint_key == preferred_endpoint:
-                return display_value
-
-    return next(iter(choices), None)
 
 
 def resolve_workflow_dispatch_selection(
@@ -454,7 +438,7 @@ def normalize_reasoning_effort(
     default: str = "none",
 ) -> str:
     normalized = str(reasoning_effort or "").strip().lower()
-    valid_efforts = {"none", "low", "medium", "high", "xhigh", "max"}
+    valid_efforts = REASONING_LEVELS
     if normalized in valid_efforts:
         return normalized
     return default if default in valid_efforts else "none"
@@ -519,7 +503,19 @@ def server(input, output, session):
         )
 
     available_endpoints = reactive.Value({})
-    endpoint_display_mapping = reactive.Value({})
+
+    @reactive.extended_task
+    async def load_endpoints():
+        endpoints, _ = await fetch_available_endpoints()
+        return endpoints
+
+    session.on_ended(load_endpoints.cancel)
+
+    def refresh_endpoints() -> None:
+        with reactive.isolate():
+            if load_endpoints.status() != "running":
+                load_endpoints()
+
     selected_endpoint_key_state = reactive.Value("")
     send_button_state = reactive.Value("ready")
     file_upload_key = reactive.Value(0)
@@ -553,17 +549,16 @@ def server(input, output, session):
     def current_history_conversation_id() -> str:
         return str(history_selected_conversation_id.get() or "").strip()
 
-    def current_endpoint_display_value() -> str:
-        return str(input.endpoint() or "").strip()
-
     def current_endpoint_key() -> Optional[str]:
-        display_value = current_endpoint_display_value()
-        mapping = endpoint_display_mapping.get()
-        endpoint_key = mapping.get(display_value)
-        if endpoint_key:
-            return endpoint_key
-        stored_endpoint_key = str(selected_endpoint_key_state.get() or "").strip()
-        return stored_endpoint_key or None
+        endpoint = str(input.endpoint() or "").strip()
+        if endpoint in available_endpoints.get():
+            return endpoint
+        return selected_endpoint_key_state.get() or None
+
+    @render.text
+    def endpointModels():
+        endpoint = available_endpoints.get().get(current_endpoint_key(), {})
+        return endpoint_models_text(endpoint, loading=load_endpoints.status() == "running")
 
     def get_system_prompt_state(conversation_id: str) -> Dict[str, Any]:
         state = system_prompt_states.get().get(conversation_id)
@@ -644,21 +639,20 @@ def server(input, output, session):
         apply_system_prompt_view(state)
         return state
 
-    async def update_endpoints_and_data() -> None:
-        endpoints, _ = await fetch_available_endpoints()
+    @reactive.effect
+    def apply_endpoints() -> None:
+        endpoints = load_endpoints.result()
         available_endpoints.set(endpoints)
 
-        choices, mapping = create_endpoint_display_choices(endpoints)
-        endpoint_display_mapping.set(mapping)
+        choices = {key: key for key in endpoints}
         with reactive.isolate():
             preferred_endpoint_key = selected_endpoint_key_state.get()
-        selected = resolve_endpoint_display_selection(
+        selected = resolve_endpoint_selection(
             choices,
-            mapping,
             preferred_endpoint_key=preferred_endpoint_key,
         )
         if selected:
-            selected_endpoint_key_state.set(mapping.get(selected, ""))
+            selected_endpoint_key_state.set(selected)
         ui.update_select(
             "endpoint",
             choices=choices,
@@ -676,7 +670,7 @@ def server(input, output, session):
             session=session,
         )
 
-    multi_slot_server(input, output, session, available_endpoints, update_endpoints_and_data)
+    multi_slot_server(input, output, session, available_endpoints, refresh_endpoints, load_endpoints.status)
 
     async def single_node_dispatch_spec(
         workflow_dispatch_id: str,
@@ -1086,7 +1080,7 @@ def server(input, output, session):
 
     @reactive.Effect
     async def _initialize_endpoints():
-        await update_endpoints_and_data()
+        refresh_endpoints()
         await update_retrieval_endpoints()
         await update_search_providers()
         await update_repo_context_repositories()
@@ -1102,8 +1096,8 @@ def server(input, output, session):
 
     @reactive.Effect
     @reactive.event(input.refreshEndpoints)
-    async def _refresh_endpoints():
-        await update_endpoints_and_data()
+    def _refresh_endpoints():
+        refresh_endpoints()
 
     @reactive.Effect
     @reactive.event(input.refreshRetrievalEndpoints)
@@ -1269,8 +1263,7 @@ def server(input, output, session):
         )
 
     def workflow_endpoint_key() -> str:
-        raw = str(input.workflowEndpoint() or "").strip()
-        endpoint = str(endpoint_display_mapping.get().get(raw, raw) or "").strip()
+        endpoint = str(input.workflowEndpoint() or "").strip()
         if not endpoint:
             raise ValueError("select a workflow endpoint")
         if endpoint.lower() == "smart":

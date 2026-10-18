@@ -11,9 +11,11 @@ from typing import Any
 from shiny import reactive, render, ui
 from shinychat import Chat, chat_ui
 
+from .chat_controls import (
+    REASONING_LEVELS, endpoint_models_text, endpoint_selector_ui, resolve_endpoint_selection,
+)
 from .chat_client import stream_chat_response
 from .response_metrics import response_metadata, response_metrics_ui
-from .utils import create_endpoint_display_choices
 
 MAX_PANES = 8
 
@@ -138,8 +140,7 @@ async def response_with_metrics(pane: SlotConversation, request: dict[str, Any])
 def multi_slot_ui():
     return ui.layout_sidebar(
         ui.sidebar(
-            ui.input_select("multiSlotEndpoint", "Machine Endpoint", choices={}),
-            ui.input_action_button("multiSlotRefresh", "Refresh endpoints"),
+            endpoint_selector_ui("multiSlotEndpoint", "multiSlotModels", refresh_id="multiSlotRefresh"),
             ui.input_select(
                 "multiSlotCount", "Chat panes", choices=[str(n) for n in range(1, MAX_PANES + 1)],
                 selected="4",
@@ -148,7 +149,7 @@ def multi_slot_ui():
                 ui.tags.summary("Generation settings"),
                 ui.input_select(
                     "multiSlotReasoning", "Reasoning Level",
-                    choices=["none", "low", "medium", "high", "xhigh", "max"],
+                    choices=REASONING_LEVELS,
                     selected="medium",
                 ),
                 ui.input_text("multiSlotTemperature", "Temperature", placeholder="Server default"),
@@ -189,7 +190,7 @@ def multi_slot_ui():
     )
 
 
-def multi_slot_server(input, output, session, available_endpoints, refresh_endpoints):
+def multi_slot_server(input, output, session, available_endpoints, refresh_endpoints, endpoint_load_status):
     panes = [SlotConversation() for _ in range(MAX_PANES)]
     chats = [Chat(id=f"multiSlotChat{i}", history=False) for i in range(MAX_PANES)]
     tasks = [reactive.Value(None) for _ in panes]
@@ -230,17 +231,22 @@ def multi_slot_server(input, output, session, available_endpoints, refresh_endpo
     @reactive.effect
     async def update_endpoints():
         endpoints = available_endpoints.get()
-        _, mapping = create_endpoint_display_choices(endpoints)
-        choices = {key: label for label, key in mapping.items()}
+        choices = {key: key for key in endpoints}
         with reactive.isolate():
             previous = selected_endpoint.get()
         if any_busy() and previous:
             choices.setdefault(previous, previous)
-        selected = previous if previous in choices else next(iter(choices), "")
+        selected = resolve_endpoint_selection(choices, preferred_endpoint_key=previous) or ""
         if selected != previous:
             await reset_chats()
             selected_endpoint.set(selected)
         ui.update_select("multiSlotEndpoint", choices=choices, selected=selected, session=session)
+
+    @output
+    @render.text
+    def multiSlotModels():
+        endpoint = available_endpoints.get().get(selected_endpoint.get(), {})
+        return endpoint_models_text(endpoint, loading=endpoint_load_status() == "running")
 
     @reactive.effect
     @reactive.event(input.multiSlotEndpoint)
@@ -355,6 +361,6 @@ def multi_slot_server(input, output, session, available_endpoints, refresh_endpo
 
     @reactive.effect
     @reactive.event(input.multiSlotRefresh)
-    async def refresh():
+    def refresh():
         if not any_busy():
-            await refresh_endpoints()
+            refresh_endpoints()

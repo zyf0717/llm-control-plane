@@ -98,6 +98,15 @@ The external repo-context subprocess does not expose per-call telemetry; its int
 LLM calls cannot yet be shown. Search providers, retrieval, and dedicated rerankers do
 not generate LLM footers.
 
+Both chat tabs show endpoint names in the machine selector and model IDs in a muted
+subtitle below it. The subtitle follows endpoint selection and model refresh. Endpoint
+controls, reasoning choices, chat transport, response footers, and page assets are
+shared; conversation persistence and concurrent dispatch remain separate.
+Model discovery runs in a session background task, so startup and manual refresh do
+not hold up other controls. Concurrent refresh clicks share the in-flight fetch, and
+disconnecting cancels it. Existing endpoint choices remain available during refresh.
+Each configured endpoint is probed concurrently with a 2-second deadline.
+
 ## Multi-Slot Tab
 
 Multi-Slot provides 1–8 independent chat panes against one concrete endpoint, with four

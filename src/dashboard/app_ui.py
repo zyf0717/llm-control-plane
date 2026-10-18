@@ -2,30 +2,8 @@ import shinyswatch
 from shiny import ui
 from shinychat import chat_ui
 
+from .chat_controls import REASONING_LEVELS, endpoint_selector_ui, input_action_row
 from .multi_slot import multi_slot_ui
-
-
-def input_action_row(
-    input_control,
-    button_id,
-    button_label,
-    *,
-    col_widths=None,
-    button_class=None,
-):
-    """Render one input control with a trailing aligned action button."""
-    return ui.layout_columns(
-        input_control,
-        ui.div(
-            ui.input_action_button(
-                button_id,
-                button_label,
-                class_=button_class,
-            ),
-            style="display: flex; align-items: flex-end; height: 100%;",
-        ),
-        col_widths=col_widths or [10, 2],
-    )
 
 
 app_ui = ui.page_fluid(
@@ -389,17 +367,7 @@ app_ui = ui.page_fluid(
                     window.location.href = "https://llm-dashboard.paperclips.dev/cdn-cgi/access/logout";
                 });
                 """),
-                    input_action_row(
-                        ui.input_select(
-                            "endpoint",
-                            "Machine Endpoint",
-                            choices=[],
-                            width="100%",
-                        ),
-                        "refreshEndpoints",
-                        "🔄",
-                        button_class="dashboard-square-button",
-                    ),
+                    endpoint_selector_ui("endpoint", "endpointModels", refresh_id="refreshEndpoints"),
                     ui.input_switch("stream", "Streaming", True),
                     ui.input_switch("outputJSON", "JSON output", False),
                     ui.input_switch("outputReasoning", "Show reasoning", True),
@@ -407,14 +375,7 @@ app_ui = ui.page_fluid(
                     ui.input_select(
                         "reasoningEffort",
                         "Reasoning Level",
-                        choices={
-                            "none": "none",
-                            "low": "low",
-                            "medium": "medium",
-                            "high": "high",
-                            "xhigh": "xhigh",
-                            "max": "max",
-                        },
+                        choices=REASONING_LEVELS,
                         selected="medium",
                     ),
                     ui.output_ui("system_prompt_ui"),
@@ -522,15 +483,7 @@ app_ui = ui.page_fluid(
                         ui.input_select(
                             "workflowReasoning",
                             "Reasoning",
-                            choices={
-                                "": "Default",
-                                "none": "none",
-                                "low": "low",
-                                "medium": "medium",
-                                "high": "high",
-                                "xhigh": "xhigh",
-                                "max": "max",
-                            },
+                            choices={"": "Default", **{level: level for level in REASONING_LEVELS}},
                             selected="",
                             width="100%",
                         ),

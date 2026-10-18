@@ -395,27 +395,6 @@ async def test_fetch_available_retrieval_endpoints_does_not_auto_select_configur
     assert selected == utils.NONE_RETRIEVAL_OPTION_VALUE
 
 
-def test_create_endpoint_display_choices_keeps_evo_x2_routes_distinct():
-    endpoints_data = {
-        "gmktec-evo-x2-primary": {
-            "endpoint_url": "https://llm-evo-x2.paperclips.dev",
-            "models": [{"id": "primary-model"}],
-        },
-        "gmktec-evo-x2-utility": {
-            "endpoint_url": "https://llm-evo-x2-utility.paperclips.dev",
-            "models": [{"id": "utility-model"}],
-        },
-    }
-
-    choices, mapping = utils.create_endpoint_display_choices(endpoints_data)
-
-    assert choices == {
-        "gmktec-evo-x2-primary (primary-model)": "gmktec-evo-x2-primary",
-        "gmktec-evo-x2-utility (utility-model)": "gmktec-evo-x2-utility",
-    }
-    assert mapping == choices
-
-
 def test_create_history_select_choices_uses_conversation_id_as_value():
     conversations = [
         {

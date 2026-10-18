@@ -1,5 +1,7 @@
 import pytest
 
+from src.dashboard.chat_controls import resolve_endpoint_selection
+
 from src.dashboard.app_server import (
     build_retrieval_endpoint_choices,
     build_search_provider_choices,
@@ -8,7 +10,6 @@ from src.dashboard.app_server import (
     build_fork_notice,
     conversation_control_change_reasons,
     normalize_reasoning_effort,
-    resolve_endpoint_display_selection,
     resolve_first_search_provider_selection,
     resolve_retrieval_endpoint_selection,
     resolve_search_provider_selection,
@@ -1266,55 +1267,23 @@ def test_merge_run_info_adds_search_block_without_dropping_existing_metadata():
     }
 
 
-def test_resolve_endpoint_display_selection_uses_persisted_endpoint_key():
-    choices = {
-        "node-a (model-a)": "node-a",
-        "node-b (model-b)": "node-b",
+def test_resolve_endpoint_selection_uses_persisted_endpoint_key():
+    choices = {"node-a": "node-a", "node-b": "node-b"}
+    assert resolve_endpoint_selection(choices, preferred_endpoint_key="node-b") == "node-b"
+
+
+def test_resolve_endpoint_selection_keeps_utility_route_distinct_after_model_refresh():
+    endpoints = {
+        "node": {"models": [{"id": "updated-model"}]},
+        "node-utility": {"models": [{"id": "updated-utility-model"}]},
     }
-    mapping = dict(choices)
-
-    assert (
-        resolve_endpoint_display_selection(
-            choices,
-            mapping,
-            preferred_endpoint_key="node-a",
-        )
-        == "node-a (model-a)"
-    )
+    assert resolve_endpoint_selection(endpoints, preferred_endpoint_key="node-utility") == "node-utility"
 
 
-def test_resolve_endpoint_display_selection_uses_stored_endpoint_after_rebuild():
-    choices = {
-        "node-a (new-model-a)": "node-a",
-        "node-b (new-model-b)": "node-b",
-    }
-    mapping = dict(choices)
-
-    assert (
-        resolve_endpoint_display_selection(
-            choices,
-            mapping,
-            preferred_endpoint_key="node-b",
-        )
-        == "node-b (new-model-b)"
-    )
-
-
-def test_resolve_endpoint_display_selection_falls_back_when_endpoint_disappears():
-    choices = {
-        "node-a (model-a)": "node-a",
-        "node-c (model-c)": "node-c",
-    }
-    mapping = dict(choices)
-
-    assert (
-        resolve_endpoint_display_selection(
-            choices,
-            mapping,
-            preferred_endpoint_key="node-b",
-        )
-        == "node-a (model-a)"
-    )
+def test_resolve_endpoint_selection_falls_back_when_endpoint_disappears():
+    choices = {"node-a": "node-a", "node-c": "node-c"}
+    assert resolve_endpoint_selection(choices, preferred_endpoint_key="node-b") == "node-a"
+    assert resolve_endpoint_selection({}, preferred_endpoint_key="node-b") is None
 
 
 def test_normalize_reasoning_effort_defaults_missing_to_requested_default():

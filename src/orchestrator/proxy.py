@@ -325,8 +325,8 @@ async def list_models():
         try:
             headers = HeaderManager.create_auth_headers()
 
-            # Leave time for aggregation within the dashboard's 10-second timeout.
-            async with asyncio.timeout(5.0), httpx.AsyncClient(timeout=5.0) as client:
+            # Bound each probe so unavailable endpoints cannot hold up discovery.
+            async with asyncio.timeout(2.0), httpx.AsyncClient(timeout=2.0) as client:
                 resp = None
                 for models_url in [f"{url}/v1/models"]:
                     try:

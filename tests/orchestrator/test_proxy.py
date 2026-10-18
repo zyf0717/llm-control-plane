@@ -1649,7 +1649,7 @@ class TestModelsEndpoint:
 
             result = await asyncio.wait_for(list_models(), timeout=1.0)
 
-        assert [call.args for call in deadline.call_args_list] == [(5.0,)] * 3
+        assert [call.args for call in deadline.call_args_list] == [(2.0,)] * 3
         assert cancelled == {
             "https://slow-a.example.com/v1/models",
             "https://slow-b.example.com/v1/models",
