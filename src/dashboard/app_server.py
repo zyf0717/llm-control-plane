@@ -1914,7 +1914,7 @@ def server(input, output, session):
                         nonlocal open_intermediate_step
                         if open_intermediate_step:
                             open_intermediate_step = ""
-                            return "</em>\n\n---\n\n"
+                            return "</em>\n\n"
                         return ""
 
                     async def close_final_reasoning():
@@ -1984,7 +1984,7 @@ def server(input, output, session):
                                     yield (
                                         f"<em>**{step_name}**\n\n"
                                         f"{format_workflow_intermediate_content(content)}"
-                                        "</em>\n\n---\n\n"
+                                        "</em>\n\n"
                                     )
                             elif visibility == "final" and content and not streamed:
                                 if open_intermediate_step:
@@ -2005,6 +2005,8 @@ def server(input, output, session):
                                     rendered_call_ids.add(call["id"])
                                     yield call_metrics_ui(call, endpoints=current_endpoints,
                                                           label=step_name)
+                            if visibility == "intermediate" and (streamed or content):
+                                yield "\n\n---\n\n"
                             if (
                                 workflow_dispatch_event_updates_run_details(event_type)
                                 and isinstance(snapshot, dict)
