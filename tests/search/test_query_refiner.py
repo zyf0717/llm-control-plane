@@ -20,6 +20,30 @@ class FakeQueryRefinerResponse:
 
 
 @pytest.mark.asyncio
+async def test_query_refiner_resolves_workload_per_call_and_degrades_if_unavailable():
+    resolver = AsyncMock(side_effect=["https://utility-a.local", "https://utility-b.local", RuntimeError("offline")])
+    refiner = SearchQueryRefiner(
+        SearchQueryRefinerConfig(enabled=True, workload_type="utility"),
+        workload_endpoint_resolver=resolver,
+    )
+    with patch("httpx.AsyncClient.post", AsyncMock(return_value=FakeQueryRefinerResponse(
+        json.dumps({"query": "refined query"})
+    ))) as post:
+        first = await refiner.refine(SearchArgs(query="original query"))
+        second = await refiner.refine(SearchArgs(query="original query"))
+        offline = await refiner.refine(SearchArgs(query="original query"))
+
+    assert first.effective_query == second.effective_query == "refined query"
+    assert [call.args[0] for call in post.await_args_list] == [
+        "https://utility-a.local/v1/chat/completions",
+        "https://utility-b.local/v1/chat/completions",
+    ]
+    assert all(call.args == ("utility",) for call in resolver.await_args_list)
+    assert offline.degraded is True
+    assert offline.effective_query == "original query"
+
+
+@pytest.mark.asyncio
 async def test_query_refiner_disabled_returns_original_query():
     query_refiner = SearchQueryRefiner(SearchQueryRefinerConfig(enabled=False))
 

@@ -1,4 +1,36 @@
 from src.search import build_search_router
+from unittest.mock import AsyncMock
+
+import pytest
+
+
+def test_build_search_router_wires_workload_resolver():
+    resolver = AsyncMock()
+    router = build_search_router(
+        {
+            "query_refiner_workload_type": "utility",
+            "reranker_model_endpoint": "https://dedicated.local",
+            "reranker_backend": "dedicated",
+            "reranker_fallback_workload_type": "utility",
+        },
+        workload_endpoint_resolver=resolver,
+    )
+    assert router.query_refiner.config.workload_type == "utility"
+    assert router.query_refiner.workload_endpoint_resolver is resolver
+    assert router.reranker.config.fallback_workload_type == "utility"
+    assert router.reranker.workload_endpoint_resolver is resolver
+
+
+@pytest.mark.parametrize("config", [
+    {"query_refiner_workload_type": "utility", "query_refiner_model_endpoint": "https://fixed.local"},
+    {"reranker_workload_type": "utility", "reranker_model_endpoint": "https://fixed.local"},
+    {"reranker_workload_type": "utility", "reranker_backend": "dedicated"},
+    {"reranker_model_endpoint": "https://fixed.local", "reranker_fallback_workload_type": "utility",
+     "reranker_fallback_model_endpoint": "https://fixed-fallback.local"},
+])
+def test_build_search_router_rejects_ambiguous_workload_config(config):
+    with pytest.raises(ValueError):
+        build_search_router(config, workload_endpoint_resolver=AsyncMock())
 
 
 def test_build_search_router_injects_query_refiner_headers():

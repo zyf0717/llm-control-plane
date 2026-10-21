@@ -28,6 +28,7 @@ class WorkloadType(Enum):
     TOKENS_PER_SECOND = "tokens_per_second"
     PROGRAMMING = "programming"
     CLASSIFICATION = "classification"
+    UTILITY = "utility"
 
 
 @dataclass
@@ -188,13 +189,16 @@ class LLMRouter:
 
         # Keep only reachable endpoints
         available_preferred = [
-            ep for ep in preferred_endpoints if ep in reachable_endpoints
+            ep for ep in preferred_endpoints
+            if ep in reachable_endpoints and ep in self.endpoints
         ]
 
         # Select endpoint with fallback logic
         if available_preferred:
             selected_endpoint_name = available_preferred[0]
             reason = f"Selected preferred endpoint for {workload_type.value} workload"
+        elif workload_type == WorkloadType.UTILITY:
+            raise RuntimeError("No reachable endpoints configured for utility workload")
         elif reachable_endpoints:
             # Fallback to any reachable endpoint
             selected_endpoint_name = reachable_endpoints[0]
@@ -282,3 +286,22 @@ def reset_router():
     # Using global is necessary for singleton pattern
     global _router_instance  # noqa: PLW0603
     _router_instance = None
+
+
+async def resolve_workload_endpoint(workload_type: str) -> EndpointConfig:
+    """Resolve a known workload using discovery, without LLM classification."""
+    from . import proxy_services as services
+
+    workload = WorkloadType(workload_type)
+    if not services.reachable_endpoints:
+        from .proxy import list_models
+
+        await list_models()
+    router = get_router()
+    decision = await router.route_request("", services.reachable_endpoints, workload)
+    return router.endpoints[decision.endpoint]
+
+
+async def resolve_workload_url(workload_type: str) -> str:
+    """Resolve an upstream root URL for search's workload-aware LLM calls."""
+    return (await resolve_workload_endpoint(workload_type)).url

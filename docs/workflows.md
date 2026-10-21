@@ -42,6 +42,11 @@ Create-run body:
 
 `endpoint` is required and must be a concrete configured endpoint, not `smart`.
 
+Model-backed steps can instead declare `workload_type: utility` to resolve their
+endpoint from the [workload preference list](configuration.md#workload-preferences).
+This takes precedence over the run endpoint. A step cannot specify both
+`endpoint` and `workload_type`; steps with neither inherit the run endpoint.
+
 ## Spec Shape
 
 ```yaml
@@ -86,6 +91,7 @@ Common fields:
 | `chat_visibility` | `llm` | `hidden`, `intermediate`, or `final` |
 | `chat_stream` | `llm` | Override streaming for that LLM step |
 | `endpoint` | `llm`, `compress_source` | Override the run endpoint for this model-backed step |
+| `workload_type` | `llm`, `compress_source` | Resolve a configured workload instead of inheriting the run endpoint; mutually exclusive with `endpoint` |
 | `max_tokens` | `llm` | Override max output tokens |
 | `reasoning_effort` | `llm` | Override run/default reasoning effort |
 | `retrieval_endpoint` | `llm`, `retrieval` | Override run/default RAG endpoint |

@@ -10,6 +10,7 @@ from src.logging_config import configure_logging
 from src.search import build_search_router
 
 from .config import CONFIG_FILE, load_config
+from .llm_router import resolve_workload_url
 from .conversation_store import (
     ConversationStore,
     MemoryConversationStore,
@@ -29,6 +30,7 @@ RETRIEVAL_TOP_K = int(retrieval_config.get("top_k", 3))
 search_service = build_search_router(
     config.get("search", {}),
     query_refiner_headers=HeaderManager.create_auth_headers(),
+    workload_endpoint_resolver=resolve_workload_url,
 )
 repo_context_client = RepoContextClient(load_repo_context_config(config))
 

@@ -34,7 +34,7 @@ rag:
 
 search:
   enabled: true
-  query_refiner_model_endpoint: "https://llm-server.example.com"
+  query_refiner_workload_type: "utility"
   query_refiner_model: "search-query-refiner"
   query_refiner_enabled: true
   query_refiner_timeout_ms: 7000
@@ -42,7 +42,7 @@ search:
   query_refiner_max_output_tokens: 1024
   query_refiner_max_queries: 3
   reranker_model_endpoint: "http://reranker-server.example.com"
-  reranker_fallback_model_endpoint: "https://llm-server.example.com"
+  reranker_fallback_workload_type: "utility"
   reranker_backend: "dedicated"
   reranker_model: "search-reranker"
   reranker_enabled: true
@@ -67,6 +67,8 @@ search:
       priority: 30
 
 workloads:
+  - type: "utility"
+    endpoint_preference: ["mac-mini", "my-server"]
   - type: "reasoning"
     endpoint_preference: ["my-server", "mac-mini"]
   - type: "programming"
@@ -151,8 +153,30 @@ Supported workload types:
 | `tokens_per_second` | Long output with minimal deep reasoning |
 | `ttft_content` | Fast first-token, simple Q&A, general chat |
 | `classification` | Internal workload classification endpoint choice |
+| `utility` | Query planning/refinement and LLM reranker fallback |
 
 Each `endpoint_preference` list is ordered from most preferred to least preferred.
+
+Utility callers declare their workload explicitly, so endpoint selection does not
+invoke the workload classifier. The router selects the first utility preference
+reported as reachable by `/models`. It runs discovery on first use if no reachable
+endpoints are cached; subsequent `/models` requests (including dashboard endpoint
+refresh) update availability. If no listed utility endpoint is reachable, routing
+fails rather than selecting another workload's model. Selection uses cached
+availability; it does not retry after a generation request fails.
+
+Configure utility servers in one place:
+
+```yaml
+workloads:
+  - type: utility
+    endpoint_preference: [gti13, gmktec-evo-x2-utility]
+```
+
+Built-in search, RAG, and repo-context planners use `utility` in both workflows and
+graphs. Their final answers use the run's selected endpoint. Query refinement and
+LLM reranking can share this policy through the fields below. The dedicated
+reranker keeps its own `/rerank` endpoint.
 
 ## Search Configuration
 
@@ -164,17 +188,20 @@ The `search` block enables the lightweight candidate-discovery module exposed at
 |---|---|
 | `enabled` | Enables the `/search/web` endpoint and internal provider router |
 | `query_refiner_model_endpoint` | Optional OpenAI-compatible endpoint for bounded query refinement |
+| `query_refiner_workload_type` | Resolve refinement through an explicit workload, e.g. `utility`; alternative to `query_refiner_model_endpoint` |
 | `query_refiner_model` | Query-refiner model name; defaults to `search-query-refiner` |
-| `query_refiner_enabled` | Enables or disables query refinement; defaults to true when `query_refiner_model_endpoint` exists |
+| `query_refiner_enabled` | Enables or disables query refinement; defaults to true when an endpoint or workload is configured |
 | `query_refiner_timeout_ms` | Query-refiner request timeout; defaults to `timeout_ms` or 7000 |
 | `query_refiner_max_context_chars` | Max optional context characters sent to the query refiner |
 | `query_refiner_max_output_tokens` | Max query-refiner response tokens |
 | `query_refiner_max_queries` | Max refined query fanout; defaults to 1 |
 | `reranker_model_endpoint` | Optional reranker endpoint for bounded post-retrieval reranking |
 | `reranker_fallback_model_endpoint` | Optional OpenAI-compatible LLM reranker endpoint used if a dedicated reranker fails |
+| `reranker_workload_type` | Resolve the primary LLM reranker through a workload; requires `reranker_backend: llm` and replaces `reranker_model_endpoint` |
+| `reranker_fallback_workload_type` | Resolve the dedicated reranker's LLM fallback through a workload; alternative to `reranker_fallback_model_endpoint` |
 | `reranker_backend` | Reranker protocol: `llm` for OpenAI chat completions, `dedicated` for `/rerank`; defaults to `llm` |
 | `reranker_model` | Reranker model name; defaults to `search-reranker` |
-| `reranker_enabled` | Enables or disables reranking; defaults to true when `reranker_model_endpoint` exists |
+| `reranker_enabled` | Enables or disables reranking; defaults to true when a primary endpoint or workload is configured |
 | `reranker_timeout_ms` | Reranker request timeout; defaults to `timeout_ms` or 7000 |
 | `reranker_max_context_chars` | Max optional context characters sent to the reranker |
 | `reranker_max_candidates` | Max deduped candidates sent to the reranker |
@@ -190,9 +217,9 @@ The `search` block enables the lightweight candidate-discovery module exposed at
 | `providers[].cache_ttl_seconds` | Optional provider-specific TTL override |
 | `providers[].min_interval_seconds` | Optional minimum delay between requests to the same provider |
 
-When `search.query_refiner_model_endpoint` is configured and query refinement is enabled, ad hoc `/search/web` calls may run a bounded, non-persisted query-refiner call before provider execution. The query refiner returns one or more concise provider-ready queries; the first query becomes the effective search query. If `query_refiner_max_queries` is greater than 1, provider searches run as an async fanout and results are deduped before applying `search_max_total_results`. Query-refiner failure degrades to the original query and adds a warning.
+When a query-refiner endpoint or workload is configured and query refinement is enabled, ad hoc `/search/web` calls may run a bounded, non-persisted query-refiner call before provider execution. The query refiner returns one or more concise provider-ready queries; the first query becomes the effective search query. If `query_refiner_max_queries` is greater than 1, provider searches run as an async fanout and results are deduped before applying `search_max_total_results`. Query-refiner failure degrades to the original query and adds a warning.
 
-When `search.reranker_model_endpoint` is configured and reranking is enabled, the reranker is available to direct `/search/web` calls that set `use_reranker: true` and to explicit workflow `rerank` steps. `reranker_backend: llm` uses `/v1/chat/completions`; `reranker_backend: dedicated` posts `{query, documents, top_k}` to `/rerank`. A dedicated reranker can fall back to `reranker_fallback_model_endpoint`; otherwise reranker failure preserves provider order and adds a warning. Reranking metadata exposes the configured `backend` and the actual `path` used for the returned ranking: `dedicated`, `llm`, or `none`.
+When a reranker endpoint or workload is configured and reranking is enabled, the reranker is available to direct `/search/web` calls that set `use_reranker: true` and to explicit workflow `rerank` steps. `reranker_backend: llm` uses `/v1/chat/completions`; `reranker_backend: dedicated` posts `{query, documents, top_k}` to `/rerank`. A dedicated reranker can fall back through `reranker_fallback_workload_type` or a fixed `reranker_fallback_model_endpoint`; otherwise reranker failure preserves provider order and adds a warning. Reranking metadata exposes the configured `backend` and the actual `path` used for the returned ranking: `dedicated`, `llm`, or `none`.
 
 Workflow search can use either query-refiner planning or workflow-owned planning. Plain search prompts may use the query refiner. Workflow-planned JSON queries should set `use_query_refiner: false`. Search steps may set `search_count` to control provider candidates per dispatched query. Workflow search steps never rerank inline; `use_reranker` and `rerank_context` on search steps are invalid. Post-retrieval reranking must be modeled as an explicit `rerank` step that depends on the retrieval step. Rerank steps may set `rerank_top_k` to cap the returned reranked results.
 

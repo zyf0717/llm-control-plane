@@ -14,7 +14,9 @@ from src.orchestrator.llm_router import (
     WorkloadType,
     get_router,
     reset_router,
+    resolve_workload_endpoint,
 )
+from src.orchestrator import llm_router as router_module, proxy_services, proxy
 
 
 @pytest.fixture
@@ -225,6 +227,46 @@ class TestWorkloadClassifier:
 
 class TestLLMRouter:
     """Tests for the main LLMRouter class."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("reachable", "expected"), [
+        (["mac-mini", "hrpc-cisr-hpc"], "hrpc-cisr-hpc"),
+        (["mac-mini"], "mac-mini"),
+        (["gmktec-evo-x2-primary"], None),
+        ([], None),
+    ])
+    async def test_explicit_utility_routing_uses_only_its_preference_list(
+        self, llm_router, monkeypatch, reachable, expected,
+    ):
+        llm_router.workload_preferences[WorkloadType.UTILITY] = ["hrpc-cisr-hpc", "mac-mini"]
+        classifier = AsyncMock(side_effect=AssertionError("utility must not be classified"))
+        llm_router.classifier.classify_with_llm = classifier
+        monkeypatch.setattr(router_module, "get_router", lambda: llm_router)
+        monkeypatch.setattr(proxy_services, "reachable_endpoints", reachable)
+        discovery = AsyncMock()
+        monkeypatch.setattr(proxy, "list_models", discovery)
+
+        if expected is None:
+            with pytest.raises(RuntimeError, match="No reachable endpoints configured for utility"):
+                await resolve_workload_endpoint("utility")
+        else:
+            result = await resolve_workload_endpoint("utility")
+            assert result.name == expected
+            assert result.url == llm_router.endpoints[expected].url
+        classifier.assert_not_awaited()
+        assert discovery.await_count == (0 if reachable else 1)
+
+    @pytest.mark.asyncio
+    async def test_workload_resolution_initializes_discovery(self, llm_router, monkeypatch):
+        llm_router.workload_preferences[WorkloadType.UTILITY] = ["hrpc-cisr-hpc", "mac-mini"]
+        monkeypatch.setattr(router_module, "get_router", lambda: llm_router)
+        monkeypatch.setattr(proxy_services, "reachable_endpoints", [])
+
+        async def discover():
+            proxy_services.reachable_endpoints = ["mac-mini"]
+
+        monkeypatch.setattr(proxy, "list_models", AsyncMock(side_effect=discover))
+        assert (await resolve_workload_endpoint("utility")).name == "mac-mini"
 
     def test_load_config(self, llm_router):
         """Test that configuration is loaded correctly."""

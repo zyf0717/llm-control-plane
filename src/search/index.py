@@ -14,12 +14,14 @@ from .providers import (
 from .query_refiner import SearchQueryRefiner, SearchQueryRefinerConfig
 from .reranker import SearchReranker, SearchRerankerConfig
 from .search_router import SearchConfig, SearchProviderConfig, SearchRouter
+from .types import WorkloadEndpointResolver
 
 
 def build_search_router(
     search_config: dict[str, Any] | None = None,
     *,
     query_refiner_headers: dict[str, str] | None = None,
+    workload_endpoint_resolver: WorkloadEndpointResolver | None = None,
 ) -> SearchRouter:
     """Build a config-driven search router with explicit provider allowlist."""
     search_config = search_config or {}
@@ -59,11 +61,15 @@ def build_search_router(
         max_retries=int(search_config.get("max_retries", 1)),
     )
     query_refiner_endpoint = search_config.get("query_refiner_model_endpoint")
+    query_refiner_workload = search_config.get("query_refiner_workload_type")
     query_refiner_config = SearchQueryRefinerConfig(
         enabled=bool(
-            search_config.get("query_refiner_enabled", bool(query_refiner_endpoint))
+            search_config.get(
+                "query_refiner_enabled", bool(query_refiner_endpoint or query_refiner_workload)
+            )
         ),
         model_endpoint=query_refiner_endpoint,
+        workload_type=query_refiner_workload,
         model=str(search_config.get("query_refiner_model", "search-query-refiner")),
         timeout_ms=int(
             search_config.get(
@@ -77,15 +83,22 @@ def build_search_router(
         headers=dict(query_refiner_headers),
     )
     query_refiner = (
-        SearchQueryRefiner(query_refiner_config)
-        if query_refiner_config.enabled and query_refiner_config.model_endpoint
+        SearchQueryRefiner(
+            query_refiner_config, workload_endpoint_resolver=workload_endpoint_resolver
+        )
+        if query_refiner_config.enabled and (query_refiner_endpoint or query_refiner_workload)
         else None
     )
     reranker_endpoint = search_config.get("reranker_model_endpoint")
+    reranker_workload = search_config.get("reranker_workload_type")
     reranker_config = SearchRerankerConfig(
-        enabled=bool(search_config.get("reranker_enabled", bool(reranker_endpoint))),
+        enabled=bool(
+            search_config.get("reranker_enabled", bool(reranker_endpoint or reranker_workload))
+        ),
         model_endpoint=reranker_endpoint,
         fallback_model_endpoint=search_config.get("reranker_fallback_model_endpoint"),
+        workload_type=reranker_workload,
+        fallback_workload_type=search_config.get("reranker_fallback_workload_type"),
         backend=str(search_config.get("reranker_backend", "llm")),
         model=str(search_config.get("reranker_model", "search-reranker")),
         timeout_ms=int(
@@ -100,8 +113,10 @@ def build_search_router(
         headers=dict(query_refiner_headers),
     )
     reranker = (
-        SearchReranker(reranker_config)
-        if reranker_config.enabled and reranker_config.model_endpoint
+        SearchReranker(
+            reranker_config, workload_endpoint_resolver=workload_endpoint_resolver
+        )
+        if reranker_config.enabled and (reranker_endpoint or reranker_workload)
         else None
     )
 

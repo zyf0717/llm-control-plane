@@ -82,7 +82,7 @@ Return strict JSON only:
         prompt,
         config,
         schema=REPO_CONTEXT_PLAN_SCHEMA,
-        default_endpoint="gmktec-evo-x2-utility",
+        workload_type="utility",
         max_attempts=3,
         use_retrieval=False,
     )

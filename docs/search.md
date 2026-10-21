@@ -38,7 +38,7 @@ Responses include normalized `results`, `warnings`, `degraded`, and `wrapped_res
 
 ## Query Refinement
 
-If `search.query_refiner_model_endpoint` is configured and enabled, `/search/web` may convert a user query into provider-ready queries. `query_refiner_max_queries` bounds the fanout. If the refiner returns multiple queries, the router searches each query and dedupes results up to `search.search_max_total_results`.
+If `search.query_refiner_model_endpoint` or `search.query_refiner_workload_type` is configured and enabled, `/search/web` may convert a user query into provider-ready queries. `query_refiner_max_queries` bounds the fanout. If the refiner returns multiple queries, the router searches each query and dedupes results up to `search.search_max_total_results`.
 
 Workflow-planned search usually sets `use_query_refiner: false` because the workflow LLM already produced provider-facing queries.
 

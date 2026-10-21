@@ -2,6 +2,7 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -395,6 +396,8 @@ async def test_shipped_generated_graphs_execute_with_neutral_runtime_clients(
     graph_id,
     graph_input,
 ):
+    resolver = AsyncMock(return_value=SimpleNamespace(name="utility-node"))
+    monkeypatch.setattr(graph_common, "resolve_workload_endpoint", resolver)
     monkeypatch.setattr(graph_common, "LLM_CLIENT", FakeGraphLLMClient())
     monkeypatch.setattr(graph_common, "SEARCH_CLIENT", FakeGraphSearchClient())
     monkeypatch.setattr(graph_common, "RETRIEVAL_CLIENT", FakeGraphRetrievalClient())
@@ -411,6 +414,7 @@ async def test_shipped_generated_graphs_execute_with_neutral_runtime_clients(
             config={
                 "configurable": {
                     "thread_id": f"{graph_id}-thread",
+                    "endpoint": "selected-model",
                     "retrieval_endpoint": "http://retrieval/api/retrieve/context",
                 }
             },
@@ -420,6 +424,16 @@ async def test_shipped_generated_graphs_execute_with_neutral_runtime_clients(
 
         assert snapshot["run"]["status"] == "completed"
         assert snapshot["run"]["output"]["final"].startswith("answer:")
+        planner_key = {
+            "threaded_search": "search_plan",
+            "threaded_rag": "rag_prompt",
+            "repo_context": "repo_context_plan",
+        }.get(graph_id)
+        if planner_key:
+            outputs = snapshot["run"]["output"]["outputs"]
+            assert outputs[planner_key]["metadata"]["endpoint"] == "utility-node"
+            assert outputs["reply"]["metadata"]["endpoint"] == "selected-model"
+            resolver.assert_awaited_once_with("utility")
     finally:
         await store.close()
 

@@ -1,4 +1,6 @@
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from src.llm_metrics import CallMetrics
@@ -7,6 +9,7 @@ from src.orchestrator.repo_context import RepoContextResult
 from src.orchestrator.workflow.executor import WorkflowExecutor, render_template
 from src.orchestrator.workflow.registry import WorkflowRegistry
 from src.orchestrator.workflow.store import SQLiteWorkflowStore
+from src.orchestrator.workflow import step_executor as step_executor_module
 
 
 class FakeLLMClient:
@@ -466,7 +469,7 @@ params_schema:
 steps:
   - id: plan_repo_context_query
     kind: llm
-    endpoint: gmktec-evo-x2-utility
+    workload_type: utility
     chat_visibility: hidden
     prompt: |
       User request:
@@ -854,7 +857,9 @@ async def test_llm_step_endpoint_overrides_run_endpoint(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_repo_context_step_completes_and_persists_artifact(tmp_path):
+async def test_repo_context_step_completes_and_persists_artifact(tmp_path, monkeypatch):
+    resolver = AsyncMock(return_value=SimpleNamespace(name="utility-node"))
+    monkeypatch.setattr(step_executor_module, "resolve_workload_endpoint", resolver)
     write_repo_context_workflow(tmp_path / "repo_context_sample.yaml")
     registry = WorkflowRegistry(tmp_path)
     registry.load()
@@ -905,9 +910,10 @@ async def test_repo_context_step_completes_and_persists_artifact(tmp_path):
         ]
         assert len(llm.prompts) == 2
         assert [prompt["endpoint"] for prompt in llm.prompts] == [
-            "gmktec-evo-x2-utility",
+            "utility-node",
             "node-a",
         ]
+        resolver.assert_awaited_once_with("utility")
         planner_prompt = llm.prompts[0]["prompt"]
         assert "repo-context explore --query" in planner_prompt
         assert "concrete retrieval instruction" in planner_prompt
@@ -1719,8 +1725,14 @@ async def test_executor_requires_concrete_run_endpoint(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_streaming_llm_step_accumulates_output_and_emits_deltas(tmp_path):
+@pytest.mark.parametrize("use_workload", [False, True])
+async def test_streaming_llm_step_accumulates_output_and_emits_deltas(tmp_path, monkeypatch, use_workload):
     write_visible_llm_workflow(tmp_path / "visible.yaml", visibility="final")
+    resolver = AsyncMock(return_value=SimpleNamespace(name="utility-node"))
+    monkeypatch.setattr(step_executor_module, "resolve_workload_endpoint", resolver)
+    if use_workload:
+        path = tmp_path / "visible.yaml"
+        path.write_text(path.read_text().replace("kind: llm", "kind: llm\n    workload_type: utility"))
     registry = WorkflowRegistry(tmp_path)
     registry.load()
     store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
@@ -1747,6 +1759,8 @@ async def test_streaming_llm_step_accumulates_output_and_emits_deltas(tmp_path):
         assert snapshot["run"]["status"] == "completed"
         assert snapshot["steps"][0]["output_json"]["text"] == "stream answer"
         assert llm.prompts[0]["skip_conversation"] is True
+        assert llm.prompts[0]["endpoint"] == ("utility-node" if use_workload else "node-a")
+        assert resolver.await_count == int(use_workload)
     finally:
         await store.close()
 

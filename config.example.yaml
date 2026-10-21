@@ -49,6 +49,7 @@ retrieval:
 search:
   enabled: false
   query_refiner_model_endpoint: ""
+  query_refiner_workload_type: "utility"
   query_refiner_model: "search-query-refiner"
   query_refiner_enabled: false
   query_refiner_timeout_ms: 7000
@@ -57,6 +58,7 @@ search:
   query_refiner_max_queries: 1
   reranker_model_endpoint: ""
   reranker_fallback_model_endpoint: ""
+  reranker_fallback_workload_type: "utility"
   reranker_backend: "llm"
   reranker_model: "search-reranker"
   reranker_enabled: false
@@ -92,6 +94,8 @@ search:
       endpoint: "http://localhost:8080/search"
 
 workloads:
+  - type: "utility"
+    endpoint_preference: ["fast-local", "primary"]
   - type: "reasoning"
     endpoint_preference: ["primary", "fast-local"]
   - type: "programming"

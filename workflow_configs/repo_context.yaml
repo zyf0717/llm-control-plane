@@ -16,7 +16,7 @@ steps:
   - id: plan_repo_context_query
     name: Plan repo-context query
     kind: llm
-    endpoint: gmktec-evo-x2-utility
+    workload_type: utility
     chat_visibility: intermediate
     prompt: |
       Latest user prompt:

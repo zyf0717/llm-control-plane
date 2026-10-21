@@ -84,7 +84,7 @@ Query rules:
         prompt,
         config,
         schema=SEARCH_PLAN_SCHEMA,
-        default_endpoint="gmktec-evo-x2-utility",
+        workload_type="utility",
         max_attempts=3,
     )
     return with_output(state, "search_plan", output)

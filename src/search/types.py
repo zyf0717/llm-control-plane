@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from typing import Optional, Protocol
+
+WorkloadEndpointResolver = Callable[[str], Awaitable[str]]
 
 
 @dataclass(slots=True)

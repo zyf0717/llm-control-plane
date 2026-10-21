@@ -39,6 +39,11 @@ ui:
 
 Graph metadata is for the control plane and dashboard. Graph control flow belongs in Python LangGraph code.
 
+The search, RAG, and repo-context planners call `llm_json(..., workload_type="utility")`.
+The shared `llm_json` and `llm_text` helpers resolve explicit workloads from
+`config.yaml` instead of using `configurable.endpoint`. Final-answer nodes omit
+the workload and use the selected endpoint. See [workload preferences](configuration.md#workload-preferences).
+
 ## API
 
 | Method | Path | Purpose |

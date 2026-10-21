@@ -11,7 +11,7 @@ import httpx
 
 from src.llm_metrics import CallMetrics, llm_response_metadata
 
-from .types import SearchArgs
+from .types import SearchArgs, WorkloadEndpointResolver
 
 _ALLOWED_FRESHNESS = {"day", "week", "month", "none"}
 logger = logging.getLogger(__name__)
@@ -23,6 +23,7 @@ class SearchQueryRefinerConfig:
 
     enabled: bool = False
     model_endpoint: Optional[str] = None
+    workload_type: Optional[str] = None
     model: str = "search-query-refiner"
     timeout_ms: int = 7000
     max_source_chars: int = 12000
@@ -68,15 +69,27 @@ class SearchQueryRefinement:
 class SearchQueryRefiner:
     """Turn-local search query refiner."""
 
-    def __init__(self, config: SearchQueryRefinerConfig):
+    def __init__(
+        self,
+        config: SearchQueryRefinerConfig,
+        *,
+        workload_endpoint_resolver: WorkloadEndpointResolver | None = None,
+    ):
+        if config.workload_type and config.model_endpoint:
+            raise ValueError("query refiner cannot set both model_endpoint and workload_type")
+        if config.workload_type and workload_endpoint_resolver is None:
+            raise ValueError("query refiner workload_type requires a workload endpoint resolver")
         self.config = config
+        self.workload_endpoint_resolver = workload_endpoint_resolver
 
     async def refine(self, args: SearchArgs) -> SearchQueryRefinement:
-        if not self.config.enabled or not self.config.model_endpoint:
+        if not self.config.enabled or not (
+            self.config.model_endpoint or self.config.workload_type
+        ):
             logger.info(
                 "search query refiner skipped: enabled=%s endpoint_configured=%s",
                 self.config.enabled,
-                bool(self.config.model_endpoint),
+                bool(self.config.model_endpoint or self.config.workload_type),
             )
             return SearchQueryRefinement(
                 effective_query=args.query, queries=[args.query], used=False
@@ -84,7 +97,10 @@ class SearchQueryRefiner:
 
         try:
             payload = self._build_payload(args)
-            endpoint = self.config.model_endpoint.rstrip("/") + "/v1/chat/completions"
+            endpoint_base = self.config.model_endpoint
+            if self.config.workload_type:
+                endpoint_base = await self.workload_endpoint_resolver(self.config.workload_type)
+            endpoint = endpoint_base.rstrip("/") + "/v1/chat/completions"
             logger.info(
                 "search query refiner request: endpoint=%s max_queries=%d source_text=%s",
                 endpoint,

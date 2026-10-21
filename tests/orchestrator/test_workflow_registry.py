@@ -4,6 +4,17 @@ from pathlib import Path
 import pytest
 
 from src.orchestrator.workflow.registry import DEFAULT_WORKFLOW_DIR, WorkflowRegistry
+from src.orchestrator.workflow.models import WorkflowStepSpec
+
+
+@pytest.mark.parametrize("fields", [
+    {"workload_type": "unknown"},
+    {"workload_type": "utility", "endpoint": "fixed-node"},
+    {"workload_type": "utility", "kind": "search"},
+])
+def test_step_rejects_invalid_workload_routing(fields):
+    with pytest.raises(ValueError):
+        WorkflowStepSpec.from_dict({"id": "plan", "kind": "llm", **fields})
 
 
 def write_workflow(path: Path, *, body: str) -> None:

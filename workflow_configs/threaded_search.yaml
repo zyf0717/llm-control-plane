@@ -30,7 +30,7 @@ steps:
   - id: plan_search_queries
     name: Plan search queries
     kind: llm
-    endpoint: gmktec-evo-x2-utility
+    workload_type: utility
     chat_visibility: intermediate
     chat_stream: false
     prompt: |

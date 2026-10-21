@@ -93,7 +93,7 @@ RAG prompt rules:
         prompt,
         config,
         schema=RAG_PLAN_SCHEMA,
-        default_endpoint="gmktec-evo-x2-utility",
+        workload_type="utility",
         max_attempts=3,
         use_retrieval=False,
     )

@@ -150,6 +150,7 @@ class WorkflowStepSpec:
     output_key: str | None = None
     output_contract: WorkflowOutputContract | None = None
     endpoint: str | None = None
+    workload_type: str | None = None
     reasoning_effort: str | None = None
     retrieval_endpoint: str | None = None
     use_retrieval: bool | None = None
@@ -220,6 +221,19 @@ class WorkflowStepSpec:
                 "on repo_context steps"
             )
         endpoint = _optional_str(data.get("endpoint"))
+        workload_type = _optional_str(data.get("workload_type"))
+        if workload_type is not None:
+            from ..llm_router import WorkloadType
+
+            WorkloadType(workload_type)
+            if kind not in {"llm", "compress_source"}:
+                raise ValueError(
+                    f"workflow step {step_id} workload_type is only supported on model-backed steps"
+                )
+            if endpoint is not None:
+                raise ValueError(
+                    f"workflow step {step_id} cannot set both endpoint and workload_type"
+                )
         if endpoint is not None and kind not in {"llm", "compress_source"}:
             raise ValueError(
                 f"workflow step {step_id} endpoint is only supported on model-backed steps"
@@ -316,6 +330,7 @@ class WorkflowStepSpec:
             output_key=_optional_str(data.get("output_key")),
             output_contract=output_contract,
             endpoint=endpoint,
+            workload_type=workload_type,
             reasoning_effort=_optional_str(data.get("reasoning_effort")),
             retrieval_endpoint=_optional_str(data.get("retrieval_endpoint")),
             use_retrieval=_optional_bool(data.get("use_retrieval")),

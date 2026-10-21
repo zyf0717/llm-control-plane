@@ -9,6 +9,7 @@ from typing import Any, AsyncIterator, Protocol
 from src.llm_metrics import without_call_metrics
 
 from ..repo_context import RepoContextResult
+from ..llm_router import resolve_workload_endpoint
 from .compression import (
     build_compression_prompt,
     build_compression_repair_prompt,
@@ -176,7 +177,7 @@ class WorkflowStepExecutor:
         if step.kind == "repo_context":
             return await self._execute_repo_context_step(step, step_input, prompt)
 
-        endpoint = _step_endpoint(run, step)
+        endpoint = await _step_endpoint(run, step)
         if not endpoint:
             raise ValueError("workflow step endpoint is required")
         if endpoint.lower() == "smart":
@@ -208,7 +209,7 @@ class WorkflowStepExecutor:
             return
 
         prompt = render_template(step.prompt or "", step_input)
-        endpoint = _step_endpoint(run, step)
+        endpoint = await _step_endpoint(run, step)
         if not endpoint:
             raise ValueError("workflow step endpoint is required")
         if endpoint.lower() == "smart":
@@ -695,7 +696,7 @@ class WorkflowStepExecutor:
         )
         request_bytes = check_compression_input_payload(prompt, chunk, step)
         result = await self.llm_client.complete(
-            endpoint=_step_endpoint(run, step),
+            endpoint=await _step_endpoint(run, step),
             prompt=prompt,
             conversation_id=run.conversation_id,
             reasoning_effort=reasoning_effort,
@@ -790,7 +791,7 @@ class WorkflowStepExecutor:
             step.reasoning_effort or run.reasoning_effort or spec.defaults.reasoning_effort
         )
         result = await self.llm_client.complete(
-            endpoint=_step_endpoint(run, step),
+            endpoint=await _step_endpoint(run, step),
             prompt=prompt,
             conversation_id=run.conversation_id,
             reasoning_effort=reasoning_effort,
@@ -916,7 +917,9 @@ class WorkflowStepExecutor:
         )
 
 
-def _step_endpoint(run: WorkflowRun, step: WorkflowStepSpec) -> str:
+async def _step_endpoint(run: WorkflowRun, step: WorkflowStepSpec) -> str:
+    if step.workload_type:
+        return (await resolve_workload_endpoint(step.workload_type)).name
     return str(step.endpoint or run.endpoint or "").strip()
 
 

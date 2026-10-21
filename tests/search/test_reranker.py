@@ -35,6 +35,52 @@ def _result(title: str, rank: int) -> SearchResult:
 
 
 @pytest.mark.asyncio
+async def test_dedicated_reranker_resolves_utility_only_on_failure():
+    resolver = AsyncMock(return_value="https://utility-fallback.local")
+    reranker = SearchReranker(
+        SearchRerankerConfig(
+            enabled=True, backend="dedicated", model_endpoint="https://dedicated.local",
+            fallback_workload_type="utility",
+        ),
+        workload_endpoint_resolver=resolver,
+    )
+    dedicated = FakeRerankerResponse(payload={"results": [{"index": 1, "relevance_score": 0.9}]})
+    llm = FakeRerankerResponse(json.dumps({"ranked": [{"id": "2"}, {"id": "1"}]}))
+    with patch("httpx.AsyncClient.post", AsyncMock(side_effect=[dedicated, httpx.ConnectError("offline"), llm])) as post:
+        first = await reranker.rerank(query="q", results=[_result("A", 1), _result("B", 2)])
+        resolver.assert_not_awaited()
+        second = await reranker.rerank(query="q", results=[_result("A", 1), _result("B", 2)])
+
+    assert first.path == "dedicated"
+    assert second.path == "llm"
+    assert second.used is True
+    assert second.degraded is True
+    assert [r.title for r in second.results] == ["B", "A"]
+    resolver.assert_awaited_once_with("utility")
+    assert post.await_args.args[0] == "https://utility-fallback.local/v1/chat/completions"
+
+
+@pytest.mark.asyncio
+async def test_llm_reranker_uses_workload_and_preserves_order_if_unavailable():
+    resolver = AsyncMock(side_effect=["https://utility.local", RuntimeError("offline")])
+    reranker = SearchReranker(
+        SearchRerankerConfig(enabled=True, workload_type="utility"),
+        workload_endpoint_resolver=resolver,
+    )
+    response = FakeRerankerResponse(json.dumps({"ranked": [{"id": "2"}, {"id": "1"}]}))
+    with patch("httpx.AsyncClient.post", AsyncMock(return_value=response)) as post:
+        ranked = await reranker.rerank(query="q", results=[_result("A", 1), _result("B", 2)])
+        offline = await reranker.rerank(query="q", results=[_result("A", 1), _result("B", 2)])
+
+    assert ranked.used is True
+    assert [r.title for r in ranked.results] == ["B", "A"]
+    assert offline.used is False
+    assert offline.degraded is True
+    assert [r.title for r in offline.results] == ["A", "B"]
+    post.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_reranker_disabled_returns_original_order():
     reranker = SearchReranker(SearchRerankerConfig(enabled=False))
     results = [_result("A", 1), _result("B", 2)]

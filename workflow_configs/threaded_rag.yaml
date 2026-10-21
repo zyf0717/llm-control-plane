@@ -30,7 +30,7 @@ steps:
   - id: plan_rag_prompt
     name: Plan RAG prompt
     kind: llm
-    endpoint: gmktec-evo-x2-utility
+    workload_type: utility
     use_retrieval: false
     chat_visibility: intermediate
     chat_stream: false
