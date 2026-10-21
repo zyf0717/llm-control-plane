@@ -31,7 +31,7 @@ def input_action_row(
 def endpoint_selector_ui(input_id: str, models_id: str, *, refresh_id: str):
     return ui.div(
         ui.div(
-            ui.input_select(input_id, "Machine Endpoint", choices={}, width="100%").add_style(
+            ui.input_select(input_id, "Endpoint", choices={}, width="100%").add_style(
                 "margin: 0; flex: 1; min-width: 0;"
             ),
             ui.input_action_button(
@@ -49,7 +49,7 @@ def endpoint_models_text(endpoint: dict, *, loading: bool = False) -> str:
     models = [model["id"] for model in endpoint.get("models", []) if model.get("id")]
     if models:
         return ", ".join(models)
-    return "Loading models…" if loading else "No models reported."
+    return str(endpoint.get("error") or ("Loading models…" if loading else "No models reported."))
 
 
 def resolve_endpoint_selection(choices: dict, *, preferred_endpoint_key: str | None) -> str | None:

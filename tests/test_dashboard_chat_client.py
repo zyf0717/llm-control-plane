@@ -306,7 +306,7 @@ async def test_smart_endpoint_uses_smart_without_route_switch_opt_in(monkeypatch
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [False, True])
-async def test_concrete_endpoint_sends_discovered_model(monkeypatch, stream):
+async def test_concrete_endpoint_leaves_model_resolution_to_proxy(monkeypatch, stream):
     monkeypatch.setattr(chat_client, "PROXY_BASE_URL", "http://proxy.local")
     if stream:
         response = _FakeStreamingResponse(
@@ -339,7 +339,7 @@ async def test_concrete_endpoint_sends_discovered_model(monkeypatch, stream):
         ]
 
     call = (mock_client.stream if stream else mock_client.post).call_args
-    assert call.kwargs["json"]["model"] == "Qwen3.8 Flash Next"
+    assert "model" not in call.kwargs["json"]
     assert "".join(chunks) == "42"
 
 

@@ -223,9 +223,10 @@ class WorkflowStepSpec:
         endpoint = _optional_str(data.get("endpoint"))
         workload_type = _optional_str(data.get("workload_type"))
         if workload_type is not None:
-            from ..llm_router import WorkloadType
+            from ..llm_router import WORKLOADS
 
-            WorkloadType(workload_type)
+            if workload_type not in WORKLOADS:
+                raise ValueError(f"Unknown workload_type: {workload_type}")
             if kind not in {"llm", "compress_source"}:
                 raise ValueError(
                     f"workflow step {step_id} workload_type is only supported on model-backed steps"

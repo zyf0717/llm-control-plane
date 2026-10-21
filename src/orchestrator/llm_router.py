@@ -1,307 +1,317 @@
-"""
-LLM Router for intelligent endpoint selection.
+"""Ordered workload routing and shared OpenAI-compatible model resolution."""
 
-Determines the most appropriate endpoint based on workload type and endpoint preferences.
-"""
+from __future__ import annotations
 
+import asyncio
 import logging
-from dataclasses import dataclass
-from enum import Enum
-from pathlib import Path
-from typing import Dict, List, Optional
+from contextlib import AsyncExitStack, asynccontextmanager
+from time import monotonic
 
 import httpx
-import yaml
+from fastapi import HTTPException
 
 from src.llm_metrics import CallMetrics, llm_response_metadata
-
-from .utils import HeaderManager
+from .utils import HeaderManager, extract_assistant_text, filter_unsafe_headers
 
 logger = logging.getLogger(__name__)
-
-
-class WorkloadType(Enum):
-    """Available workload types."""
-
-    REASONING = "reasoning"
-    TTFT_CONTENT = "ttft_content"
-    TOKENS_PER_SECOND = "tokens_per_second"
-    PROGRAMMING = "programming"
-    CLASSIFICATION = "classification"
-    UTILITY = "utility"
-
-
-@dataclass
-class EndpointConfig:
-    """Endpoint configuration."""
-
-    name: str
-    url: str
-    viable_models: List[str]
-    gpu: Optional[str] = None
-    vram: Optional[str] = None
-    cpu: Optional[str] = None
-    ram: Optional[str] = None
-    soc: Optional[str] = None
-
-
-@dataclass
-class RouteDecision:
-    """Routing decision result."""
-
-    endpoint: str
-    confidence: float
-    reason: str
-    workload_type: WorkloadType
-
-
-class WorkloadClassifier:
-    """Classifies text to determine appropriate workload type."""
-
-    async def classify_with_llm(
-        self, text: str, classification_endpoint_url: str
-    ) -> Optional[WorkloadType]:
-        """Use LLM to classify workload type."""
-        try:
-            system_prompt = """
-You are a classifier only, and your job is to classify the request into exactly ONE of the following categories:
-- reasoning
-- programming
-- tokens_per_second
-- ttft_content
-
-Rules:
-- If the request needs multi-step thinking, analysis, or comparing trade-offs → reasoning
-- If the request asks to write, debug, or explain code → programming
-- If the request expects a long or detailed output with minimal reasoning/programming → tokens_per_second
-- Otherwise (simple Q&A, general chat, basic requests) → ttft_content
-
-Examples:
-- "Compare <service A> vs <service B> for cost efficiency." → reasoning
-- "Analyze the pros and cons of <option 1> and <option 2>." → reasoning
-
-- "Write <programming language> to parse <log format>." → programming
-- "Implement <programming language> function to <task>." → programming
-
-- "Explain <topic> in detail (without code or comparisons)." → tokens_per_second
-- "Describe <topic> comprehensively (without trade-offs)." → tokens_per_second
-
-- "What is the capital of <country>?" → ttft_content
-- "Define <term>." → ttft_content
-
-Pick only ONE of the four categories, the MOST LIKELY based on the rules above.
-
-Respond with ONLY the category name and nothing else.
-"""
-
-            payload = {
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": text},
-                ],
-                "model": "classification",
-                "max_tokens": 20,
-                "temperature": 0.1,
-                "stream": False,
-            }
-
-            with CallMetrics(label="Routing classification", metadata={"endpoint": classification_endpoint_url}) as call:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    headers = HeaderManager.create_auth_headers()
-                    headers["Content-Type"] = "application/json"
-
-                    response = await client.post(
-                        classification_endpoint_url, json=payload, headers=headers
-                    )
-                    response.raise_for_status()
-
-                    result = response.json()
-                    call.metadata.update(llm_response_metadata(result))
-                    if "choices" in result and result["choices"]:
-                        content = (
-                            result["choices"][0]
-                            .get("message", {})
-                            .get("content", "")
-                            .strip()
-                            .lower()
-                        )
-
-                        for workload_type in WorkloadType:
-                            if workload_type.value in content:
-                                return workload_type
-
-        except (httpx.RequestError, httpx.HTTPStatusError, KeyError) as e:
-            logger.warning("LLM classification failed: %s", e)
-
-        return None
+WORKLOADS = {"utility", "complex", "responsive", "vision"}
 
 
 class LLMRouter:
-    """Main LLM router for endpoint selection."""
+    def __init__(self, config: dict):
+        self.endpoints = {
+            name: {**endpoint, "name": name, "url": endpoint["url"].rstrip("/")}
+            for name, endpoint in config.get("endpoints", {}).items()
+        }
+        self.workloads = config.get("workloads", {})
+        for workload, names in self.workloads.items():
+            if workload not in WORKLOADS or not isinstance(names, list):
+                raise ValueError(f"Invalid workload preference: {workload}")
+            if unknown := set(names) - self.endpoints.keys():
+                raise ValueError(f"Unknown endpoints in {workload}: {sorted(unknown)}")
+        self._catalogues = {}
+        self._locks = {}
 
-    def __init__(self, config_path: str = "config.yaml"):
-        """Initialize router with configuration."""
-        self.config_path = Path(config_path)
-        self.endpoints: Dict[str, EndpointConfig] = {}
-        self.workload_preferences: Dict[WorkloadType, List[str]] = {}
-        self.classifier = WorkloadClassifier()
-        self._load_config()
+    async def models(self, url: str, *, refresh: bool = False) -> list[dict]:
+        """Cache successes and failures; endpoints sharing a URL share one probe."""
+        async with self._locks.setdefault(url, asyncio.Lock()):
+            cached = self._catalogues.get(url)
+            if refresh or cached is None or monotonic() - cached[0] >= 30:
+                try:
+                    async with (
+                        asyncio.timeout(2),
+                        httpx.AsyncClient(timeout=2) as client,
+                    ):
+                        response = await client.get(
+                            f"{url}/v1/models",
+                            headers=HeaderManager.create_auth_headers(),
+                        )
+                        response.raise_for_status()
+                        data = response.json()
+                        models = data if isinstance(data, list) else data["data"]
+                        if not isinstance(models, list):
+                            raise ValueError("Model catalogue must be a list")
+                        result = list(
+                            {
+                                m["id"]: m
+                                for m in models
+                                if isinstance(m, dict)
+                                and isinstance(m.get("id"), str)
+                                and m["id"]
+                            }.values()
+                        )
+                except (
+                    httpx.HTTPError,
+                    TimeoutError,
+                    ValueError,
+                    KeyError,
+                    TypeError,
+                ) as exc:
+                    result = exc
+                cached = self._catalogues[url] = (monotonic(), result)
+            if isinstance(cached[1], Exception):
+                raise cached[1]
+            return cached[1]
 
-    def _load_config(self):
-        """Load configuration from YAML file."""
-        with self.config_path.open("r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
+    async def resolve(
+        self, name: str, *, model: str | None = None, refresh=False
+    ) -> dict:
+        if name not in self.endpoints:
+            raise HTTPException(404, f"Endpoint not found: {name}")
+        endpoint = self.endpoints[name]
+        preferred = model or endpoint.get("model")
+        try:
+            models = await self.models(endpoint["url"], refresh=refresh)
+        except (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+            if preferred:
+                logger.warning(
+                    "Discovery failed for %s; trying configured model: %s", name, exc
+                )
+                return {**endpoint, "model": preferred}
+            raise HTTPException(
+                503, f"Cannot discover model for {name}: {exc}"
+            ) from exc
+        ids = [m["id"] for m in models]
+        if preferred in ids:
+            return {**endpoint, "model": preferred}
+        if not model and len(ids) == 1:
+            if preferred:
+                logger.warning(
+                    "Model %s missing on %s; using %s", preferred, name, ids[0]
+                )
+            return {**endpoint, "model": ids[0]}
+        raise HTTPException(
+            409 if ids else 503,
+            f"Configure an explicit advertised model for {name}; available models: {ids}",
+        )
 
-        # Load endpoints
-        for ep_config in config.get("endpoints", []):
-            endpoint = EndpointConfig(
-                name=ep_config["name"],
-                url=ep_config["url"],
-                viable_models=ep_config.get("viable_models", []),
-                gpu=ep_config.get("gpu"),
-                vram=ep_config.get("vram"),
-                cpu=ep_config.get("cpu"),
-                ram=ep_config.get("ram"),
-                soc=ep_config.get("soc"),
-            )
-            self.endpoints[endpoint.name] = endpoint
-
-        # Load workload preferences
-        for workload_config in config.get("workloads", []):
-            workload_type = WorkloadType(workload_config["type"])
-            self.workload_preferences[workload_type] = workload_config[
-                "endpoint_preference"
-            ]
-
-    async def route_request(
+    @asynccontextmanager
+    async def request(
         self,
-        text: str,
-        reachable_endpoints: List[str],
-        workload_type: Optional[WorkloadType] = None,
-    ) -> RouteDecision:
-        """Route request to best endpoint."""
-        # Determine workload type if not provided
-        if workload_type is None:
-            workload_type = await self._classify_workload(text, reachable_endpoints)
-
-        # Get preferred endpoints for this workload type
-        preferred_endpoints = self.workload_preferences.get(workload_type, [])
-
-        # Keep only reachable endpoints
-        available_preferred = [
-            ep for ep in preferred_endpoints
-            if ep in reachable_endpoints and ep in self.endpoints
-        ]
-
-        # Select endpoint with fallback logic
-        if available_preferred:
-            selected_endpoint_name = available_preferred[0]
-            reason = f"Selected preferred endpoint for {workload_type.value} workload"
-        elif workload_type == WorkloadType.UTILITY:
-            raise RuntimeError("No reachable endpoints configured for utility workload")
-        elif reachable_endpoints:
-            # Fallback to any reachable endpoint
-            selected_endpoint_name = reachable_endpoints[0]
-            reason = f"No preferred endpoints available, using fallback for {workload_type.value} workload"
-        else:
-            # No endpoints available at all
-            raise RuntimeError("No reachable endpoints available")
-
-        selected_endpoint = self.endpoints[selected_endpoint_name]
-
-        return RouteDecision(
-            endpoint=selected_endpoint.name,
-            confidence=0.9 if available_preferred else 0.5,
-            reason=reason,
-            workload_type=workload_type,
+        body,
+        *,
+        endpoint=None,
+        workload_type=None,
+        headers=None,
+        timeout=120,
+        before_request=None,
+    ):
+        """Fail over only before yielding a successful response, including for SSE."""
+        if endpoint and workload_type:
+            raise ValueError("Specify endpoint or workload_type, not both")
+        names = [endpoint] if endpoint else self.workloads.get(workload_type, [])
+        failures = {}
+        upstream_headers = filter_unsafe_headers(dict(headers or {}))
+        upstream_headers.update(HeaderManager.create_auth_headers())
+        upstream_headers["Content-Type"] = "application/json"
+        if body.get("stream"):
+            upstream_headers["Accept"] = "text/event-stream"
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            for name in names:
+                for attempt in range(2):
+                    async with AsyncExitStack() as stack:
+                        try:
+                            target = await self.resolve(
+                                name, model=body.get("model"), refresh=bool(attempt)
+                            )
+                            payload = {**body, "model": target["model"]}
+                            if before_request:
+                                await before_request(target, payload)
+                            url = target["url"] + "/v1/chat/completions"
+                            if body.get("stream"):
+                                response = await stack.enter_async_context(
+                                    client.stream(
+                                        "POST",
+                                        url,
+                                        json=payload,
+                                        headers=upstream_headers,
+                                    )
+                                )
+                            else:
+                                response = await client.post(
+                                    url, json=payload, headers=upstream_headers
+                                )
+                            if response.status_code >= 400:
+                                await response.aread()
+                                if (
+                                    _model_rejected(response)
+                                    and not body.get("model")
+                                    and not attempt
+                                ):
+                                    continue
+                            response.raise_for_status()
+                        except HTTPException as exc:
+                            if endpoint:
+                                raise
+                            failures[name] = exc.detail
+                            break
+                        except (httpx.HTTPError, TimeoutError) as exc:
+                            if isinstance(exc, httpx.HTTPStatusError):
+                                status = exc.response.status_code
+                                if (
+                                    status != 429
+                                    and status < 500
+                                    and not _model_rejected(exc.response)
+                                ):
+                                    raise
+                            if endpoint:
+                                raise
+                            failures[name] = str(exc)
+                            break
+                        # Deliberately outside the retry handler: stream failures never replay.
+                        yield target, response
+                        return
+        raise HTTPException(
+            503,
+            {
+                "message": f"No usable endpoint for {workload_type}",
+                "endpoints": failures,
+            },
         )
 
-    async def _classify_workload(
-        self, text: str, reachable_endpoints: List[str]
-    ) -> WorkloadType:
-        """Classify text to determine workload type."""
-        # Try LLM classification first with fastest endpoint
-        fastest_endpoint = self._get_fastest_endpoint(reachable_endpoints)
-        logger.info("Fastest endpoint for classification: %s", fastest_endpoint)
-        if fastest_endpoint:
-            classification_url = f"{fastest_endpoint.url}/v1/chat/completions"
-            llm_result = await self.classifier.classify_with_llm(
-                text, classification_url
+    async def complete(self, payload: dict, *, timeout: float = 7) -> dict:
+        """Injected utility completion callback; callers own parsing and telemetry."""
+        async with asyncio.timeout(timeout):
+            async with self.request(
+                payload,
+                workload_type="utility",
+                timeout=httpx.Timeout(timeout, connect=min(timeout, 2)),
+            ) as (target, response):
+                return {**response.json(), "endpoint": target["name"]}
+
+    async def classify(self, messages: list[dict]) -> str:
+        if has_images(messages):
+            return "vision"
+        content = next(
+            (
+                m.get("content", "")
+                for m in reversed(messages)
+                if m.get("role") == "user"
+            ),
+            "",
+        )
+        if isinstance(content, list):
+            content = "\n".join(
+                p.get("text", "") for p in content if isinstance(p, dict)
             )
-            if llm_result:
-                return llm_result
+        try:
+            with CallMetrics(label="Routing classification") as call:
+                data = await self.complete(
+                    {
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": "Classify the request. Reply complex for reasoning, analysis, or programming; otherwise responsive. Reply with one word only.",
+                            },
+                            {"role": "user", "content": content},
+                        ],
+                        "max_tokens": 20,
+                        "temperature": 0,
+                        "reasoning_effort": "none",
+                        "stream": False,
+                    },
+                    timeout=10,
+                )
+                call.metadata.update(llm_response_metadata(data))
+                call.metadata["endpoint"] = data["endpoint"]
+                result = (extract_assistant_text(data) or "").strip().lower()
+                if result in {"complex", "responsive"}:
+                    return result
+                call.on_error("Invalid classification")
+        except (
+            httpx.HTTPError,
+            HTTPException,
+            TimeoutError,
+            ValueError,
+            KeyError,
+            TypeError,
+        ):
+            logger.warning("Classification failed; using responsive", exc_info=True)
+        return "responsive"
 
-        # Fallback to tokens_per_second if classification fails
-        return WorkloadType.TOKENS_PER_SECOND
+    async def list_models(self) -> dict:
+        errors = {}
 
-    def _get_fastest_endpoint(
-        self, reachable_endpoints: List[str]
-    ) -> Optional[EndpointConfig]:
-        """Get fastest endpoint for classification using reachable endpoints and classification preferences."""
-        # Get classification endpoint preferences from config
-        classification_preferences = self.workload_preferences.get(
-            WorkloadType.CLASSIFICATION, []
+        async def collect(name):
+            try:
+                target = await self.resolve(name)
+                try:
+                    advertised = await self.models(target["url"])
+                except (
+                    httpx.HTTPError,
+                    TimeoutError,
+                    ValueError,
+                    KeyError,
+                    TypeError,
+                ) as exc:
+                    advertised = []
+                    errors[name] = str(exc)
+                metadata = next(
+                    (m for m in advertised if m["id"] == target["model"]), {}
+                )
+                return {
+                    **metadata,
+                    **{
+                        k: v
+                        for k, v in target.items()
+                        if k in {"gpu", "vram", "soc", "cpu", "ram"}
+                    },
+                    "id": target["model"],
+                    "object": "model",
+                    "endpoint": name,
+                    "endpoint_url": target["url"],
+                }
+            except HTTPException as exc:
+                errors[name] = exc.detail
+
+        models = await asyncio.gather(*(collect(name) for name in self.endpoints))
+        return {"object": "list", "data": [m for m in models if m], "errors": errors}
+
+
+def has_images(messages: list[dict]) -> bool:
+    return any(
+        isinstance(m.get("content"), list)
+        and any(
+            isinstance(part, dict)
+            and part.get("type") in {"image", "image_url", "input_image"}
+            for part in m["content"]
         )
-
-        # Find first endpoint that is both preferred for classification and reachable
-        for preferred_endpoint in classification_preferences:
-            if (
-                preferred_endpoint in reachable_endpoints
-                and preferred_endpoint in self.endpoints
-            ):
-                return self.endpoints[preferred_endpoint]
-
-        # Fallback: use first reachable endpoint
-        for endpoint_name in reachable_endpoints:
-            if endpoint_name in self.endpoints:
-                return self.endpoints[endpoint_name]
-
-        # Last resort: any configured endpoint
-        return next(iter(self.endpoints.values()), None)
-
-    def get_endpoint_by_name(self, name: str) -> Optional[EndpointConfig]:
-        """Get endpoint by name."""
-        return self.endpoints.get(name)
-
-    def list_endpoints(self) -> List[str]:
-        """List all endpoint names."""
-        return list(self.endpoints.keys())
+        for m in messages
+    )
 
 
-# Global router instance
-_router_instance: Optional[LLMRouter] = None
-
-
-def get_router() -> LLMRouter:
-    """Get global router instance."""
-    # Using global is necessary for singleton pattern
-    global _router_instance  # noqa: PLW0603
-    if _router_instance is None:
-        _router_instance = LLMRouter()
-    return _router_instance
-
-
-def reset_router():
-    """Reset global router instance."""
-    # Using global is necessary for singleton pattern
-    global _router_instance  # noqa: PLW0603
-    _router_instance = None
-
-
-async def resolve_workload_endpoint(workload_type: str) -> EndpointConfig:
-    """Resolve a known workload using discovery, without LLM classification."""
-    from . import proxy_services as services
-
-    workload = WorkloadType(workload_type)
-    if not services.reachable_endpoints:
-        from .proxy import list_models
-
-        await list_models()
-    router = get_router()
-    decision = await router.route_request("", services.reachable_endpoints, workload)
-    return router.endpoints[decision.endpoint]
-
-
-async def resolve_workload_url(workload_type: str) -> str:
-    """Resolve an upstream root URL for search's workload-aware LLM calls."""
-    return (await resolve_workload_endpoint(workload_type)).url
+def _model_rejected(response: httpx.Response) -> bool:
+    if response.status_code not in {400, 404, 422}:
+        return False
+    text = response.text.lower()
+    return "model" in text and any(
+        term in text
+        for term in (
+            "not found",
+            "not_found",
+            "unknown",
+            "does not exist",
+            "not loaded",
+            "invalid model",
+        )
+    )

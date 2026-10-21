@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from typing import Optional, Protocol
 
-WorkloadEndpointResolver = Callable[[str], Awaitable[str]]
+LLMCompletion = Callable[..., Awaitable[dict]]
 
 
 @dataclass(slots=True)

@@ -1,463 +1,298 @@
-"""
-Test suite for LLM router functionality.
-"""
+import asyncio
+import json
 
-from unittest.mock import AsyncMock, Mock, patch
-
+import httpx
 import pytest
+from fastapi import HTTPException
 
-from src.orchestrator.llm_router import (
-    EndpointConfig,
-    LLMRouter,
-    RouteDecision,
-    WorkloadClassifier,
-    WorkloadType,
-    get_router,
-    reset_router,
-    resolve_workload_endpoint,
-)
-from src.orchestrator import llm_router as router_module, proxy_services, proxy
+from src.orchestrator.llm_router import LLMRouter
+from src.llm_metrics import capture_llm_calls
 
 
 @pytest.fixture
-def mock_config():
-    """Mock configuration data."""
-    return {
-        "endpoints": [
-            {
-                "name": "hrpc-cisr-hpc",
-                "url": "https://llm-hrpc-cisr-hpc.paperclips.dev",
-                "gpu": "NVIDIA GeForce RTX 5060 Ti 16GB",
-                "vram": "16GB",
-                "cpu": "Intel Core Ultra 9 285K",
-                "ram": "192GB",
-                "viable_models": ["gpt-oss-20b", "deepseek-r1-0528-qwen3-8b"],
+def router():
+    return LLMRouter(
+        {
+            "endpoints": {
+                "fast": {"url": "https://fast.local", "model": "configured"},
+                "strong": {"url": "https://strong.local"},
             },
-            {
-                "name": "mac-mini",
-                "url": "https://llm-mac-mini.paperclips.dev",
-                "soc": "Apple M4",
-                "ram": "16GB",
-                "viable_models": ["qwen3-4b-2507"],
+            "workloads": {
+                "utility": ["fast", "strong"],
+                "complex": ["strong", "fast"],
+                "responsive": ["fast", "strong"],
+                "vision": ["strong"],
             },
-            {
-                "name": "evo-x2-primary",
-                "url": "https://llm-evo-x2.paperclips.dev",
-                "soc": "AMD Ryzen AI Max+ 395",
-                "ram": "128GB",
-                "viable_models": ["gpt-oss-120b", "Llama-3.3-70B-Instruct"],
-            },
-        ],
-        "workloads": [
-            {
-                "type": "reasoning",
-                "endpoint_preference": ["evo-x2-primary", "hrpc-cisr-hpc", "mac-mini"],
-            },
-            {
-                "type": "programming",
-                "endpoint_preference": ["evo-x2-primary", "hrpc-cisr-hpc", "mac-mini"],
-            },
-            {
-                "type": "ttft_content",
-                "endpoint_preference": ["mac-mini", "hrpc-cisr-hpc", "evo-x2-primary"],
-            },
-            {
-                "type": "tokens_per_second",
-                "endpoint_preference": ["hrpc-cisr-hpc", "mac-mini", "evo-x2-primary"],
-            },
-        ],
-    }
-
-
-@pytest.fixture
-def mock_endpoints():
-    """Mock endpoint configurations for testing."""
-    return {
-        "hrpc-cisr-hpc": EndpointConfig(
-            name="hrpc-cisr-hpc",
-            url="https://llm-hrpc-cisr-hpc.paperclips.dev",
-            viable_models=["gpt-oss-20b", "deepseek-r1-0528-qwen3-8b"],
-            gpu="NVIDIA GeForce RTX 5060 Ti 16GB",
-            vram="16GB",
-            cpu="Intel Core Ultra 9 285K",
-            ram="192GB",
-        ),
-        "mac-mini": EndpointConfig(
-            name="mac-mini",
-            url="https://llm-mac-mini.paperclips.dev",
-            viable_models=["qwen3-4b-2507"],
-            soc="Apple M4",
-            ram="16GB",
-        ),
-        "evo-x2-primary": EndpointConfig(
-            name="evo-x2-primary",
-            url="https://llm-evo-x2.paperclips.dev",
-            viable_models=["gpt-oss-120b", "Llama-3.3-70B-Instruct"],
-            soc="AMD Ryzen AI Max+ 395",
-            ram="128GB",
-        ),
-    }
-
-
-@pytest.fixture
-def workload_preferences():
-    """Mock workload preferences."""
-    return {
-        WorkloadType.REASONING: ["evo-x2-primary", "hrpc-cisr-hpc", "mac-mini"],
-        WorkloadType.PROGRAMMING: ["evo-x2-primary", "hrpc-cisr-hpc", "mac-mini"],
-        WorkloadType.TTFT_CONTENT: ["mac-mini", "hrpc-cisr-hpc", "evo-x2-primary"],
-        WorkloadType.TOKENS_PER_SECOND: ["hrpc-cisr-hpc", "mac-mini", "evo-x2-primary"],
-    }
-
-
-@pytest.fixture
-def llm_router(mock_config):
-    """Create an LLMRouter instance with mocked configuration."""
-    with patch("yaml.safe_load", return_value=mock_config):
-        with patch("pathlib.Path.open"):
-            return LLMRouter()
-
-
-@pytest.fixture
-def workload_classifier():
-    """Create a WorkloadClassifier instance."""
-    return WorkloadClassifier()
-
-
-class TestWorkloadClassifier:
-    """Tests for the WorkloadClassifier class."""
-
-    @pytest.mark.asyncio
-    async def test_classify_programming_patterns(self, workload_classifier):
-        """Test classification of programming-related text using LLM."""
-        programming_case = "Write a Python function to sort a list"
-
-        with patch("httpx.AsyncClient") as mock_client_class:
-            mock_client = AsyncMock()
-            mock_response = Mock()
-            mock_response.json.return_value = {
-                "choices": [{"message": {"content": "programming"}}]
-            }
-            mock_response.raise_for_status = Mock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_client_class.return_value.__aenter__.return_value = mock_client
-
-            result = await workload_classifier.classify_with_llm(
-                programming_case, "https://test.example.com/v1/chat/completions"
-            )
-            assert result == WorkloadType.PROGRAMMING
-
-    @pytest.mark.asyncio
-    async def test_classify_reasoning_patterns(self, workload_classifier):
-        """Test classification of reasoning-intensive text using LLM."""
-        reasoning_case = "Analyze the economic impact of inflation step by step"
-
-        with patch("httpx.AsyncClient") as mock_client_class:
-            mock_client = AsyncMock()
-            mock_response = Mock()
-            mock_response.json.return_value = {
-                "choices": [{"message": {"content": "reasoning"}}]
-            }
-            mock_response.raise_for_status = Mock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_client_class.return_value.__aenter__.return_value = mock_client
-
-            result = await workload_classifier.classify_with_llm(
-                reasoning_case, "https://test.example.com/v1/chat/completions"
-            )
-            assert result == WorkloadType.REASONING
-
-    @pytest.mark.asyncio
-    async def test_classify_default_content(self, workload_classifier):
-        """Test that simple content can be classified as TTFT_CONTENT."""
-        simple_case = "Hello, good morning!"
-
-        with patch("httpx.AsyncClient") as mock_client_class:
-            mock_client = AsyncMock()
-            mock_response = Mock()
-            mock_response.json.return_value = {
-                "choices": [{"message": {"content": "ttft_content"}}]
-            }
-            mock_response.raise_for_status = Mock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_client_class.return_value.__aenter__.return_value = mock_client
-
-            result = await workload_classifier.classify_with_llm(
-                simple_case, "https://test.example.com/v1/chat/completions"
-            )
-            assert result == WorkloadType.TTFT_CONTENT
-
-    @pytest.mark.asyncio
-    async def test_llm_classification_success(self, workload_classifier):
-        """Test successful LLM classification."""
-        with patch("httpx.AsyncClient") as mock_client_class:
-            mock_client = AsyncMock()
-            mock_response = Mock()
-            mock_response.json.return_value = {
-                "choices": [{"message": {"content": "programming task detected"}}]
-            }
-            mock_response.raise_for_status = Mock()
-            mock_client.post.return_value = mock_response
-            mock_client_class.return_value.__aenter__.return_value = mock_client
-
-            result = await workload_classifier.classify_with_llm(
-                "Write a function", "https://test.com/api"
-            )
-
-            assert result == WorkloadType.PROGRAMMING
-
-    @pytest.mark.asyncio
-    async def test_llm_classification_failure(self, workload_classifier):
-        """Test LLM classification failure handling."""
-        with patch("httpx.AsyncClient") as mock_client_class:
-            import httpx
-
-            mock_client = Mock()
-            mock_client.post.side_effect = httpx.HTTPStatusError(
-                "404 Not Found", request=Mock(), response=Mock(status_code=404)
-            )
-            mock_client_class.return_value.__aenter__.return_value = mock_client
-
-            result = await workload_classifier.classify_with_llm(
-                "test text", "https://test.com/api"
-            )
-
-            assert result is None
-
-
-class TestLLMRouter:
-    """Tests for the main LLMRouter class."""
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(("reachable", "expected"), [
-        (["mac-mini", "hrpc-cisr-hpc"], "hrpc-cisr-hpc"),
-        (["mac-mini"], "mac-mini"),
-        (["evo-x2-primary"], None),
-        ([], None),
-    ])
-    async def test_explicit_utility_routing_uses_only_its_preference_list(
-        self, llm_router, monkeypatch, reachable, expected,
-    ):
-        llm_router.workload_preferences[WorkloadType.UTILITY] = ["hrpc-cisr-hpc", "mac-mini"]
-        classifier = AsyncMock(side_effect=AssertionError("utility must not be classified"))
-        llm_router.classifier.classify_with_llm = classifier
-        monkeypatch.setattr(router_module, "get_router", lambda: llm_router)
-        monkeypatch.setattr(proxy_services, "reachable_endpoints", reachable)
-        discovery = AsyncMock()
-        monkeypatch.setattr(proxy, "list_models", discovery)
-
-        if expected is None:
-            with pytest.raises(RuntimeError, match="No reachable endpoints configured for utility"):
-                await resolve_workload_endpoint("utility")
-        else:
-            result = await resolve_workload_endpoint("utility")
-            assert result.name == expected
-            assert result.url == llm_router.endpoints[expected].url
-        classifier.assert_not_awaited()
-        assert discovery.await_count == (0 if reachable else 1)
-
-    @pytest.mark.asyncio
-    async def test_workload_resolution_initializes_discovery(self, llm_router, monkeypatch):
-        llm_router.workload_preferences[WorkloadType.UTILITY] = ["hrpc-cisr-hpc", "mac-mini"]
-        monkeypatch.setattr(router_module, "get_router", lambda: llm_router)
-        monkeypatch.setattr(proxy_services, "reachable_endpoints", [])
-
-        async def discover():
-            proxy_services.reachable_endpoints = ["mac-mini"]
-
-        monkeypatch.setattr(proxy, "list_models", AsyncMock(side_effect=discover))
-        assert (await resolve_workload_endpoint("utility")).name == "mac-mini"
-
-    def test_load_config(self, llm_router):
-        """Test that configuration is loaded correctly."""
-        assert len(llm_router.endpoints) == 3
-        assert "hrpc-cisr-hpc" in llm_router.endpoints
-        assert "mac-mini" in llm_router.endpoints
-        assert "evo-x2-primary" in llm_router.endpoints
-
-        assert len(llm_router.workload_preferences) == 4
-        assert WorkloadType.REASONING in llm_router.workload_preferences
-        assert WorkloadType.PROGRAMMING in llm_router.workload_preferences
-
-    @pytest.mark.asyncio
-    async def test_route_reasoning_request(self, llm_router):
-        """Test routing a reasoning request."""
-        reachable = ["hrpc-cisr-hpc", "mac-mini", "evo-x2-primary"]
-        decision = await llm_router.route_request(
-            "Analyze this complex problem step by step",
-            reachable,
-            WorkloadType.REASONING,
-        )
-
-        assert decision.endpoint == "evo-x2-primary"  # First in reasoning preferences
-        assert decision.workload_type == WorkloadType.REASONING
-        assert decision.confidence == 0.9
-        assert "reasoning workload" in decision.reason
-
-    @pytest.mark.asyncio
-    async def test_route_programming_request(self, llm_router):
-        """Test routing a programming request."""
-        reachable = ["hrpc-cisr-hpc", "mac-mini", "evo-x2-primary"]
-        decision = await llm_router.route_request(
-            "Write a Python function to parse JSON", reachable, WorkloadType.PROGRAMMING
-        )
-
-        assert decision.endpoint == "evo-x2-primary"  # First in programming preferences
-        assert decision.workload_type == WorkloadType.PROGRAMMING
-        assert decision.confidence == 0.9
-        assert "programming workload" in decision.reason
-
-    @pytest.mark.asyncio
-    async def test_route_content_request(self, llm_router):
-        """Test routing a simple content request."""
-        reachable = ["hrpc-cisr-hpc", "mac-mini", "evo-x2-primary"]
-        decision = await llm_router.route_request(
-            "Tell me a joke", reachable, WorkloadType.TTFT_CONTENT
-        )
-
-        assert decision.endpoint == "mac-mini"  # First in content preferences
-        assert decision.workload_type == WorkloadType.TTFT_CONTENT
-        assert decision.confidence == 0.9
-        assert "ttft_content workload" in decision.reason
-
-    @pytest.mark.asyncio
-    async def test_route_with_explicit_workload(self, llm_router):
-        """Test routing with explicitly specified workload type."""
-        reachable = ["hrpc-cisr-hpc", "mac-mini", "evo-x2-primary"]
-        decision = await llm_router.route_request(
-            "Hello world", reachable, workload_type=WorkloadType.TOKENS_PER_SECOND
-        )
-
-        assert (
-            decision.endpoint == "hrpc-cisr-hpc"
-        )  # First in tokens_per_second preferences
-        assert decision.workload_type == WorkloadType.TOKENS_PER_SECOND
-        assert decision.confidence == 0.9
-
-    @pytest.mark.asyncio
-    async def test_route_evo_x2_primary_secondary_preferences(self):
-        """Test routing with distinct Evo X2 primary/secondary endpoint ids."""
-        config = {
-            "endpoints": [
-                {
-                    "name": "evo-x2-primary",
-                    "url": "https://llm-evo-x2.paperclips.dev",
-                    "soc": "AMD Ryzen AI Max+ 395",
-                    "ram": "128GB",
-                },
-                {
-                    "name": "evo-x2-utility",
-                    "url": "https://llm-evo-x2-utility.paperclips.dev",
-                    "soc": "AMD Ryzen AI Max+ 395",
-                    "ram": "128GB",
-                },
-            ],
-            "workloads": [
-                {
-                    "type": "reasoning",
-                    "endpoint_preference": [
-                        "evo-x2-primary",
-                        "evo-x2-utility",
-                    ],
-                }
-            ],
         }
-        with patch("yaml.safe_load", return_value=config), patch("pathlib.Path.open"):
-            router = LLMRouter()
+    )
 
-        decision = await router.route_request(
-            "Analyze this problem",
-            ["evo-x2-utility", "evo-x2-primary"],
-            WorkloadType.REASONING,
+
+def catalogue(*ids):
+    return httpx.Response(200, json={"data": [{"id": name} for name in ids]})
+
+
+def completion(text="OK", model="served"):
+    return httpx.Response(
+        200, json={"model": model, "choices": [{"message": {"content": text}}]}
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("configured", "advertised", "selected"),
+    [
+        ("chosen", ["chosen", "other"], "chosen"),
+        (None, ["only"], "only"),
+        ("stale", ["only"], "only"),
+    ],
+)
+async def test_model_resolution(router, http_backend, configured, advertised, selected):
+    router.endpoints["fast"]["model"] = configured
+    requests = http_backend(
+        lambda r: catalogue(*advertised) if r.method == "GET" else completion()
+    )
+    await router.complete({"messages": []})
+    assert json.loads(requests[-1].content)["model"] == selected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("advertised", [[], ["a", "b"]])
+async def test_unresolved_default_is_not_guessed(router, http_backend, advertised):
+    http_backend(lambda r: catalogue(*advertised))
+    with pytest.raises(HTTPException) as error:
+        await router.resolve("fast")
+    assert error.value.status_code == (409 if advertised else 503)
+    assert "available models" in error.value.detail
+
+
+@pytest.mark.asyncio
+async def test_explicit_request_model_is_never_replaced(router, http_backend):
+    requests = http_backend(lambda r: catalogue("served"))
+    with pytest.raises(HTTPException, match="advertised"):
+        async with router.request({"model": "requested"}, endpoint="fast"):
+            pytest.fail("Invalid explicit model must not generate")
+    assert all(r.method == "GET" for r in requests)
+
+
+@pytest.mark.asyncio
+async def test_shared_url_discovers_once_and_keeps_separate_models(
+    router, http_backend
+):
+    router.endpoints["strong"].update(url="https://fast.local", model="second")
+    requests = http_backend(lambda r: catalogue("configured", "second"))
+    listed = await router.list_models()
+    assert {m["endpoint"]: m["id"] for m in listed["data"]} == {
+        "fast": "configured",
+        "strong": "second",
+    }
+    assert len(requests) == 1
+    assert not listed["errors"]
+
+
+@pytest.mark.asyncio
+async def test_discovery_failure_tries_configured_model(router, http_backend):
+    def backend(request):
+        return httpx.Response(404) if request.method == "GET" else completion()
+
+    requests = http_backend(backend)
+    data = await router.complete({"messages": []})
+    assert data["endpoint"] == "fast"
+    assert json.loads(requests[-1].content)["model"] == "configured"
+
+
+@pytest.mark.asyncio
+async def test_rejected_model_refreshes_and_retries_once(router, http_backend):
+    probes = 0
+
+    def backend(request):
+        nonlocal probes
+        if request.method == "GET":
+            probes += 1
+            return catalogue("configured" if probes == 1 else "new")
+        model = json.loads(request.content)["model"]
+        return (
+            httpx.Response(404, json={"error": "model not found"})
+            if model == "configured"
+            else completion()
         )
-        assert decision.endpoint == "evo-x2-primary"
 
-        decision = await router.route_request(
-            "Analyze this problem",
-            ["evo-x2-utility"],
-            WorkloadType.REASONING,
+    requests = http_backend(backend)
+    assert (await router.complete({"messages": []}))["endpoint"] == "fast"
+    assert [json.loads(r.content)["model"] for r in requests if r.method == "POST"] == [
+        "configured",
+        "new",
+    ]
+    assert probes == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["connect", 429, 503, "ambiguous"])
+async def test_ordered_fallback(router, http_backend, failure):
+    def backend(request):
+        if request.method == "GET":
+            return (
+                catalogue("a", "b")
+                if failure == "ambiguous" and request.url.host == "fast.local"
+                else catalogue("served")
+            )
+        if request.url.host == "fast.local":
+            if failure == "connect":
+                raise httpx.ConnectError("offline", request=request)
+            return httpx.Response(failure)
+        return completion()
+
+    http_backend(backend)
+    assert (await router.complete({"messages": []}))["endpoint"] == "strong"
+
+
+@pytest.mark.asyncio
+async def test_request_errors_do_not_fail_over(router, http_backend):
+    requests = http_backend(
+        lambda r: (
+            catalogue("served")
+            if r.method == "GET"
+            else httpx.Response(400, json={"error": "invalid messages"})
         )
-        assert decision.endpoint == "evo-x2-utility"
-
-    def test_get_fastest_endpoint(self, llm_router):
-        """Test getting the fastest endpoint (prefers classification preferences)."""
-        reachable = ["hrpc-cisr-hpc", "mac-mini", "evo-x2-primary"]
-        fastest = llm_router._get_fastest_endpoint(reachable)
-        assert fastest is not None
-        assert fastest.name in reachable
-
-    def test_get_endpoint_by_name(self, llm_router):
-        """Test getting endpoint by name."""
-        endpoint = llm_router.get_endpoint_by_name("mac-mini")
-        assert endpoint is not None
-        assert endpoint.name == "mac-mini"
-
-        missing = llm_router.get_endpoint_by_name("nonexistent")
-        assert missing is None
-
-    def test_list_endpoints(self, llm_router):
-        """Test listing all endpoint names."""
-        endpoints = llm_router.list_endpoints()
-        expected = ["hrpc-cisr-hpc", "mac-mini", "evo-x2-primary"]
-        assert set(endpoints) == set(expected)
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        await router.complete({"messages": []})
+    assert all(r.url.host == "fast.local" for r in requests)
 
 
-class TestGlobalFunctions:
-    """Tests for global router functions."""
-
-    def test_get_router_singleton(self):
-        """Test that get_router returns the same instance."""
-        reset_router()  # Ensure clean state
-
-        router1 = get_router()
-        router2 = get_router()
-        assert router1 is router2
-
-    def test_reset_router(self):
-        """Test router reset functionality."""
-        router1 = get_router()
-        reset_router()
-        router2 = get_router()
-        assert router1 is not router2
+@pytest.mark.asyncio
+async def test_no_fallback_outside_preference_list(router, http_backend):
+    router.workloads["utility"] = []
+    requests = http_backend(lambda r: completion())
+    with pytest.raises(HTTPException) as exc:
+        await router.complete({"messages": []})
+    assert exc.value.status_code == 503
+    assert requests == []
 
 
-class TestDataClasses:
-    """Tests for data classes."""
+@pytest.mark.asyncio
+async def test_probe_timeout_is_bounded_and_other_endpoints_survive(
+    router, http_backend
+):
+    async def backend(request):
+        if request.url.host == "fast.local":
+            await asyncio.sleep(30)
+        return catalogue("served")
 
-    def test_endpoint_config_creation(self):
-        """Test creating an EndpointConfig instance."""
-        config = EndpointConfig(
-            name="test-endpoint",
-            url="https://test.com",
-            viable_models=["model1", "model2"],
-            gpu="NVIDIA RTX 4090",
-            vram="24GB",
+    http_backend(backend)
+    router.endpoints["fast"].pop("model")
+    async with asyncio.timeout(3):
+        listed = await router.list_models()
+    assert [m["endpoint"] for m in listed["data"]] == ["strong"]
+    assert "fast" in listed["errors"]
+
+
+@pytest.mark.asyncio
+async def test_discovery_cache_expires(router, http_backend, monkeypatch):
+    import src.orchestrator.llm_router as routing
+
+    now = 1
+    monkeypatch.setattr(routing, "monotonic", lambda: now)
+    requests = http_backend(lambda r: catalogue("served"))
+    await router.resolve("fast")
+    await router.resolve("fast")
+    assert len(requests) == 1
+    now += 31
+    await router.resolve("fast")
+    assert len(requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_shared_transport_sets_auth_and_actual_model(router, http_backend):
+    requests = http_backend(
+        lambda r: catalogue("actual") if r.method == "GET" else completion()
+    )
+    await router.complete({"messages": [], "reasoning_effort": "none"})
+    for request in requests:
+        assert request.headers["cf-access-client-id"] == "test-api-key-id"
+        assert request.headers["cf-access-client-secret"] == "test-api-secret"
+    assert json.loads(requests[-1].content)["reasoning_effort"] == "none"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        ("complex", "complex"),
+        ("responsive", "responsive"),
+        ("unexpected", "responsive"),
+    ],
+)
+async def test_classifier_uses_utility_and_disables_reasoning(
+    router, http_backend, answer, expected
+):
+    requests = http_backend(
+        lambda r: catalogue("actual") if r.method == "GET" else completion(answer)
+    )
+    with capture_llm_calls() as calls:
+        assert (
+            await router.classify([{"role": "user", "content": "write code"}])
+            == expected
         )
+    payload = json.loads(requests[-1].content)
+    assert requests[-1].url.host == "fast.local"
+    assert payload["reasoning_effort"] == "none"
+    assert payload["model"] == "actual"
+    assert len(calls) == 1
 
-        assert config.name == "test-endpoint"
-        assert config.url == "https://test.com"
-        assert config.viable_models == ["model1", "model2"]
-        assert config.gpu == "NVIDIA RTX 4090"
-        assert config.vram == "24GB"
-        assert config.soc is None  # Optional field
 
-    def test_route_decision_creation(self):
-        """Test creating a RouteDecision instance."""
-        decision = RouteDecision(
-            endpoint="test-endpoint",
-            confidence=0.95,
-            reason="Test reasoning",
-            workload_type=WorkloadType.REASONING,
+@pytest.mark.asyncio
+async def test_classifier_outage_falls_back_to_responsive(router, http_backend):
+    http_backend(lambda r: httpx.Response(503))
+    assert await router.classify([{"role": "user", "content": "hi"}]) == "responsive"
+
+
+def test_bad_config_references_fail_at_startup():
+    with pytest.raises(ValueError, match="Unknown endpoints"):
+        LLMRouter({"workloads": {"utility": ["missing"]}})
+
+
+@pytest.mark.asyncio
+async def test_stream_read_failure_after_success_never_tries_another_endpoint(
+    router, http_backend
+):
+    class BrokenStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+            raise httpx.ReadError("stream lost")
+
+    requests = http_backend(
+        lambda r: (
+            catalogue("served")
+            if r.method == "GET"
+            else httpx.Response(200, stream=BrokenStream())
         )
+    )
+    with pytest.raises(httpx.ReadError, match="stream lost"):
+        async with router.request({"stream": True}, workload_type="utility") as (
+            target,
+            response,
+        ):
+            assert target["name"] == "fast"
+            _ = [line async for line in response.aiter_lines()]
+    assert [r.url.host for r in requests if r.method == "POST"] == ["fast.local"]
 
-        assert decision.endpoint == "test-endpoint"
-        assert decision.confidence == 0.95
-        assert decision.reason == "Test reasoning"
-        assert decision.workload_type == WorkloadType.REASONING
 
-    def test_workload_type_enum(self):
-        """Test WorkloadType enum values."""
-        assert WorkloadType.REASONING.value == "reasoning"
-        assert WorkloadType.PROGRAMMING.value == "programming"
-        assert WorkloadType.TTFT_CONTENT.value == "ttft_content"
-        assert WorkloadType.TOKENS_PER_SECOND.value == "tokens_per_second"
+@pytest.mark.asyncio
+async def test_ambiguous_model_after_rejection_does_not_retry_a_guessed_model(
+    router, http_backend
+):
+    probes = 0
+
+    def backend(request):
+        nonlocal probes
+        if request.method == "GET":
+            probes += 1
+            return catalogue("configured") if probes == 1 else catalogue("a", "b")
+        return httpx.Response(404, json={"error": "model not found"})
+
+    requests = http_backend(backend)
+    with pytest.raises(HTTPException) as exc:
+        async with router.request({}, endpoint="fast"):
+            pytest.fail("Ambiguous replacement must not generate")
+    assert exc.value.status_code == 409
+    assert len([r for r in requests if r.method == "POST"]) == 1

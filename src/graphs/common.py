@@ -9,7 +9,6 @@ import jsonschema
 from src.llm_metrics import without_call_metrics
 
 from src.orchestrator.config import CONFIG_FILE, load_config
-from src.orchestrator.llm_router import resolve_workload_endpoint
 from src.orchestrator.repo_context import RepoContextClient, load_repo_context_config
 from src.orchestrator.runtime import (
     ProxyRuntimeLLMClient,
@@ -114,12 +113,9 @@ async def llm_text(
     max_output_tokens: int | None = None,
     use_retrieval: bool = True,
 ) -> dict[str, Any]:
-    target_endpoint = (
-        (await resolve_workload_endpoint(workload_type)).name
-        if workload_type else endpoint(config, default=default_endpoint)
-    )
     response = await LLM_CLIENT.complete(
-        endpoint=target_endpoint,
+        endpoint=None if workload_type else endpoint(config, default=default_endpoint),
+        workload_type=workload_type,
         prompt=prompt,
         conversation_id=thread_id(config),
         reasoning_effort=reasoning_effort(config),

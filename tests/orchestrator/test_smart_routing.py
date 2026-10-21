@@ -1,422 +1,238 @@
-"""
-Integration tests for smart routing endpoint.
-"""
+import json
 
-from unittest.mock import AsyncMock, Mock, patch
-
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from src.orchestrator import proxy_services as proxy_module
+from src.orchestrator import proxy_services as services
 from src.orchestrator.conversation_store import MemoryConversationStore
-from src.orchestrator.llm_router import RouteDecision, WorkloadType
+from src.orchestrator.llm_router import LLMRouter
 from src.orchestrator.proxy import app
 
 
 @pytest.fixture
-def client():
-    """FastAPI test client fixture."""
-    return TestClient(app)
-
-
-@pytest.fixture(autouse=True)
-def memory_conversation_store():
-    store = MemoryConversationStore()
-    proxy_module.set_conversation_store(store)
-    yield store
-    proxy_module.set_conversation_store(MemoryConversationStore())
-
-
-class _MockUpstreamResponse:
-    def __init__(self, payload):
-        import json
-
-        self._payload = payload
-        self.status_code = 200
-        self.headers = {}
-        self.content = json.dumps(payload).encode("utf-8")
-        self.text = self.content.decode("utf-8")
-
-    def raise_for_status(self):
-        return None
-
-    def json(self):
-        return self._payload
-
-
-@pytest.fixture
-def mock_route_decision():
-    """Mock route decision for testing."""
-    return RouteDecision(
-        endpoint="HRPC-CISR HPC",
-        confidence=0.8,
-        reason="Complex reasoning task detected",
-        workload_type=WorkloadType.REASONING,
+def routing(monkeypatch):
+    router = LLMRouter(
+        {
+            "endpoints": {
+                "fast": {"url": "https://fast.local", "model": "small"},
+                "strong": {
+                    "url": "https://strong.local",
+                    "model": "big",
+                    "soc": "test device",
+                },
+            },
+            "workloads": {
+                "utility": ["fast", "strong"],
+                "complex": ["strong", "fast"],
+                "responsive": ["fast", "strong"],
+                "vision": ["strong"],
+            },
+        }
     )
+    monkeypatch.setattr(services, "llm_router", router)
+    monkeypatch.setattr(services, "conversation_store", MemoryConversationStore())
+    return router
 
 
-class TestSmartRoutingEndpoint:
-    """Tests for the /smart endpoint functionality."""
-
-    def test_smart_route_no_messages(self, client):
-        """Test smart routing with no messages."""
-        payload = {"model": "test-model"}
-
-        response = client.post("/smart", json=payload)
-
-        assert response.status_code == 400
-        assert "No messages provided" in response.json()["detail"]
-
-    def test_smart_route_no_user_messages(self, client):
-        """Test smart routing with no user messages."""
-        payload = {
-            "messages": [{"role": "system", "content": "You are a helpful assistant"}]
-        }
-
-        response = client.post("/smart", json=payload)
-
-        assert response.status_code == 400
-        assert "No user messages found" in response.json()["detail"]
-
-    def test_smart_route_invalid_json(self, client):
-        """Test smart routing with invalid JSON."""
-        response = client.post(
-            "/smart",
-            content="invalid json",
-            headers={"content-type": "application/json"},
-        )
-
-        # FastAPI will raise 422 for invalid JSON, or 500 if it gets to our error handler
-        assert response.status_code in [400, 422, 500]
-
-    def test_smart_route_empty_body(self, client):
-        """Test smart routing with empty request body."""
-        response = client.post("/smart")
-
-        # Should return error status code
-        assert response.status_code >= 400
-
-    @patch("src.orchestrator.proxy.get_router")
-    def test_smart_route_router_error(self, mock_get_router, client):
-        """Test smart routing when router raises an exception."""
-        mock_router = Mock()
-        mock_router.route_request = AsyncMock(side_effect=Exception("Router error"))
-        mock_get_router.return_value = mock_router
-
-        payload = {"messages": [{"role": "user", "content": "Test message"}]}
-
-        response = client.post("/smart", json=payload)
-
-        assert response.status_code == 500
-        assert "Smart routing error" in response.json()["detail"]
-
-    @patch("src.orchestrator.proxy_services.reachable_endpoints", ["HRPC-CISR HPC"])
-    @patch("src.orchestrator.proxy.proxy_request")
-    @patch("src.orchestrator.proxy.get_router")
-    def test_smart_route_basic(
-        self, mock_get_router, mock_proxy, client, mock_route_decision
-    ):
-        """Test basic smart routing functionality."""
-        # Setup mocks
-        mock_router = Mock()
-        mock_router.route_request = AsyncMock(return_value=mock_route_decision)
-        mock_router.get_endpoint_by_name = Mock(return_value=None)
-        mock_get_router.return_value = mock_router
-
-        # Mock proxy_request to return a simple Response
-        from fastapi import Response
-
-        mock_proxy.return_value = Response(
-            content='{"test": "response"}', status_code=200
-        )
-
-        # Test payload
-        payload = {
-            "messages": [
-                {"role": "user", "content": "Analyze this complex problem step by step"}
-            ],
-            "model": "test-model",
-            "max_tokens": 100,
-        }
-
-        # Make request
-        response = client.post("/smart", json=payload)
-
-        # Verify router was called with reachable_endpoints
-        assert mock_router.route_request.called
-        call_args = mock_router.route_request.call_args[0]
-        assert "Analyze this complex problem step by step" in call_args
-
-        # Verify proxy was called with correct parameters
-        mock_proxy.assert_called_once()
-        args, kwargs = mock_proxy.call_args
-        assert args[0] == "HRPC-CISR HPC"  # endpoint
-
-        # Check routing headers exist
-        routing_headers = args[2] if len(args) > 2 else kwargs.get("extra_headers", {})
-        assert "X-Route-Decision" in routing_headers
-        assert routing_headers["X-Route-Decision"] == "HRPC-CISR HPC"
-
-        # Should get successful response
-        assert response.status_code == 200
-
-    @patch("src.orchestrator.proxy_services.reachable_endpoints", ["HRPC-CISR HPC"])
-    @patch("src.orchestrator.proxy.proxy_request")
-    @patch("src.orchestrator.proxy.get_router")
-    def test_smart_route_multiple_user_messages(
-        self, mock_get_router, mock_proxy, client, mock_route_decision
-    ):
-        """Test smart routing with multiple user messages uses the latest."""
-        mock_router = Mock()
-        mock_router.route_request = AsyncMock(return_value=mock_route_decision)
-        mock_router.get_endpoint_by_name = Mock(return_value=None)
-        mock_get_router.return_value = mock_router
-
-        from fastapi import Response
-
-        mock_proxy.return_value = Response(
-            content='{"test": "response"}', status_code=200
-        )
-
-        payload = {
-            "messages": [
-                {"role": "user", "content": "First message"},
-                {"role": "assistant", "content": "Response"},
-                {"role": "user", "content": "Latest user message for routing"},
-            ]
-        }
-
-        response = client.post("/smart", json=payload)
-
-        # Should use the latest user message for routing
-        assert mock_router.route_request.called
-        call_args = mock_router.route_request.call_args[0]
-        assert "Latest user message for routing" in call_args
-        assert response.status_code == 200
-
-    @patch("src.orchestrator.proxy_services.reachable_endpoints", ["Mac Mini", "HRPC-CISR HPC"])
-    @patch("src.orchestrator.proxy.proxy_request")
-    @patch("src.orchestrator.proxy.get_router")
-    def test_smart_route_reasoning_detection(self, mock_get_router, mock_proxy, client):
-        """Test that different message types trigger appropriate routing decisions."""
-        test_cases = [
-            {
-                "message": "What's 2+2?",
-                "expected_endpoint": "Mac Mini",  # Simple task
-                "expected_reason": "Simple task, using efficient endpoint",
+def upstream(classification="complex", failing=None):
+    def respond(request):
+        model = "small" if request.url.host == "fast.local" else "big"
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"id": model}]})
+        payload = json.loads(request.content)
+        classifier = payload.get("max_tokens") == 20
+        if failing == request.url.host and not classifier:
+            return httpx.Response(503)
+        if payload.get("stream"):
+            return httpx.Response(
+                200,
+                text='data: {"model":"'
+                + model
+                + '","choices":[{"delta":{"content":"answer"}}]}\n\ndata: [DONE]\n\n',
+            )
+        return httpx.Response(
+            200,
+            json={
+                "model": model,
+                "choices": [
+                    {"message": {"content": classification if classifier else "answer"}}
+                ],
             },
-            {
-                "message": "Think step by step about quantum mechanics",
-                "expected_endpoint": "HRPC-CISR HPC",  # Complex reasoning
-                "expected_reason": "Complex reasoning task detected",
-            },
+        )
+
+    return respond
+
+
+@pytest.mark.parametrize("path", ["/", "/smart", "/smart/v1/chat/completions"])
+def test_automatic_classification_and_actual_routing_metadata(
+    routing, http_backend, path
+):
+    requests = http_backend(upstream())
+    response = TestClient(app).post(
+        path, json={"messages": [{"role": "user", "content": "write code"}]}
+    )
+    assert response.status_code == 200
+    assert response.json()["model"] == "big"
+    assert response.headers["x-route-decision"] == "strong"
+    assert response.headers["x-route-strategy"] == "complex"
+    assert response.headers["x-route-soc"] == "test device"
+    assert "x-route-confidence" not in response.headers
+    assert [r.url.host for r in requests if r.method == "POST"] == [
+        "fast.local",
+        "strong.local",
+    ]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"messages": []},
+        {"messages": [{"role": "system", "content": "hi"}]},
+        {"messages": ["invalid"]},
+        [],
+    ],
+)
+def test_invalid_messages_are_rejected_before_upstream(routing, http_backend, payload):
+    requests = http_backend(upstream())
+    response = TestClient(app).post("/smart", json=payload)
+    assert response.status_code == 400
+    assert requests == []
+
+
+def test_invalid_json_is_rejected(routing):
+    assert TestClient(app).post("/smart", content="invalid").status_code == 400
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_fallback_uses_actual_endpoint_and_pins_only_success(
+    routing, http_backend, stream
+):
+    requests = http_backend(upstream(failing="strong.local"))
+    response = TestClient(app).post(
+        "/smart",
+        headers={"X-Conversation-ID": "fallback"},
+        json={
+            "stream": stream,
+            "messages": [{"role": "user", "content": "reason"}],
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["x-route-decision"] == "fast"
+    assert (
+        services.conversation_store.conversation_control_states["fallback"][
+            "route_endpoint"
         ]
-
-        from fastapi import Response
-
-        mock_proxy.return_value = Response(
-            content='{"test": "response"}', status_code=200
-        )
-
-        for case in test_cases:
-            # Create appropriate mock decision
-            decision = RouteDecision(
-                endpoint=case["expected_endpoint"],
-                confidence=0.8,
-                reason=case["expected_reason"],
-                workload_type=WorkloadType.REASONING,
-            )
-
-            mock_router = Mock()
-            mock_router.route_request = AsyncMock(return_value=decision)
-            mock_router.get_endpoint_by_name = Mock(return_value=None)
-            mock_get_router.return_value = mock_router
-
-            mock_router = Mock()
-            mock_router.route_request = AsyncMock(return_value=decision)
-            mock_get_router.return_value = mock_router
-
-            payload = {"messages": [{"role": "user", "content": case["message"]}]}
-
-            response = client.post("/smart", json=payload)
-
-            # Verify the correct endpoint was selected
-            mock_proxy.assert_called()
-            args, kwargs = mock_proxy.call_args
-            assert args[0] == case["expected_endpoint"]
-
-            # Verify routing headers exist
-            routing_headers = (
-                args[2] if len(args) > 2 else kwargs.get("extra_headers", {})
-            )
-            assert "X-Route-Decision" in routing_headers
-
-            assert response.status_code == 200
+        == "fast"
+    )
+    assert services.conversation_store.conversations["fallback"] == [
+        {"role": "user", "content": "reason"},
+        {"role": "assistant", "content": "answer"},
+    ]
+    assert [r.url.host for r in requests if r.method == "POST"] == [
+        "fast.local",
+        "strong.local",
+        "fast.local",
+    ]
 
 
-    @patch("src.orchestrator.proxy_services.reachable_endpoints", ["primary", "secondary"])
-    @patch("src.orchestrator.proxy.get_router")
-    def test_smart_route_pins_server_side_and_reuses_without_router(
-        self, mock_get_router, client
-    ):
-        mock_endpoints = [
-            {"name": "primary", "url": "https://primary.example.com"},
-            {"name": "secondary", "url": "https://secondary.example.com"},
-        ]
-        decision = RouteDecision(
-            endpoint="primary",
-            confidence=0.9,
-            reason="first decision",
-            workload_type=WorkloadType.REASONING,
-        )
-        mock_router = Mock()
-        mock_router.route_request = AsyncMock(return_value=decision)
-        mock_router.get_endpoint_by_name = Mock(return_value=None)
-        mock_get_router.return_value = mock_router
-
-        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
-            "httpx.AsyncClient"
-        ) as mock_client_class:
-            mock_client = AsyncMock()
-            mock_client.post.return_value = _MockUpstreamResponse(
-                {"choices": [{"message": {"content": "ok"}}]}
-            )
-            mock_client_class.return_value.__aenter__.return_value = mock_client
-
-            first = client.post(
-                "/smart",
-                headers={"X-Conversation-ID": "session-smart-pin"},
-                json={"messages": [{"role": "user", "content": "first"}]},
-            )
-            second = client.post(
-                "/smart",
-                headers={"X-Conversation-ID": "session-smart-pin"},
-                json={"messages": [{"role": "user", "content": "second"}]},
-            )
-
-        assert first.status_code == 200
-        assert second.status_code == 200
-        assert second.headers["x-route-pinned"] == "true"
-        assert mock_router.route_request.await_count == 1
-
-    @patch("src.orchestrator.proxy_services.reachable_endpoints", ["new-endpoint"])
-    @patch("src.orchestrator.proxy.get_router")
-    def test_smart_route_stale_pin_is_reported_and_replaced(
-        self, mock_get_router, client
-    ):
-        import asyncio
-
-        asyncio.run(
-            proxy_module.conversation_store.update_conversation_control_state(
-                "session-stale",
-                route_endpoint="removed-endpoint",
-                valid_route_endpoints=["removed-endpoint", "new-endpoint"],
-            )
-        )
-        mock_endpoints = [{"name": "new-endpoint", "url": "https://new.example.com"}]
-        decision = RouteDecision(
-            endpoint="new-endpoint",
-            confidence=0.8,
-            reason="rerouted",
-            workload_type=WorkloadType.REASONING,
-        )
-        mock_router = Mock()
-        mock_router.route_request = AsyncMock(return_value=decision)
-        mock_router.get_endpoint_by_name = Mock(return_value=None)
-        mock_get_router.return_value = mock_router
-
-        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
-            "httpx.AsyncClient"
-        ) as mock_client_class:
-            mock_client = AsyncMock()
-            mock_client.post.return_value = _MockUpstreamResponse(
-                {"choices": [{"message": {"content": "ok"}}]}
-            )
-            mock_client_class.return_value.__aenter__.return_value = mock_client
-
-            response = client.post(
-                "/smart",
-                headers={"X-Conversation-ID": "session-stale"},
-                json={"messages": [{"role": "user", "content": "recover"}]},
-            )
-
-        state = asyncio.run(
-            proxy_module.conversation_store.get_conversation_control_state("session-stale")
-        )
-        assert response.status_code == 200
-        assert response.headers["x-route-pin-stale"] == "true"
-        assert state["route_endpoint"] == "new-endpoint"
-
-    @patch("src.orchestrator.proxy_services.reachable_endpoints", ["primary"])
-    @patch("src.orchestrator.proxy.get_router")
-    def test_smart_route_without_conversation_id_remains_stateless(self, mock_get_router, client):
-        mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
-        decision = RouteDecision(
-            endpoint="primary",
-            confidence=0.8,
-            reason="stateless",
-            workload_type=WorkloadType.REASONING,
-        )
-        mock_router = Mock()
-        mock_router.route_request = AsyncMock(return_value=decision)
-        mock_router.get_endpoint_by_name = Mock(return_value=None)
-        mock_get_router.return_value = mock_router
-
-        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
-            "httpx.AsyncClient"
-        ) as mock_client_class:
-            mock_client = AsyncMock()
-            mock_client.post.return_value = _MockUpstreamResponse(
-                {"choices": [{"message": {"content": "ok"}}]}
-            )
-            mock_client_class.return_value.__aenter__.return_value = mock_client
-
-            first = client.post(
-                "/smart", json={"messages": [{"role": "user", "content": "one"}]}
-            )
-            second = client.post(
-                "/smart", json={"messages": [{"role": "user", "content": "two"}]}
-            )
-
-        assert first.status_code == 200
-        assert second.status_code == 200
-        assert mock_router.route_request.await_count == 2
-        assert proxy_module.conversation_store.conversation_control_states == {}
+def test_existing_pin_skips_classifier_and_does_not_silently_fail_over(
+    routing, http_backend
+):
+    requests = http_backend(upstream(failing="strong.local"))
+    services.conversation_store.conversation_control_states["pinned"] = {
+        "route_endpoint": "strong",
+        "reasoning_effort": "none",
+        "slots": {},
+    }
+    response = TestClient(app).post(
+        "/smart",
+        headers={"X-Conversation-ID": "pinned"},
+        json={
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert response.status_code == 503
+    assert [r.url.host for r in requests] == ["strong.local", "strong.local"]
 
 
-class TestSmartRoutingIntegration:
-    """Integration tests for smart routing with existing proxy features."""
+def test_stale_pin_is_cleared(routing, http_backend):
+    http_backend(upstream("responsive"))
+    services.conversation_store.conversation_control_states["stale"] = {
+        "route_endpoint": "removed",
+        "slots": {},
+    }
+    response = TestClient(app).post(
+        "/smart",
+        headers={"X-Conversation-ID": "stale"},
+        json={
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["x-route-pin-stale"] == "true"
+    assert response.headers["x-route-decision"] == "fast"
 
-    @patch("src.orchestrator.proxy_services.reachable_endpoints", ["HRPC-CISR HPC"])
-    @patch("src.orchestrator.proxy.proxy_request")
-    @patch("src.orchestrator.proxy.get_router")
-    def test_smart_route_logging(
-        self, mock_get_router, mock_proxy, client, mock_route_decision, caplog
-    ):
-        """Test that smart routing logs decisions appropriately."""
-        # Set log level to ensure INFO messages are captured
-        import logging
 
-        caplog.set_level(logging.INFO)
+VISION = [
+    {"type": "text", "text": "describe"},
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+]
 
-        mock_router = Mock()
-        mock_router.route_request = AsyncMock(return_value=mock_route_decision)
-        mock_router.get_endpoint_by_name = Mock(return_value=None)
-        mock_get_router.return_value = mock_router
 
-        from fastapi import Response
+def test_vision_bypasses_classifier_and_forwards_content_parts(routing, http_backend):
+    requests = http_backend(upstream())
+    response = TestClient(app).post(
+        "/smart", json={"messages": [{"role": "user", "content": VISION}]}
+    )
+    assert response.status_code == 200
+    assert response.headers["x-route-strategy"] == "vision"
+    posts = [r for r in requests if r.method == "POST"]
+    assert len(posts) == 1
+    assert posts[0].url.host == "strong.local"
+    assert json.loads(posts[0].content)["messages"][0]["content"] == VISION
 
-        mock_proxy.return_value = Response(
-            content='{"test": "response"}', status_code=200
-        )
 
-        payload = {"messages": [{"role": "user", "content": "Test logging"}]}
+def test_vision_does_not_fall_back_to_text_only_endpoint(routing, http_backend):
+    requests = http_backend(upstream(failing="strong.local"))
+    response = TestClient(app).post(
+        "/smart", json={"messages": [{"role": "user", "content": VISION}]}
+    )
+    assert response.status_code == 503
+    assert all(r.url.host == "strong.local" for r in requests)
 
-        response = client.post("/smart", json=payload)
 
-        # Check that routing decision was logged
-        log_messages = [record.message for record in caplog.records]
-        assert any(
-            "Smart routing: HRPC-CISR HPC" in message for message in log_messages
-        ), f"Expected log message not found. Actual logs: {log_messages}"
-        assert response.status_code == 200
+@pytest.mark.parametrize("allow_switch", [False, True])
+def test_vision_respects_route_switch_control(routing, http_backend, allow_switch):
+    http_backend(upstream())
+    services.conversation_store.conversation_control_states["vision-pin"] = {
+        "route_endpoint": "fast",
+        "slots": {},
+    }
+    response = TestClient(app).post(
+        "/smart",
+        headers={
+            "X-Conversation-ID": "vision-pin",
+            "X-Allow-Route-Switch": str(allow_switch),
+        },
+        json={"messages": [{"role": "user", "content": VISION}]},
+    )
+    assert response.status_code == (200 if allow_switch else 409)
+    if allow_switch:
+        assert response.headers["x-route-decision"] == "strong"
+        assert response.headers["x-route-switched"] == "true"
+    else:
+        assert "vision-pin" not in services.conversation_store.conversations
+
+
+def test_models_uses_same_resolver_and_reports_ambiguity(routing, http_backend):
+    def backend(request):
+        ids = ["a", "b"] if request.url.host == "fast.local" else ["big"]
+        return httpx.Response(200, json={"data": [{"id": name} for name in ids]})
+
+    http_backend(backend)
+    response = TestClient(app).get("/models")
+    assert response.status_code == 200
+    assert [m["endpoint"] for m in response.json()["data"]] == ["strong"]
+    assert "fast" in response.json()["errors"]

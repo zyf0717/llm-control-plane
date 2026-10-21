@@ -9,7 +9,6 @@ from typing import Any, AsyncIterator, Protocol
 from src.llm_metrics import without_call_metrics
 
 from ..repo_context import RepoContextResult
-from ..llm_router import resolve_workload_endpoint
 from .compression import (
     build_compression_prompt,
     build_compression_repair_prompt,
@@ -55,7 +54,8 @@ class WorkflowLLMClient(Protocol):
     async def complete(
         self,
         *,
-        endpoint: str,
+        endpoint: str | None,
+        workload_type: str | None = None,
         prompt: str,
         conversation_id: str,
         reasoning_effort: str | None = None,
@@ -68,7 +68,8 @@ class WorkflowLLMClient(Protocol):
     async def stream_complete(
         self,
         *,
-        endpoint: str,
+        endpoint: str | None,
+        workload_type: str | None = None,
         prompt: str,
         conversation_id: str,
         reasoning_effort: str | None = None,
@@ -177,10 +178,10 @@ class WorkflowStepExecutor:
         if step.kind == "repo_context":
             return await self._execute_repo_context_step(step, step_input, prompt)
 
-        endpoint = await _step_endpoint(run, step)
-        if not endpoint:
+        endpoint = _step_endpoint(run, step)
+        if not endpoint and not step.workload_type:
             raise ValueError("workflow step endpoint is required")
-        if endpoint.lower() == "smart":
+        if endpoint and endpoint.lower() == "smart":
             raise ValueError("workflow step endpoint must be a concrete endpoint")
         reasoning_effort = (
             step.reasoning_effort or run.reasoning_effort or spec.defaults.reasoning_effort
@@ -209,10 +210,10 @@ class WorkflowStepExecutor:
             return
 
         prompt = render_template(step.prompt or "", step_input)
-        endpoint = await _step_endpoint(run, step)
-        if not endpoint:
+        endpoint = _step_endpoint(run, step)
+        if not endpoint and not step.workload_type:
             raise ValueError("workflow step endpoint is required")
-        if endpoint.lower() == "smart":
+        if endpoint and endpoint.lower() == "smart":
             raise ValueError("workflow step endpoint must be a concrete endpoint")
         reasoning_effort = (
             step.reasoning_effort or run.reasoning_effort or spec.defaults.reasoning_effort
@@ -228,6 +229,7 @@ class WorkflowStepExecutor:
         metadata: dict[str, Any] = {}
         async for chunk in stream_complete(
             endpoint=endpoint,
+            workload_type=step.workload_type,
             prompt=_prompt_with_contract(prompt, step),
             conversation_id=run.conversation_id,
             reasoning_effort=reasoning_effort,
@@ -696,7 +698,8 @@ class WorkflowStepExecutor:
         )
         request_bytes = check_compression_input_payload(prompt, chunk, step)
         result = await self.llm_client.complete(
-            endpoint=await _step_endpoint(run, step),
+            endpoint=_step_endpoint(run, step),
+            workload_type=step.workload_type,
             prompt=prompt,
             conversation_id=run.conversation_id,
             reasoning_effort=reasoning_effort,
@@ -791,7 +794,8 @@ class WorkflowStepExecutor:
             step.reasoning_effort or run.reasoning_effort or spec.defaults.reasoning_effort
         )
         result = await self.llm_client.complete(
-            endpoint=await _step_endpoint(run, step),
+            endpoint=_step_endpoint(run, step),
+            workload_type=step.workload_type,
             prompt=prompt,
             conversation_id=run.conversation_id,
             reasoning_effort=reasoning_effort,
@@ -813,12 +817,13 @@ class WorkflowStepExecutor:
         run: WorkflowRun,
         spec: WorkflowSpec,
         step: WorkflowStepSpec,
-        endpoint: str,
+        endpoint: str | None,
         prompt: str,
         reasoning_effort: str | None,
     ) -> WorkflowStepExecution:
         result = await self.llm_client.complete(
             endpoint=endpoint,
+            workload_type=step.workload_type,
             prompt=_prompt_with_contract(prompt, step),
             conversation_id=run.conversation_id,
             reasoning_effort=reasoning_effort,
@@ -847,7 +852,7 @@ class WorkflowStepExecutor:
         spec: WorkflowSpec,
         step: WorkflowStepSpec,
         prompt: str,
-        endpoint: str,
+        endpoint: str | None,
         reasoning_effort: str | None,
         text: str,
         metadata: dict[str, Any],
@@ -886,6 +891,7 @@ class WorkflowStepExecutor:
             )
             result = await self.llm_client.complete(
                 endpoint=endpoint,
+                workload_type=step.workload_type,
                 prompt=retry_prompt,
                 conversation_id=run.conversation_id,
                 reasoning_effort=reasoning_effort,
@@ -917,9 +923,9 @@ class WorkflowStepExecutor:
         )
 
 
-async def _step_endpoint(run: WorkflowRun, step: WorkflowStepSpec) -> str:
+def _step_endpoint(run: WorkflowRun, step: WorkflowStepSpec) -> str | None:
     if step.workload_type:
-        return (await resolve_workload_endpoint(step.workload_type)).name
+        return None
     return str(step.endpoint or run.endpoint or "").strip()
 
 

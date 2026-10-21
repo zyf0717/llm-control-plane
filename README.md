@@ -4,6 +4,11 @@ An open-source control plane for exploratory work around how LLMs, tools, retrie
 
 The repo is intentionally pragmatic rather than framework-heavy: it keeps routing, conversation state, RAG injection, ad hoc search, workflow execution, and observability visible enough to inspect and change. Auto routing is intended for stateless, non-agentic requests; dashboard conversations that have a conversation id pin Auto to the first selected concrete endpoint.
 
+Routing uses flat endpoint mappings and four ordered workload preferences:
+`utility`, `complex`, `responsive`, and `vision`. Each endpoint selects a URL and
+optional model; multiple model entries can share a device or URL. See
+[configuration](docs/configuration.md) for discovery and fallback behavior.
+
 ## Documentation
 
 - [Docs Index](docs/README.md)

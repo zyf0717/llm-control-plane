@@ -13,17 +13,16 @@ POST /{endpoint-name}
 Example:
 
 ```bash
-curl -X POST http://localhost:12340/my-server \
+curl -X POST http://localhost:12340/evo-x2 \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "llama-3.3-70b",
     "messages": [{"role": "user", "content": "Explain transformers briefly."}]
   }'
 ```
 
 ## Smart Routing
 
-Smart routing uses the latest user message to classify workload and select a reachable endpoint. Without `X-Convo-ID`, routing remains stateless. With `X-Convo-ID`, the proxy pins the first route decision server-side and reuses it on later `/smart` calls unless the configured endpoint is removed.
+Smart routing detects image input as `vision`; text is classified as `complex` or `responsive` through `utility`. It follows the configured preference order and never replays a started stream. Without `X-Conversation-ID`, routing remains stateless. With `X-Conversation-ID`, the proxy pins the first route decision server-side and reuses it on later `/smart` calls unless the configured endpoint is removed or route switching is explicitly allowed.
 
 ```text
 POST /smart
@@ -45,11 +44,9 @@ curl -X POST http://localhost:12340/smart \
 | Header | Meaning |
 |---|---|
 | `X-Route-Decision` | Selected endpoint name |
-| `X-Route-Confidence` | Routing confidence |
-| `X-Route-Reason` | Human-readable routing reason |
-| `X-Route-Strategy` | Classified workload type |
+| `X-Route-Strategy` | Workload type, `explicit`, or `pinned` |
 | `X-Route-GPU` / `X-Route-VRAM` / `X-Route-SOC` / `X-Route-CPU` / `X-Route-RAM` | Selected endpoint hardware metadata |
-| `X-Route-Pinned` | `true` when an existing `X-Convo-ID` route pin was reused |
+| `X-Route-Pinned` | `true` when an existing `X-Conversation-ID` route pin was reused |
 | `X-Route-Pin-Stale` | `true` when a previous route pin referenced an endpoint no longer in config and smart routing replaced it |
 
 ## Request Trace
@@ -60,18 +57,18 @@ Every successful proxied chat response includes:
 |---|---|
 | `X-Trace-ID` | Per-request trace identifier for correlating dashboard/runtime metadata |
 
-The trace object is intentionally in-memory only in this phase; it is not persisted.
+Trace events are written to the configured JSONL trace log.
 
 ## Conversation History
 
-The proxy stores conversation history and conversation metadata in local SQLite (`var/history.sqlite3` by default) only when `X-Convo-ID` is supplied. `X-Convo-ID` is the canonical cache/session key for persisted history, route pinning, reasoning effort, and optional slot affinity. Streamed assistant responses are read by a proxy-owned producer task, so upstream streaming and history finalization can continue even if the downstream client disconnects. Clients should send only the new turn for an existing conversation; full-history replay is rejected with `400`.
+The proxy stores conversation history and conversation metadata in local SQLite (`var/history.sqlite3` by default) only when `X-Conversation-ID` is supplied. `X-Conversation-ID` is the canonical cache/session key for persisted history, route pinning, reasoning effort, and optional slot affinity. Streamed assistant responses are read by a proxy-owned producer task, so upstream streaming and history finalization can continue even if the downstream client disconnects. Clients should send only the new turn for an existing conversation; full-history replay is rejected with `400`.
 
 Example:
 
 ```bash
 curl -X POST http://localhost:12340/smart \
   -H "Content-Type: application/json" \
-  -H "X-Convo-ID: session-abc123" \
+  -H "X-Conversation-ID: session-abc123" \
   -d '{
     "messages": [{"role": "user", "content": "What is the capital of France?"}]
   }'
@@ -97,11 +94,11 @@ Set:
 X-Reasoning-Effort: low | medium | high | xhigh | max
 ```
 
-The proxy pins the first valid reasoning effort per `X-Convo-ID`, injects a system message of the form `Reasoning: {value}`, and sets `reasoning_effort` in the request body. Later turns may omit the header and reuse the pinned value. Conflicting later values return `409` unless the client explicitly sends `X-Allow-Reasoning-Switch: true`. Without `X-Convo-ID`, reasoning remains per-request.
+The proxy pins the first valid reasoning effort per `X-Conversation-ID`, injects a system message of the form `Reasoning: {value}`, and sets `reasoning_effort` in the request body. Later turns may omit the header and reuse the pinned value. Conflicting later values return `409` unless the client explicitly sends `X-Allow-Reasoning-Switch: true`. Without `X-Conversation-ID`, reasoning remains per-request.
 
 ## Conversation Route Switches
 
-With `X-Convo-ID`, the proxy treats the persisted route and reasoning state as canonical. Direct endpoint changes are rejected by default to protect API clients from accidentally splitting a conversation across backends.
+With `X-Conversation-ID`, the proxy treats the persisted route and reasoning state as canonical. Direct endpoint changes are rejected by default to protect API clients from accidentally splitting a conversation across backends.
 
 Explicit switch opt-in headers:
 
@@ -125,7 +122,7 @@ The dashboard sends these opt-in headers for user-selected concrete endpoints/re
 
 ## Best-Effort Slot Affinity
 
-For llama.cpp endpoints, set `slot_affinity: true` on the endpoint config to let the proxy try to map `X-Convo-ID` to an upstream slot. The proxy probes `/slots?fail_on_no_slot=1`, persists the selected slot id in conversation metadata, and forwards `id_slot` plus `cache_prompt: true` when available. Slot affinity is best-effort: probe failures, non-llama upstreams, unavailable slots, or ignored `id_slot` fields do not fail the chat request.
+For llama.cpp endpoints, set `slot_affinity: true` on the endpoint config to let the proxy try to map `X-Conversation-ID` to an upstream slot. The proxy probes `/slots?fail_on_no_slot=1`, persists the selected slot id in conversation metadata, and forwards `id_slot` plus `cache_prompt: true` when available. Slot affinity is best-effort: probe failures, non-llama upstreams, unavailable slots, or ignored `id_slot` fields do not fail the chat request.
 
 Slot response headers:
 
@@ -139,7 +136,7 @@ Slot response headers:
 Set:
 
 ```text
-X-RAG-Endpoint: http://localhost:8100/api/retrieve
+X-Retrieval-Endpoint: http://localhost:8100/api/retrieve
 ```
 
 When present, the proxy:
@@ -153,7 +150,7 @@ When present, the proxy:
 
 | Header | Meaning |
 |---|---|
-| `X-RAG-Endpoint` | Retrieve endpoint used |
+| `X-Retrieval-Endpoint` | Retrieve endpoint used |
 | `X-RAG-Injected` | `true` if context was injected |
 | `X-RAG-Hits` | Number of context blocks returned by the RAG service |
 | `X-RAG-Mode` | Backend retrieval mode, if provided |
@@ -177,7 +174,7 @@ Non-streaming behavior:
 
 ## Model Discovery
 
-Fetch all models across reachable endpoints:
+Fetch the resolved model for each configured endpoint. The response retains `object` and `data`, and includes `errors: {endpoint: detail}` for ambiguity or failed discovery. Endpoints sharing a URL may select different configured models:
 
 ```text
 GET /models

@@ -1799,7 +1799,7 @@ def server(input, output, session):
                     raise ValueError("select a machine endpoint")
                 if endpoint_for_workflow.lower() == "smart":
                     raise ValueError(
-                        "workflow dispatch requires a concrete Machine Endpoint"
+                        "workflow dispatch requires a concrete Endpoint"
                     )
                 workflow_retrieval_endpoint = str(
                     _input_value(input, "retrievalEndpoint") or ""

@@ -2,104 +2,55 @@
 
 Routing and RAG configuration live in `config.yaml`; runtime environment overrides such as `HISTORY_DB_PATH` live in `.env` or the shell.
 
-## Full Example
+## Routing Example
 
 ```yaml
 endpoints:
-  - name: "my-server"
-    gpu: "NVIDIA GeForce RTX 4090"
-    vram: "24GB"
-    cpu: "Intel Core i9-13900K"
-    ram: "64GB"
-    url: "https://my-llm-server.example.com"
-
-  - name: "mac-mini"
-    soc: "Apple M4"
-    ram: "16GB"
-    url: "https://mac-mini.example.com"
-
-orchestration:
-  workflows:
-    enabled: true
-  graphs:
-    enabled: true
-
-rag:
-  default_endpoint: "http://localhost:8100/api/retrieve"
-  endpoints:
-    - name: "localhost:8100"
-      retrieve_url: "http://localhost:8100/api/retrieve"
-      health_url: "http://localhost:8100/api/health"
-  top_k: 10
-
-search:
-  enabled: true
-  query_refiner_workload_type: "utility"
-  query_refiner_model: "search-query-refiner"
-  query_refiner_enabled: true
-  query_refiner_timeout_ms: 7000
-  query_refiner_max_context_chars: 24000
-  query_refiner_max_output_tokens: 1024
-  query_refiner_max_queries: 3
-  reranker_model_endpoint: "http://reranker-server.example.com"
-  reranker_fallback_workload_type: "utility"
-  reranker_backend: "dedicated"
-  reranker_model: "search-reranker"
-  reranker_enabled: true
-  reranker_timeout_ms: 7000
-  reranker_max_context_chars: 12000
-  reranker_max_candidates: 20
-  reranker_max_output_tokens: 1024
-  search_max_total_results: 10
-  default_provider: "duckduckgo_html"
-  timeout_ms: 7000
-  max_results: 20
-  cache_ttl_seconds: 900
-  providers:
-    duckduckgo_html:
-      enabled: true
-      priority: 10
-    marginalia_html:
-      enabled: true
-      priority: 20
-    mojeek_html:
-      enabled: false
-      priority: 30
+  evo-x2:
+    url: https://llm-evo-x2.paperclips.dev
+    model: halogen-qwen3.8-flash-next
+    slot_affinity: true
+  gti13:
+    url: https://llm-gti13.paperclips.dev
+    model: Qwen/Qwen3.5-4B
 
 workloads:
-  - type: "utility"
-    endpoint_preference: ["mac-mini", "my-server"]
-  - type: "reasoning"
-    endpoint_preference: ["my-server", "mac-mini"]
-  - type: "programming"
-    endpoint_preference: ["my-server", "mac-mini"]
-  - type: "tokens_per_second"
-    endpoint_preference: ["my-server", "mac-mini"]
-  - type: "ttft_content"
-    endpoint_preference: ["mac-mini", "my-server"]
-  - type: "classification"
-    endpoint_preference: ["mac-mini", "my-server"]
+  utility: [gti13, evo-x2]
+  complex: [evo-x2, gti13]
+  responsive: [gti13, evo-x2]
+  vision: [evo-x2]
 ```
 
-## LLM Endpoints
+The complete template is [`config.example.yaml`](../config.example.yaml). The old
+list-based endpoint/workload schema is no longer supported.
 
-Each item in `endpoints` defines one upstream model host.
+## LLM Endpoints and Models
 
-Required fields:
+Each endpoint key selects one URL and optional model. `url` is the upstream root,
+without `/v1/chat/completions`. Optional `gpu`, `vram`, `cpu`, `ram`, and `soc`
+metadata appears in discovery and response details. `slot_affinity` enables the
+existing best-effort slot probe; it does not identify the serving software.
 
-- `name`
-- `url`
+Devices may expose multiple URLs, and multiple endpoint keys may share a URL with
+different explicit model IDs. For example, two entries using the same URL with
+`model: small-model` and `model: large-model` select those models independently.
 
-Optional metadata fields:
+Model selection follows these rules:
 
-- `gpu`
-- `vram`
-- `cpu`
-- `ram`
-- `soc`
+- Use the configured model when it is advertised by `/v1/models`.
+- An omitted or stale configured name uses the sole advertised model automatically.
+- An empty catalogue is unavailable. Multiple advertised models require an explicit
+  matching name; the proxy never chooses the first model. Configure one endpoint
+  key per desired model, or expose each model on its own URL/port.
+- If discovery fails, try the configured name. A definite model-not-found response
+  refreshes discovery and permits one retry with the resolved model.
+- An explicitly supplied request `model` is a strict constraint, rather than a
+  recoverable configured default.
 
-Hardware metadata is surfaced through `/models`. Model configuration is captured
-in each response's Details.
+Discovery has a two-second probe limit and a shared 30-second cache per URL.
+`GET /models` returns each endpoint's resolved model plus an `errors` mapping for
+unresolved endpoints or failed discovery. Routing uses this same resolver and does
+not depend on dashboard refreshes.
 
 ## Orchestration Subsystems
 
@@ -126,7 +77,7 @@ Each subsystem owns its own API, store, dashboard tab, and execution model. Disa
 
 ## RAG Configuration
 
-The `rag` block configures dashboard-visible RAG endpoints and proxy retrieval behavior.
+The `retrieval` block configures dashboard-visible RAG endpoints and proxy retrieval behavior.
 
 ### Fields
 
@@ -144,38 +95,28 @@ The proxy sends the latest real user turn and `top_k` as `{query, limit}` to the
 
 ## Workload Preferences
 
-Supported workload types:
+Each workload maps directly to an ordered list of endpoint keys:
 
 | Type | Usage |
 |---|---|
-| `reasoning` | Multi-step analysis and trade-off tasks |
-| `programming` | Coding, debugging, or code explanation |
-| `tokens_per_second` | Long output with minimal deep reasoning |
-| `ttft_content` | Fast first-token, simple Q&A, general chat |
-| `classification` | Internal workload classification endpoint choice |
-| `utility` | Query planning/refinement and LLM reranker fallback |
+| `utility` | Classifier, workflow/graph planners, query refinement, and LLM reranking |
+| `complex` | Reasoning, analysis, and programming |
+| `responsive` | General chat and simple requests |
+| `vision` | Chat messages containing images |
 
-Each `endpoint_preference` list is ordered from most preferred to least preferred.
+`/smart` detects image content directly; other requests are classified as complex
+or responsive through utility. The classifier disables reasoning and falls back
+to responsive on failure. Explicit workload calls bypass classification.
 
-Utility callers declare their workload explicitly, so endpoint selection does not
-invoke the workload classifier. The router selects the first utility preference
-reported as reachable by `/models`. It runs discovery on first use if no reachable
-endpoints are cached; subsequent `/models` requests (including dashboard endpoint
-refresh) update availability. If no listed utility endpoint is reachable, routing
-fails rather than selecting another workload's model. Selection uses cached
-availability; it does not retry after a generation request fails.
+Routing attempts only the configured preferences, in order. Connection failures,
+HTTP 429, upstream 5xx, and unresolved model defaults permit the next candidate.
+Other request errors propagate. A successful upstream response ends failover;
+started streams are never replayed. Explicit endpoint requests and valid
+conversation pins stay on their endpoint unless route switching is allowed.
 
-Configure utility servers in one place:
-
-```yaml
-workloads:
-  - type: utility
-    endpoint_preference: [gti13, evo-x2-utility]
-```
-
-Built-in search, RAG, and repo-context planners use `utility` in both workflows and
-graphs. Their final answers use the run's selected endpoint. Query refinement and
-LLM reranking can share this policy through the fields below. The dedicated
+Built-in search, RAG, and repo-context planners use utility in workflows and graphs;
+final answers use the run's selected endpoint. Query refinement and LLM reranking
+also use utility, with no separate URLs or placeholder model names. The dedicated
 reranker keeps its own `/rerank` endpoint.
 
 ## Search Configuration
@@ -187,23 +128,17 @@ The `search` block enables the lightweight candidate-discovery module exposed at
 | Field | Meaning |
 |---|---|
 | `enabled` | Enables the `/search/web` endpoint and internal provider router |
-| `query_refiner_model_endpoint` | Optional OpenAI-compatible endpoint for bounded query refinement |
-| `query_refiner_workload_type` | Resolve refinement through an explicit workload, e.g. `utility`; alternative to `query_refiner_model_endpoint` |
-| `query_refiner_model` | Query-refiner model name; defaults to `search-query-refiner` |
-| `query_refiner_enabled` | Enables or disables query refinement; defaults to true when an endpoint or workload is configured |
+| `query_refiner_enabled` | Enables utility-backed query refinement; defaults to false |
 | `query_refiner_timeout_ms` | Query-refiner request timeout; defaults to `timeout_ms` or 7000 |
-| `query_refiner_max_context_chars` | Max optional context characters sent to the query refiner |
+| `query_refiner_max_source_chars` | Max optional context characters sent to the query refiner |
 | `query_refiner_max_output_tokens` | Max query-refiner response tokens |
 | `query_refiner_max_queries` | Max refined query fanout; defaults to 1 |
-| `reranker_model_endpoint` | Optional reranker endpoint for bounded post-retrieval reranking |
-| `reranker_fallback_model_endpoint` | Optional OpenAI-compatible LLM reranker endpoint used if a dedicated reranker fails |
-| `reranker_workload_type` | Resolve the primary LLM reranker through a workload; requires `reranker_backend: llm` and replaces `reranker_model_endpoint` |
-| `reranker_fallback_workload_type` | Resolve the dedicated reranker's LLM fallback through a workload; alternative to `reranker_fallback_model_endpoint` |
+| `reranker_endpoint` | Root URL for the dedicated `/rerank` service |
 | `reranker_backend` | Reranker protocol: `llm` for OpenAI chat completions, `dedicated` for `/rerank`; defaults to `llm` |
-| `reranker_model` | Reranker model name; defaults to `search-reranker` |
-| `reranker_enabled` | Enables or disables reranking; defaults to true when a primary endpoint or workload is configured |
+| `reranker_model` | Optional display label for the dedicated reranker; LLM metadata uses the actual served model |
+| `reranker_enabled` | Enables reranking; defaults to true when `reranker_endpoint` is configured |
 | `reranker_timeout_ms` | Reranker request timeout; defaults to `timeout_ms` or 7000 |
-| `reranker_max_context_chars` | Max optional context characters sent to the reranker |
+| `reranker_max_source_chars` | Max optional context characters sent to the reranker |
 | `reranker_max_candidates` | Max deduped candidates sent to the reranker |
 | `reranker_max_output_tokens` | Max reranker response tokens |
 | `search_max_total_results` | Max deduped results returned across all refined queries |
@@ -217,9 +152,13 @@ The `search` block enables the lightweight candidate-discovery module exposed at
 | `providers[].cache_ttl_seconds` | Optional provider-specific TTL override |
 | `providers[].min_interval_seconds` | Optional minimum delay between requests to the same provider |
 
-When a query-refiner endpoint or workload is configured and query refinement is enabled, ad hoc `/search/web` calls may run a bounded, non-persisted query-refiner call before provider execution. The query refiner returns one or more concise provider-ready queries; the first query becomes the effective search query. If `query_refiner_max_queries` is greater than 1, provider searches run as an async fanout and results are deduped before applying `search_max_total_results`. Query-refiner failure degrades to the original query and adds a warning.
+When query refinement is enabled, ad hoc `/search/web` calls may run a bounded, non-persisted query-refiner call before provider execution. The query refiner returns one or more concise provider-ready queries; the first query becomes the effective search query. If `query_refiner_max_queries` is greater than 1, provider searches run as an async fanout and results are deduped before applying `search_max_total_results`. Query-refiner failure degrades to the original query and adds a warning.
 
-When a reranker endpoint or workload is configured and reranking is enabled, the reranker is available to direct `/search/web` calls that set `use_reranker: true` and to explicit workflow `rerank` steps. `reranker_backend: llm` uses `/v1/chat/completions`; `reranker_backend: dedicated` posts `{query, documents, top_k}` to `/rerank`. A dedicated reranker can fall back through `reranker_fallback_workload_type` or a fixed `reranker_fallback_model_endpoint`; otherwise reranker failure preserves provider order and adds a warning. Reranking metadata exposes the configured `backend` and the actual `path` used for the returned ranking: `dedicated`, `llm`, or `none`.
+When reranking is enabled, `reranker_backend: llm` calls utility, while
+`reranker_backend: dedicated` posts `{query, documents, top_k}` to the configured
+`reranker_endpoint` plus `/rerank`. A dedicated failure falls back to utility.
+If both fail, provider order is preserved with a warning. Metadata reports the
+actual served LLM model and the path used: `dedicated`, `llm`, or `none`.
 
 Workflow search can use either query-refiner planning or workflow-owned planning. Plain search prompts may use the query refiner. Workflow-planned JSON queries should set `use_query_refiner: false`. Search steps may set `search_count` to control provider candidates per dispatched query. Workflow search steps never rerank inline; `use_reranker` and `rerank_context` on search steps are invalid. Post-retrieval reranking must be modeled as an explicit `rerank` step that depends on the retrieval step. Rerank steps may set `rerank_top_k` to cap the returned reranked results.
 
@@ -267,9 +206,9 @@ Blank `HISTORY_DB_PATH` is treated the same as unset and uses the default SQLite
 
 ## Operational Notes
 
-- Smart routing relies on the current `reachable_endpoints` cache, which is refreshed by `/models`, and is exposed through the proxy `/smart` route.
-- The dashboard uses concrete machine endpoint selections and does not keep a separate local route pin.
-- Dashboard RAG choices are filtered by live `health_url` checks on page load and explicit RAG refresh.
-- `default_endpoint` is only used if it is healthy and present in the configured list.
+- Smart routing resolves models lazily through the shared discovery cache.
+- The dashboard uses concrete endpoint selections and does not keep a separate local route pin.
+- Dashboard Retrieval choices show health status on page load and explicit refresh.
+- Retrieval selection is explicit; the dashboard retains configured choices even when unhealthy.
 
 TL;DR: `config.yaml` controls upstream models, smart routing preference order, RAG discovery/retrieval behavior, and the optional lightweight search module.

@@ -11,158 +11,64 @@ from src.search import SearchArgs, wrap_search_results
 from src.search.types import SearchResponse, SearchResult
 
 
-class _RuntimeRequest:
-    def __init__(self, *, path: str, body: Dict[str, Any], headers: Dict[str, str]):
-        self.method = "POST"
-        self.headers = headers
-        self.query_params: Dict[str, str] = {}
-        self.url = type("URL", (), {"path": path})()
-        self._body = json.dumps(body).encode("utf-8")
-        self._json = body
-
-    async def body(self) -> bytes:
-        return self._body
-
-    async def json(self) -> Dict[str, Any]:
-        return self._json
-
-
 class ProxyRuntimeLLMClient:
-    async def complete(
+    async def _request(
         self,
+        stream: bool,
         *,
-        endpoint: str,
         prompt: str,
         conversation_id: str,
-        reasoning_effort: Optional[str] = None,
-        retrieval_endpoint: Optional[str] = None,
-        max_tokens: Optional[int] = None,
+        endpoint: str | None = None,
+        workload_type: str | None = None,
+        reasoning_effort: str | None = None,
+        retrieval_endpoint: str | None = None,
+        max_tokens: int | None = None,
         skip_conversation: bool = False,
-    ) -> Dict[str, Any]:
-        from ..upstream_proxy import proxy_request
+    ):
+        from ..upstream_proxy import complete_request
+
+        payload = {"stream": stream, "messages": [{"role": "user", "content": prompt}]}
+        if max_tokens is not None:
+            payload["max_tokens"] = int(max_tokens)
+        headers = {"X-Conversation-ID": conversation_id}
+        if reasoning_effort:
+            headers["X-Reasoning-Effort"] = reasoning_effort
+        if retrieval_endpoint:
+            headers["X-Retrieval-Endpoint"] = retrieval_endpoint
+        if skip_conversation:
+            headers["X-LLMCP-Skip-Conversation"] = "true"
+        if endpoint and endpoint != "smart":
+            headers["X-Allow-Route-Switch"] = "true"
+        return await complete_request(
+            payload, headers, endpoint=endpoint, workload_type=workload_type
+        )
+
+    async def complete(self, **request) -> Dict[str, Any]:
         from ..utils import extract_assistant_text
 
-        endpoint_key = str(endpoint or "smart").strip() or "smart"
-        payload: Dict[str, Any] = {
-            "stream": False,
-            "messages": [{"role": "user", "content": prompt}],
-        }
-        if max_tokens is not None:
-            payload["max_tokens"] = int(max_tokens)
-
-        headers = {
-            "Content-Type": "application/json",
-            "X-Conversation-ID": conversation_id,
-        }
-        if reasoning_effort:
-            headers["X-Reasoning-Effort"] = reasoning_effort
-        if retrieval_endpoint:
-            headers["X-Retrieval-Endpoint"] = retrieval_endpoint
-        if skip_conversation:
-            headers["X-LLMCP-Skip-Conversation"] = "true"
-        if endpoint_key != "smart":
-            headers["X-Allow-Route-Switch"] = "true"
-
-        request = _RuntimeRequest(
-            path=f"/{endpoint_key}",
-            body=payload,
-            headers=headers,
-        )
-        with CallMetrics(metadata={"endpoint": endpoint_key}) as call:
-            if endpoint_key == "smart":
-                from ..proxy import smart_route
-
-                response = await smart_route(request)
-            else:
-                response = await proxy_request(endpoint_key, request)
-            response_body = getattr(response, "body", b"") or b""
-            try:
-                response_json = json.loads(response_body.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                response_json = {}
-
-            text = extract_assistant_text(response_json) or ""
-            response_headers = dict(getattr(response, "headers", {}) or {})
-            metadata = {
-                "endpoint": endpoint_key,
-                "status_code": getattr(response, "status_code", None),
-            }
-            for header_name, header_value in response_headers.items():
-                lower_name = str(header_name).lower()
-                if lower_name == "x-trace-id":
-                    metadata["trace_id"] = str(header_value)
-                elif lower_name.startswith("x-route-"):
-                    metadata.setdefault("routing", {})[
-                        lower_name.replace("x-route-", "").replace("-", "_")
-                    ] = str(header_value)
-                elif lower_name.startswith("x-retrieval-"):
-                    metadata.setdefault("retrieval", {})[
-                        lower_name.replace("x-retrieval-", "").replace("-", "_")
-                    ] = str(header_value)
-
-            metadata.update(llm_response_metadata(response_json))
-            call.metadata.update(metadata)
-            if (getattr(response, "status_code", 200) or 200) >= 400:
+        endpoint = request.get("endpoint") or request.get("workload_type") or "smart"
+        with CallMetrics(metadata={"endpoint": endpoint}) as call:
+            response = await self._request(False, **request)
+            if response.status_code >= 400:
                 raise RuntimeError(f"LLM request failed (HTTP {response.status_code})")
-
-            return {"text": text, "metadata": metadata}
-
-    async def stream_complete(
-        self,
-        *,
-        endpoint: str,
-        prompt: str,
-        conversation_id: str,
-        reasoning_effort: Optional[str] = None,
-        retrieval_endpoint: Optional[str] = None,
-        max_tokens: Optional[int] = None,
-        skip_conversation: bool = False,
-    ) -> AsyncIterator[Dict[str, Any]]:
-        from ..upstream_proxy import proxy_request
-
-        endpoint_key = str(endpoint or "smart").strip() or "smart"
-        payload: Dict[str, Any] = {
-            "stream": True,
-            "stream_options": {"include_usage": True},
-            "messages": [{"role": "user", "content": prompt}],
-        }
-        if max_tokens is not None:
-            payload["max_tokens"] = int(max_tokens)
-
-        headers = {
-            "Content-Type": "application/json",
-            "X-Conversation-ID": conversation_id,
-        }
-        if reasoning_effort:
-            headers["X-Reasoning-Effort"] = reasoning_effort
-        if retrieval_endpoint:
-            headers["X-Retrieval-Endpoint"] = retrieval_endpoint
-        if skip_conversation:
-            headers["X-LLMCP-Skip-Conversation"] = "true"
-        if endpoint_key != "smart":
-            headers["X-Allow-Route-Switch"] = "true"
-
-        request = _RuntimeRequest(
-            path=f"/{endpoint_key}",
-            body=payload,
-            headers=headers,
-        )
-        with CallMetrics(metadata={"endpoint": endpoint_key}) as call:
-            if endpoint_key == "smart":
-                from ..proxy import smart_route
-
-                response = await smart_route(request)
-            else:
-                response = await proxy_request(endpoint_key, request)
-
-            response_headers = dict(getattr(response, "headers", {}) or {})
-            metadata = _metadata_from_headers(endpoint_key, response_headers)
+            data = json.loads(response.body)
+            metadata = _metadata_from_headers(endpoint, dict(response.headers))
+            metadata.update(
+                status_code=response.status_code, **llm_response_metadata(data)
+            )
             call.metadata.update(metadata)
-            if (getattr(response, "status_code", 200) or 200) >= 400:
+            return {"text": extract_assistant_text(data) or "", "metadata": metadata}
+
+    async def stream_complete(self, **request) -> AsyncIterator[Dict[str, Any]]:
+        endpoint = request.get("endpoint") or request.get("workload_type") or "smart"
+        with CallMetrics(metadata={"endpoint": endpoint}) as call:
+            response = await self._request(True, **request)
+            if response.status_code >= 400:
                 raise RuntimeError(f"LLM request failed (HTTP {response.status_code})")
+            metadata = _metadata_from_headers(endpoint, dict(response.headers))
+            call.metadata.update(metadata)
             if metadata:
                 yield {"channel": "metadata", "metadata": dict(metadata)}
-
             async for data in _iter_sse_data(response):
                 if data == "[DONE]":
                     break
@@ -171,29 +77,29 @@ class ProxyRuntimeLLMClient:
                 except json.JSONDecodeError:
                     continue
                 if str(obj.get("type") or "").startswith("proxy."):
-                    detail = obj.get("detail") or obj.get("error") or obj.get("type")
-                    raise RuntimeError(str(detail))
+                    raise RuntimeError(
+                        str(obj.get("detail") or obj.get("error") or obj["type"])
+                    )
                 new_metadata = {
-                    key: value for key, value in llm_response_metadata(obj).items()
+                    key: value
+                    for key, value in llm_response_metadata(obj).items()
                     if call.metadata.get(key) != value
                 }
                 if new_metadata:
                     call.metadata.update(new_metadata)
                     yield {"channel": "metadata", "metadata": new_metadata}
-                choices = obj.get("choices") if isinstance(obj, dict) else []
-                if not choices:
-                    continue
-                delta = choices[0].get("delta") if isinstance(choices[0], dict) else {}
-                if not isinstance(delta, dict):
-                    continue
-                reasoning = delta.get("reasoning") or delta.get("reasoning_content")
-                if reasoning:
-                    call.on_first_token()
-                    yield {"channel": "reasoning", "content": str(reasoning)}
-                content = delta.get("content")
-                if content:
-                    call.on_first_token()
-                    yield {"channel": "content", "content": str(content)}
+                choices = obj.get("choices") or []
+                delta = choices[0].get("delta", {}) if choices else {}
+                for channel, content in (
+                    (
+                        "reasoning",
+                        delta.get("reasoning") or delta.get("reasoning_content"),
+                    ),
+                    ("content", delta.get("content")),
+                ):
+                    if content:
+                        call.on_first_token()
+                        yield {"channel": channel, "content": str(content)}
 
 
 class ProxyRuntimeSearchClient:
@@ -318,9 +224,7 @@ class ProxyRuntimeRetrievalClient:
         warnings = []
         if isinstance(data.get("warnings"), list):
             warnings = [
-                str(item)
-                for item in data.get("warnings", [])
-                if str(item).strip()
+                str(item) for item in data.get("warnings", []) if str(item).strip()
             ]
 
         grounded_user_message = str(data.get("grounded_user_message") or "").strip()
@@ -336,7 +240,9 @@ class ProxyRuntimeRetrievalClient:
             "grounded_user_message": grounded_user_message,
             "warnings": warnings,
             "degraded": bool(data.get("degraded"))
-            or (not grounded_user_message and not context_blocks and not evidence_blocks),
+            or (
+                not grounded_user_message and not context_blocks and not evidence_blocks
+            ),
         }
 
 
@@ -361,7 +267,9 @@ async def _iter_sse_data(response: Any) -> AsyncIterator[str]:
             yield line[6:].strip()
 
 
-def _metadata_from_headers(endpoint_key: str, headers: Dict[str, Any]) -> Dict[str, Any]:
+def _metadata_from_headers(
+    endpoint_key: str, headers: Dict[str, Any]
+) -> Dict[str, Any]:
     metadata: Dict[str, Any] = {
         "endpoint": endpoint_key,
     }
@@ -377,6 +285,7 @@ def _metadata_from_headers(endpoint_key: str, headers: Dict[str, Any]) -> Dict[s
             metadata.setdefault("retrieval", {})[
                 lower_name.replace("x-retrieval-", "").replace("-", "_")
             ] = str(header_value)
+    metadata["endpoint"] = metadata.get("routing", {}).get("decision", endpoint_key)
     return metadata
 
 
@@ -384,19 +293,11 @@ def _search_result_from_dict(item: dict[str, Any]) -> SearchResult:
     return SearchResult(
         title=str(item.get("title") or ""),
         url=str(item.get("url") or ""),
-        snippet=(
-            str(item.get("snippet"))
-            if item.get("snippet") is not None
-            else None
-        ),
+        snippet=(str(item.get("snippet")) if item.get("snippet") is not None else None),
         rank=int(item.get("rank") or 0),
         provider=str(item.get("provider") or ""),
         engine=str(item.get("engine") or ""),
         fetched_at=str(item.get("fetched_at") or ""),
-        score=(
-            float(item["score"])
-            if item.get("score") is not None
-            else None
-        ),
+        score=(float(item["score"]) if item.get("score") is not None else None),
         ranking=dict(item.get("ranking") or {}),
     )

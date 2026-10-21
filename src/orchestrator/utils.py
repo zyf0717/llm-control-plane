@@ -3,7 +3,6 @@ import logging
 import os
 from typing import Dict, Optional
 
-from fastapi import Request
 
 logger = logging.getLogger(__name__)
 
@@ -81,21 +80,6 @@ class HeaderManager:
             headers["CF-Access-Client-Id"] = api_key_id
         if api_key_secret:
             headers["CF-Access-Client-Secret"] = api_key_secret
-
-        return headers
-
-    @staticmethod
-    def prepare_upstream_headers(
-        request: Request, for_streaming: bool = False
-    ) -> Dict[str, str]:
-        """Prepare headers for upstream requests."""
-        headers = filter_unsafe_headers(dict(request.headers))
-        headers.update(HeaderManager.create_auth_headers())
-
-        if for_streaming:
-            # Remove content-length for streaming and set proper accept header
-            headers.pop("content-length", None)
-            headers["Accept"] = "text/event-stream"
 
         return headers
 

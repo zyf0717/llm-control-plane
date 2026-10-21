@@ -8,44 +8,35 @@ from src.search.query_refiner import SearchQueryRefiner, SearchQueryRefinerConfi
 from src.search.types import SearchArgs
 
 
-class FakeQueryRefinerResponse:
-    def __init__(self, content: str):
-        self.content = content
-
-    def raise_for_status(self):
-        return None
-
-    def json(self):
-        return {"choices": [{"message": {"content": self.content}}]}
+def FakeQueryRefinerResponse(content):
+    return {"endpoint": "utility-node", "choices": [{"message": {"content": content}}]}
 
 
 @pytest.mark.asyncio
-async def test_query_refiner_resolves_workload_per_call_and_degrades_if_unavailable():
-    resolver = AsyncMock(side_effect=["https://utility-a.local", "https://utility-b.local", RuntimeError("offline")])
-    refiner = SearchQueryRefiner(
-        SearchQueryRefinerConfig(enabled=True, workload_type="utility"),
-        workload_endpoint_resolver=resolver,
+async def test_query_refiner_uses_injected_utility_completion_and_degrades():
+    complete = AsyncMock(
+        side_effect=[
+            FakeQueryRefinerResponse('{"query":"refined"}'),
+            RuntimeError("offline"),
+        ]
     )
-    with patch("httpx.AsyncClient.post", AsyncMock(return_value=FakeQueryRefinerResponse(
-        json.dumps({"query": "refined query"})
-    ))) as post:
-        first = await refiner.refine(SearchArgs(query="original query"))
-        second = await refiner.refine(SearchArgs(query="original query"))
-        offline = await refiner.refine(SearchArgs(query="original query"))
-
-    assert first.effective_query == second.effective_query == "refined query"
-    assert [call.args[0] for call in post.await_args_list] == [
-        "https://utility-a.local/v1/chat/completions",
-        "https://utility-b.local/v1/chat/completions",
-    ]
-    assert all(call.args == ("utility",) for call in resolver.await_args_list)
-    assert offline.degraded is True
-    assert offline.effective_query == "original query"
+    refiner = SearchQueryRefiner(
+        SearchQueryRefinerConfig(enabled=True), llm_complete=complete
+    )
+    first = await refiner.refine(SearchArgs(query="original"))
+    offline = await refiner.refine(SearchArgs(query="original"))
+    assert first.effective_query == "refined"
+    assert offline.degraded and offline.effective_query == "original"
+    assert complete.await_args.kwargs == {"timeout": 7}
+    assert complete.await_args.args[0]["reasoning_effort"] == "none"
+    assert "model" not in complete.await_args.args[0]
 
 
 @pytest.mark.asyncio
 async def test_query_refiner_disabled_returns_original_query():
-    query_refiner = SearchQueryRefiner(SearchQueryRefinerConfig(enabled=False))
+    query_refiner = SearchQueryRefiner(
+        SearchQueryRefinerConfig(enabled=False), llm_complete=AsyncMock()
+    )
 
     plan = await query_refiner.refine(SearchArgs(query="already good"))
 
@@ -66,13 +57,14 @@ async def test_valid_query_refiner_response_rewrites_query():
         }
     )
     query_refiner = SearchQueryRefiner(
-        SearchQueryRefinerConfig(enabled=True, model_endpoint="https://query_refiner.local")
+        SearchQueryRefinerConfig(enabled=True), llm_complete=AsyncMock()
     )
 
-    with patch(
-        "httpx.AsyncClient.post",
+    with patch.object(
+        query_refiner,
+        "llm_complete",
         AsyncMock(return_value=FakeQueryRefinerResponse(payload)),
-    ) as post:
+    ):
         plan = await query_refiner.refine(
             SearchArgs(
                 query="does llama cpp expose kv cache metrics now?",
@@ -82,7 +74,6 @@ async def test_valid_query_refiner_response_rewrites_query():
             )
         )
 
-    assert post.await_args.args[0] == "https://query_refiner.local/v1/chat/completions"
     assert plan.effective_query == "llama.cpp KV cache metrics cached_tokens GitHub"
     assert plan.freshness == "week"
     assert plan.source_preferences == ["github", "official_docs"]
@@ -103,21 +94,20 @@ async def test_query_refiner_response_supports_capped_query_fanout():
         }
     )
     query_refiner = SearchQueryRefiner(
-        SearchQueryRefinerConfig(
-            enabled=True,
-            model_endpoint="https://query_refiner.local",
-            max_queries=3,
-            max_output_tokens=1024,
-        )
+        SearchQueryRefinerConfig(enabled=True, max_queries=3, max_output_tokens=1024),
+        llm_complete=AsyncMock(),
     )
 
-    with patch(
-        "httpx.AsyncClient.post",
+    with patch.object(
+        query_refiner,
+        "llm_complete",
         AsyncMock(return_value=FakeQueryRefinerResponse(payload)),
     ) as post:
-        plan = await query_refiner.refine(SearchArgs(query="does llama cpp expose metrics?"))
+        plan = await query_refiner.refine(
+            SearchArgs(query="does llama cpp expose metrics?")
+        )
 
-    body = post.await_args.kwargs["json"]
+    body = post.await_args.args[0]
     user_payload = json.loads(body["messages"][1]["content"])
     assert user_payload["max_queries"] == 3
     assert body["max_tokens"] == 1024
@@ -131,35 +121,14 @@ async def test_query_refiner_response_supports_capped_query_fanout():
 
 
 @pytest.mark.asyncio
-async def test_query_refiner_posts_configured_headers():
-    query_refiner = SearchQueryRefiner(
-        SearchQueryRefinerConfig(
-            enabled=True,
-            model_endpoint="https://query_refiner.local",
-            headers={"CF-Access-Client-Id": "id", "CF-Access-Client-Secret": "secret"},
-        )
-    )
-
-    with patch(
-        "httpx.AsyncClient.post",
-        AsyncMock(return_value=FakeQueryRefinerResponse('{"query": "refined"}')),
-    ) as post:
-        await query_refiner.refine(SearchArgs(query="original"))
-
-    assert post.await_args.kwargs["headers"] == {
-        "CF-Access-Client-Id": "id",
-        "CF-Access-Client-Secret": "secret",
-    }
-
-
-@pytest.mark.asyncio
 async def test_invalid_json_falls_back():
     query_refiner = SearchQueryRefiner(
-        SearchQueryRefinerConfig(enabled=True, model_endpoint="https://query_refiner.local")
+        SearchQueryRefinerConfig(enabled=True), llm_complete=AsyncMock()
     )
 
-    with patch(
-        "httpx.AsyncClient.post",
+    with patch.object(
+        query_refiner,
+        "llm_complete",
         AsyncMock(return_value=FakeQueryRefinerResponse("not json")),
     ):
         plan = await query_refiner.refine(SearchArgs(query="original"))
@@ -172,11 +141,12 @@ async def test_invalid_json_falls_back():
 @pytest.mark.asyncio
 async def test_timeout_falls_back():
     query_refiner = SearchQueryRefiner(
-        SearchQueryRefinerConfig(enabled=True, model_endpoint="https://query_refiner.local")
+        SearchQueryRefinerConfig(enabled=True), llm_complete=AsyncMock()
     )
 
-    with patch(
-        "httpx.AsyncClient.post",
+    with patch.object(
+        query_refiner,
+        "llm_complete",
         AsyncMock(side_effect=httpx.TimeoutException("timeout")),
     ):
         plan = await query_refiner.refine(SearchArgs(query="original"))
@@ -189,11 +159,12 @@ async def test_timeout_falls_back():
 @pytest.mark.asyncio
 async def test_empty_refined_query_falls_back():
     query_refiner = SearchQueryRefiner(
-        SearchQueryRefinerConfig(enabled=True, model_endpoint="https://query_refiner.local")
+        SearchQueryRefinerConfig(enabled=True), llm_complete=AsyncMock()
     )
 
-    with patch(
-        "httpx.AsyncClient.post",
+    with patch.object(
+        query_refiner,
+        "llm_complete",
         AsyncMock(return_value=FakeQueryRefinerResponse('{"query": ""}')),
     ):
         plan = await query_refiner.refine(SearchArgs(query="original"))
@@ -206,20 +177,18 @@ async def test_empty_refined_query_falls_back():
 @pytest.mark.asyncio
 async def test_long_context_is_truncated():
     query_refiner = SearchQueryRefiner(
-        SearchQueryRefinerConfig(
-            enabled=True,
-            model_endpoint="https://query_refiner.local",
-            max_source_chars=4,
-        )
+        SearchQueryRefinerConfig(enabled=True, max_source_chars=4),
+        llm_complete=AsyncMock(),
     )
 
-    with patch(
-        "httpx.AsyncClient.post",
+    with patch.object(
+        query_refiner,
+        "llm_complete",
         AsyncMock(return_value=FakeQueryRefinerResponse('{"query": "q"}')),
     ) as post:
         await query_refiner.refine(SearchArgs(query="q", source_text="abcdef"))
 
-    body = post.await_args.kwargs["json"]
+    body = post.await_args.args[0]
     user_message = body["messages"][1]["content"]
     assert json.loads(user_message)["context"] == "abcd"
 
@@ -234,11 +203,12 @@ async def test_source_preferences_are_sanitized():
         }
     )
     query_refiner = SearchQueryRefiner(
-        SearchQueryRefinerConfig(enabled=True, model_endpoint="https://query_refiner.local")
+        SearchQueryRefinerConfig(enabled=True), llm_complete=AsyncMock()
     )
 
-    with patch(
-        "httpx.AsyncClient.post",
+    with patch.object(
+        query_refiner,
+        "llm_complete",
         AsyncMock(return_value=FakeQueryRefinerResponse(payload)),
     ):
         plan = await query_refiner.refine(SearchArgs(query="q"))
@@ -251,12 +221,15 @@ async def test_source_preferences_are_sanitized():
 @pytest.mark.asyncio
 async def test_public_metadata_does_not_expose_prompt_or_raw_output():
     query_refiner = SearchQueryRefiner(
-        SearchQueryRefinerConfig(enabled=True, model_endpoint="https://query_refiner.local")
+        SearchQueryRefinerConfig(enabled=True), llm_complete=AsyncMock()
     )
 
-    with patch(
-        "httpx.AsyncClient.post",
-        AsyncMock(return_value=FakeQueryRefinerResponse('```json\n{"query":"refined"}\n```')),
+    with patch.object(
+        query_refiner,
+        "llm_complete",
+        AsyncMock(
+            return_value=FakeQueryRefinerResponse('```json\n{"query":"refined"}\n```')
+        ),
     ):
         plan = await query_refiner.refine(SearchArgs(query="original"))
 

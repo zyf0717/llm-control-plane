@@ -344,6 +344,8 @@ async def fetch_available_endpoints():
                     }
                 endpoints[endpoint_name]["models"].append(model)
 
+        for name, error in data.get("errors", {}).items():
+            endpoints.setdefault(name, {"models": [], "error": str(error)})
         logger.info("Fetched endpoints: %s", endpoints)
         logger.debug("Raw model data: %s", data)
         return endpoints, data

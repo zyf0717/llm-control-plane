@@ -14,18 +14,18 @@ from .providers import (
 from .query_refiner import SearchQueryRefiner, SearchQueryRefinerConfig
 from .reranker import SearchReranker, SearchRerankerConfig
 from .search_router import SearchConfig, SearchProviderConfig, SearchRouter
-from .types import WorkloadEndpointResolver
+from .types import LLMCompletion
 
 
 def build_search_router(
     search_config: dict[str, Any] | None = None,
     *,
-    query_refiner_headers: dict[str, str] | None = None,
-    workload_endpoint_resolver: WorkloadEndpointResolver | None = None,
+    reranker_headers: dict[str, str] | None = None,
+    llm_complete: LLMCompletion | None = None,
 ) -> SearchRouter:
     """Build a config-driven search router with explicit provider allowlist."""
     search_config = search_config or {}
-    query_refiner_headers = query_refiner_headers or {}
+    reranker_headers = reranker_headers or {}
     provider_settings = search_config.get("providers", {})
     providers = {
         "duckduckgo_html": DuckDuckGoHtmlProvider(),
@@ -34,9 +34,7 @@ def build_search_router(
         "wikipedia_opensearch": WikipediaOpenSearchProvider(),
     }
 
-    searxng_endpoint = (
-        provider_settings.get("searxng_html", {}) or {}
-    ).get("endpoint")
+    searxng_endpoint = (provider_settings.get("searxng_html", {}) or {}).get("endpoint")
     if searxng_endpoint:
         providers["searxng_html"] = SearxngHtmlProvider(searxng_endpoint)
 
@@ -60,47 +58,33 @@ def build_search_router(
         max_body_bytes=int(search_config.get("max_body_bytes", 2_500_000)),
         max_retries=int(search_config.get("max_retries", 1)),
     )
-    query_refiner_endpoint = search_config.get("query_refiner_model_endpoint")
-    query_refiner_workload = search_config.get("query_refiner_workload_type")
     query_refiner_config = SearchQueryRefinerConfig(
-        enabled=bool(
-            search_config.get(
-                "query_refiner_enabled", bool(query_refiner_endpoint or query_refiner_workload)
-            )
-        ),
-        model_endpoint=query_refiner_endpoint,
-        workload_type=query_refiner_workload,
-        model=str(search_config.get("query_refiner_model", "search-query-refiner")),
+        enabled=bool(search_config.get("query_refiner_enabled", False)),
         timeout_ms=int(
             search_config.get(
                 "query_refiner_timeout_ms",
                 search_config.get("timeout_ms", 7000),
             )
         ),
-        max_source_chars=int(search_config.get("query_refiner_max_source_chars", 12000)),
-        max_output_tokens=int(search_config.get("query_refiner_max_output_tokens", 512)),
+        max_source_chars=int(
+            search_config.get("query_refiner_max_source_chars", 12000)
+        ),
+        max_output_tokens=int(
+            search_config.get("query_refiner_max_output_tokens", 512)
+        ),
         max_queries=int(search_config.get("query_refiner_max_queries", 1)),
-        headers=dict(query_refiner_headers),
     )
     query_refiner = (
-        SearchQueryRefiner(
-            query_refiner_config, workload_endpoint_resolver=workload_endpoint_resolver
-        )
-        if query_refiner_config.enabled and (query_refiner_endpoint or query_refiner_workload)
+        SearchQueryRefiner(query_refiner_config, llm_complete=llm_complete)
+        if query_refiner_config.enabled
         else None
     )
-    reranker_endpoint = search_config.get("reranker_model_endpoint")
-    reranker_workload = search_config.get("reranker_workload_type")
+    reranker_endpoint = search_config.get("reranker_endpoint")
     reranker_config = SearchRerankerConfig(
-        enabled=bool(
-            search_config.get("reranker_enabled", bool(reranker_endpoint or reranker_workload))
-        ),
-        model_endpoint=reranker_endpoint,
-        fallback_model_endpoint=search_config.get("reranker_fallback_model_endpoint"),
-        workload_type=reranker_workload,
-        fallback_workload_type=search_config.get("reranker_fallback_workload_type"),
+        enabled=bool(search_config.get("reranker_enabled", bool(reranker_endpoint))),
+        endpoint=reranker_endpoint,
         backend=str(search_config.get("reranker_backend", "llm")),
-        model=str(search_config.get("reranker_model", "search-reranker")),
+        model=search_config.get("reranker_model"),
         timeout_ms=int(
             search_config.get(
                 "reranker_timeout_ms",
@@ -110,13 +94,11 @@ def build_search_router(
         max_source_chars=int(search_config.get("reranker_max_source_chars", 12000)),
         max_candidates=int(search_config.get("reranker_max_candidates", 20)),
         max_output_tokens=int(search_config.get("reranker_max_output_tokens", 1024)),
-        headers=dict(query_refiner_headers),
+        headers=dict(reranker_headers),
     )
     reranker = (
-        SearchReranker(
-            reranker_config, workload_endpoint_resolver=workload_endpoint_resolver
-        )
-        if reranker_config.enabled and (reranker_endpoint or reranker_workload)
+        SearchReranker(reranker_config, llm_complete=llm_complete)
+        if reranker_config.enabled
         else None
     )
 
@@ -127,6 +109,7 @@ def build_search_router(
         query_refiner=query_refiner,
         reranker=reranker,
     )
+
 
 def _build_provider_config(
     provider_id: str, provider_settings: dict[str, Any]

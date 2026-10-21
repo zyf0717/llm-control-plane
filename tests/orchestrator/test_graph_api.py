@@ -2,7 +2,6 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -278,12 +277,12 @@ class FakeGraphLLMClient:
                         "reason": "test",
                     }
                 ),
-                "metadata": {"endpoint": kwargs["endpoint"]},
+                "metadata": {"endpoint": kwargs["endpoint"], "workload_type": kwargs.get("workload_type")},
             }
         if "Produce one repo-context query for citation retrieval." in prompt:
             return {
                 "text": json.dumps({"query": "Find graph support code."}),
-                "metadata": {"endpoint": kwargs["endpoint"]},
+                "metadata": {"endpoint": kwargs["endpoint"], "workload_type": kwargs.get("workload_type")},
             }
         if "Return strict JSON only" in prompt or "corrected strict JSON" in prompt:
             return {
@@ -295,11 +294,11 @@ class FakeGraphLLMClient:
                         "source_preferences": ["primary sources"],
                     }
                 ),
-                "metadata": {"endpoint": kwargs["endpoint"]},
+                "metadata": {"endpoint": kwargs["endpoint"], "workload_type": kwargs.get("workload_type")},
             }
         return {
             "text": f"answer: {prompt[:20]}",
-            "metadata": {"endpoint": kwargs["endpoint"]},
+            "metadata": {"endpoint": kwargs["endpoint"], "workload_type": kwargs.get("workload_type")},
         }
 
 
@@ -396,8 +395,6 @@ async def test_shipped_generated_graphs_execute_with_neutral_runtime_clients(
     graph_id,
     graph_input,
 ):
-    resolver = AsyncMock(return_value=SimpleNamespace(name="utility-node"))
-    monkeypatch.setattr(graph_common, "resolve_workload_endpoint", resolver)
     monkeypatch.setattr(graph_common, "LLM_CLIENT", FakeGraphLLMClient())
     monkeypatch.setattr(graph_common, "SEARCH_CLIENT", FakeGraphSearchClient())
     monkeypatch.setattr(graph_common, "RETRIEVAL_CLIENT", FakeGraphRetrievalClient())
@@ -431,9 +428,9 @@ async def test_shipped_generated_graphs_execute_with_neutral_runtime_clients(
         }.get(graph_id)
         if planner_key:
             outputs = snapshot["run"]["output"]["outputs"]
-            assert outputs[planner_key]["metadata"]["endpoint"] == "utility-node"
+            assert outputs[planner_key]["metadata"]["endpoint"] is None
+            assert outputs[planner_key]["metadata"]["workload_type"] == "utility"
             assert outputs["reply"]["metadata"]["endpoint"] == "selected-model"
-            resolver.assert_awaited_once_with("utility")
     finally:
         await store.close()
 

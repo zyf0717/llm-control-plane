@@ -29,7 +29,7 @@ async def test_workflow_model_metadata_survives_without_entering_prompt(monkeypa
         **reported, "choices": [{"message": {"content": "hello world"}}],
     })
     proxy = AsyncMock(return_value=response)
-    monkeypatch.setattr(upstream_proxy, "proxy_request", proxy)
+    monkeypatch.setattr(upstream_proxy, "complete_request", proxy)
     client = ProxyRuntimeLLMClient()
     request = dict(endpoint="node", prompt="hello", conversation_id="workflow",
                    skip_conversation=True)
@@ -53,14 +53,14 @@ async def test_workflow_model_metadata_survives_without_entering_prompt(monkeypa
         assert result["text"] == "hello world"
     for key, value in reported.items():
         assert metadata[key] == value
-    sent = await proxy.call_args.args[1].json()
+    sent = proxy.call_args.args[0]
     assert sent["messages"] == [{"role": "user", "content": "hello"}]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [False, True])
 async def test_upstream_http_error_is_a_failed_call(monkeypatch, stream):
-    monkeypatch.setattr(upstream_proxy, "proxy_request", AsyncMock(
+    monkeypatch.setattr(upstream_proxy, "complete_request", AsyncMock(
         return_value=JSONResponse({"error": "unavailable"}, status_code=503)))
     client = ProxyRuntimeLLMClient()
     with capture_llm_calls() as calls:

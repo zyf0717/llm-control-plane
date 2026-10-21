@@ -406,3 +406,15 @@ def test_create_history_select_choices_uses_conversation_id_as_value():
     assert utils.create_history_select_choices(conversations) == {
         "c3630b242ac7": "2026-05-21 13:48:40 | c3630b242ac7"
     }
+
+
+@pytest.mark.asyncio
+async def test_endpoint_discovery_surfaces_ambiguous_models(monkeypatch):
+    from src.dashboard.chat_controls import endpoint_models_text
+    monkeypatch.setattr(utils, "fetch_models_data", AsyncMock(return_value={
+        "object": "list", "data": [{"id": "served", "endpoint": "ready", "endpoint_url": "http://ready"}],
+        "errors": {"ambiguous": "Configure an explicit model; available models: a, b"},
+    }))
+    endpoints, _ = await utils.fetch_available_endpoints()
+    assert endpoints["ready"]["models"][0]["id"] == "served"
+    assert "Configure an explicit model" in endpoint_models_text(endpoints["ambiguous"])

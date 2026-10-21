@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from typing import Any, Dict, List, Optional
 
 import httpx
-from fastapi import HTTPException, Request
+from fastapi import HTTPException
 
 from src.search import EPHEMERAL_WEB_SEARCH_EVIDENCE_MARKER
 
@@ -25,36 +24,6 @@ class RequestProcessor:
     def _endpoint_key(path: str) -> str:
         """Extract the configured endpoint name from a proxy path."""
         return path.lstrip("/").split("/")[0] if path else ""
-
-    @staticmethod
-    def configured_endpoint_names() -> List[str]:
-        """Return currently configured concrete endpoint names."""
-        return [
-            str(endpoint.get("name") or "").strip()
-            for endpoint in services.endpoints
-            if str(endpoint.get("name") or "").strip()
-        ]
-
-    @staticmethod
-    def get_endpoint_config(path_or_endpoint: str) -> Optional[Dict[str, Any]]:
-        """Return endpoint config by path or endpoint name."""
-        endpoint_key = RequestProcessor._endpoint_key(path_or_endpoint)
-        for endpoint_config in services.endpoints:
-            if endpoint_config.get("name") == endpoint_key:
-                return endpoint_config
-        return None
-
-    @staticmethod
-    def get_endpoint_url(path: str) -> Optional[str]:
-        """Get target endpoint URL based on path and streaming preference."""
-        endpoint_config = RequestProcessor.get_endpoint_config(path)
-        if endpoint_config:
-            base_url = endpoint_config.get("url")
-            if base_url:
-                return f"{base_url}/v1/chat/completions"
-
-        services.logger.warning(f"No endpoint found for path: {path}")
-        return None
 
     @staticmethod
     def _normalize_conversation_id(raw_conversation_id: Optional[str]) -> Optional[str]:
@@ -316,38 +285,33 @@ class RequestProcessor:
 
     @staticmethod
     async def prepare_request(
-        request: Request,
+        body: Dict,
+        headers,
         effective_reasoning_effort: Optional[str] = None,
         *,
         persist_conversation: bool = True,
         history_mode: Optional[str] = None,
     ) -> tuple[Dict, Dict[str, str]]:
-        """Parse and enrich request with conversation history and reasoning."""
-        try:
-            raw_body = await request.body()
-            body = json.loads(raw_body) if raw_body else {}
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid JSON")
-
+        """Enrich a parsed payload with conversation history and reasoning."""
         if not isinstance(body, dict):
             return body, {}
 
         conversation_id = RequestProcessor._normalize_conversation_id(
-            request.headers.get("X-Conversation-ID")
+            headers.get("X-Conversation-ID")
         )
         try:
             resolved_history_mode = RequestProcessor._normalize_history_mode(
-                history_mode or request.headers.get("X-History-Mode")
+                history_mode or headers.get("X-History-Mode")
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not persist_conversation:
             resolved_history_mode = "none"
-        retrieval_endpoint = request.headers.get("X-Retrieval-Endpoint")
+        retrieval_endpoint = headers.get("X-Retrieval-Endpoint")
         reasoning_effort = (
             effective_reasoning_effort
             or RequestProcessor._normalize_reasoning_effort(
-                request.headers.get("X-Reasoning-Effort")
+                headers.get("X-Reasoning-Effort")
             )
         )
 
@@ -439,7 +403,7 @@ class RequestProcessor:
     async def apply_slot_affinity(
         body: Dict, conversation_id: Optional[str], endpoint_config: Optional[Dict[str, Any]]
     ) -> Dict[str, str]:
-        """Best-effort llama.cpp slot affinity for configured services.endpoints."""
+        """Best-effort slot affinity for a resolved endpoint."""
         if (
             not conversation_id
             or not endpoint_config

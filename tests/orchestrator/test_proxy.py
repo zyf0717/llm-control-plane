@@ -14,11 +14,18 @@ from fastapi.testclient import TestClient
 from src.logging_config import LOG_DIR_ENV
 from src.orchestrator import proxy_services as proxy_module
 from src.orchestrator.conversation_store import MemoryConversationStore
-from src.orchestrator.proxy import app, list_models
+from src.orchestrator.proxy import app
 from src.orchestrator.request_processor import RequestProcessor
-from src.orchestrator.upstream_proxy import ProxyHandler
-from src.orchestrator.utils import HeaderManager
+from src.orchestrator.upstream_proxy import complete_request
+from src.orchestrator.llm_router import LLMRouter
 from src.search.safety import EPHEMERAL_WEB_SEARCH_EVIDENCE_MARKER
+
+
+@pytest.fixture(autouse=True)
+def isolated_router(monkeypatch):
+    router = LLMRouter({"endpoints": {"test-endpoint": {"url": "https://test.example.com", "model": "test-model"}}})
+    monkeypatch.setattr(proxy_module, "llm_router", router)
+    monkeypatch.setattr(router, "models", AsyncMock(side_effect=httpx.ConnectError("Discovery unavailable")))
 
 
 @pytest.fixture
@@ -63,6 +70,7 @@ class _MockUpstreamResponse:
 
 
 class _FakeStreamingResponse:
+    status_code = 200
     headers = {}
 
     def raise_for_status(self):
@@ -74,6 +82,7 @@ class _FakeStreamingResponse:
 
 
 class _DelayedStreamingResponse:
+    status_code = 200
     headers = {}
 
     def __init__(self, release: asyncio.Event):
@@ -103,43 +112,6 @@ class _FakeStreamContext:
 class TestEndpointRouting:
     """Tests for endpoint routing functionality."""
 
-    def test_get_target_endpoint_streaming(self):
-        """Test endpoint routing for streaming requests."""
-        # Mock the endpoints configuration
-        mock_endpoints = [{"name": "test-endpoint", "url": "https://test.example.com"}]
-
-        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints):
-            # Should route to v1/chat/completions
-            result = RequestProcessor.get_endpoint_url("/test-endpoint")
-            assert result == "https://test.example.com/v1/chat/completions"
-
-    def test_get_target_endpoint_non_streaming(self):
-        """Test endpoint routing for non-streaming requests."""
-        # Mock the endpoints configuration
-        mock_endpoints = [{"name": "test-endpoint", "url": "https://test.example.com"}]
-
-        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints):
-            # Should route to v1/chat/completions
-            result = RequestProcessor.get_endpoint_url("/test-endpoint")
-            assert result == "https://test.example.com/v1/chat/completions"
-
-    def test_get_target_endpoint_unknown(self):
-        """Test endpoint routing for unknown endpoints."""
-        # Mock empty endpoints configuration
-        with patch("src.orchestrator.proxy_services.endpoints", []):
-            result = RequestProcessor.get_endpoint_url("/unknown-endpoint")
-            assert result is None
-
-    def test_get_target_endpoint_with_subpath(self):
-        """Test endpoint routing with subpaths."""
-        # Mock the endpoints configuration
-        mock_endpoints = [{"name": "test-endpoint", "url": "https://test.example.com"}]
-
-        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints):
-            # Should extract the first part of the path
-            result = RequestProcessor.get_endpoint_url("/test-endpoint/some/subpath")
-            assert result == "https://test.example.com/v1/chat/completions"
-
     def test_custom_endpoint_non_stream_includes_trace_header(
         self, client, monkeypatch, tmp_path
     ):
@@ -147,7 +119,7 @@ class TestEndpointRouting:
         mock_endpoints = [{"name": "test-endpoint", "url": "https://test.example.com"}]
         payload = {"choices": [{"message": {"content": "Hello"}}]}
 
-        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.llm_router.endpoints", {ep["name"]: {"model": "test-model", **ep} for ep in mock_endpoints}), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = AsyncMock()
@@ -181,7 +153,7 @@ class TestEndpointRouting:
         monkeypatch.setenv(LOG_DIR_ENV, str(tmp_path))
         mock_endpoints = [{"name": "test-endpoint", "url": "https://test.example.com"}]
 
-        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.llm_router.endpoints", {ep["name"]: {"model": "test-model", **ep} for ep in mock_endpoints}), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = Mock()
@@ -220,7 +192,7 @@ class TestEndpointRouting:
         monkeypatch.setenv(LOG_DIR_ENV, str(tmp_path))
         mock_endpoints = [{"name": "test-endpoint", "url": "https://test.example.com"}]
 
-        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.llm_router.endpoints", {ep["name"]: {"model": "test-model", **ep} for ep in mock_endpoints}), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = Mock()
@@ -272,9 +244,7 @@ class TestEndpointRouting:
             client = Mock()
             client.stream.return_value = _FakeStreamContext(upstream)
             client_class.return_value.__aenter__.return_value = client
-            response = await ProxyHandler.stream_response(
-                mock_request, "https://test.example.com/v1/chat/completions", {}, None
-            )
+            response = await complete_request({"stream": True, "messages": [{"role": "user", "content": "hi"}]}, endpoint="test-endpoint")
             content = b"".join([chunk async for chunk in response.body_iterator])
 
         assert b"ReadError: upstream response stream failed" in content
@@ -332,12 +302,7 @@ class TestEndpointRouting:
             )
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
-            response = await ProxyHandler.stream_response(
-                request,
-                "https://test.example.com/v1/chat/completions",
-                {},
-                "session-disconnect",
-            )
+            response = await complete_request({"stream": True, "messages": [{"role": "user", "content": "hi"}]}, {"X-Conversation-ID": "session-disconnect"}, endpoint="test-endpoint")
             stream = response.body_iterator
             first_chunk = await anext(stream)
             await stream.aclose()
@@ -356,33 +321,9 @@ class TestEndpointRouting:
             )
 
         assert memory_conversation_store.conversations["session-disconnect"] == [
+            {"role": "user", "content": "hi"},
             {"role": "assistant", "content": "FirstSecond"}
         ]
-
-
-class TestHeaderPreparation:
-    """Tests for header preparation functionality."""
-
-    def test_prepare_headers(self):
-        """Test header preparation with API keys."""
-        request = Mock()
-        request.headers = {
-            "content-type": "application/json",
-            "user-agent": "test-client",
-        }
-
-        with patch("src.orchestrator.utils.filter_unsafe_headers") as mock_filter:
-            mock_filter.return_value = {"content-type": "application/json"}
-
-            result = HeaderManager.prepare_upstream_headers(request)
-
-            expected = {
-                "content-type": "application/json",
-                "CF-Access-Client-Id": "test-api-key-id",
-                "CF-Access-Client-Secret": "test-api-secret",
-            }
-            assert result == expected
-            mock_filter.assert_called_once_with(dict(request.headers))
 
 
 class TestConversationHistory:
@@ -456,7 +397,7 @@ Need context"""
             "_fetch_retrieval_message",
             AsyncMock(return_value=(retrieval_user_content, retrieval_headers)),
         ):
-            body, response_headers = await RequestProcessor.prepare_request(request)
+            body, response_headers = await RequestProcessor.prepare_request(json.loads(await request.body()), request.headers)
 
         assert body["messages"] == [
             {"role": "system", "content": "Base system"},
@@ -495,7 +436,7 @@ Current question"""
             "_fetch_retrieval_message",
             AsyncMock(return_value=(retrieval_user_content, {"X-Retrieval-Injected": "true"})),
         ):
-            body, _response_headers = await RequestProcessor.prepare_request(request)
+            body, _response_headers = await RequestProcessor.prepare_request(json.loads(await request.body()), request.headers)
 
         assert body["messages"] == [
             {"role": "assistant", "content": "Earlier reply"},
@@ -524,7 +465,7 @@ Current question"""
             "_fetch_retrieval_message",
             AsyncMock(return_value=(None, {})),
         ):
-            body, _response_headers = await RequestProcessor.prepare_request(request)
+            body, _response_headers = await RequestProcessor.prepare_request(json.loads(await request.body()), request.headers)
 
         assert body["messages"][0] == {"role": "system", "content": "Reasoning: high"}
         assert await proxy_module.conversation_store.get_conversation("session-2") == [
@@ -554,7 +495,7 @@ Current question"""
             "_fetch_retrieval_message",
             AsyncMock(return_value=(None, {})),
         ):
-            body, _response_headers = await RequestProcessor.prepare_request(request)
+            body, _response_headers = await RequestProcessor.prepare_request(json.loads(await request.body()), request.headers)
 
         assert body["messages"][:2] == [
             {"role": "system", "content": "Be terse."},
@@ -593,7 +534,7 @@ Current question"""
             "_fetch_retrieval_message",
             AsyncMock(return_value=(None, {})),
         ):
-            body, _response_headers = await RequestProcessor.prepare_request(request)
+            body, _response_headers = await RequestProcessor.prepare_request(json.loads(await request.body()), request.headers)
 
         assert body["messages"] == [
             {
@@ -637,7 +578,7 @@ Current question"""
             return "Grounded user question", {}
 
         with patch.object(RequestProcessor, "_fetch_retrieval_message", fetch_rag):
-            body, _response_headers = await RequestProcessor.prepare_request(request)
+            body, _response_headers = await RequestProcessor.prepare_request(json.loads(await request.body()), request.headers)
 
         assert (
             RequestProcessor._latest_user_message(retrieval_messages_at_call)
@@ -685,7 +626,7 @@ Current question"""
             "_fetch_retrieval_message",
             AsyncMock(return_value=(None, {})),
         ):
-            body, _response_headers = await RequestProcessor.prepare_request(request)
+            body, _response_headers = await RequestProcessor.prepare_request(json.loads(await request.body()), request.headers)
 
         assert body["messages"] == [
             {"role": "user", "content": "Prior question"},
@@ -718,7 +659,7 @@ Current question"""
             "_fetch_retrieval_message",
             AsyncMock(return_value=(None, {})),
         ):
-            body, _response_headers = await RequestProcessor.prepare_request(request)
+            body, _response_headers = await RequestProcessor.prepare_request(json.loads(await request.body()), request.headers)
 
         assert body["messages"] == [
             {"role": "user", "content": "Prior question"},
@@ -748,7 +689,7 @@ Current question"""
             "_fetch_retrieval_message",
             AsyncMock(return_value=(None, {})),
         ):
-            body, _response_headers = await RequestProcessor.prepare_request(request)
+            body, _response_headers = await RequestProcessor.prepare_request(json.loads(await request.body()), request.headers)
 
         assert body["messages"] == [
             {"role": "user", "content": "Current question"}
@@ -773,7 +714,7 @@ Current question"""
         )
 
         with pytest.raises(HTTPException) as exc:
-            await RequestProcessor.prepare_request(request)
+            await RequestProcessor.prepare_request(json.loads(await request.body()), request.headers)
 
         assert exc.value.status_code == 400
         assert "unsupported history mode: compacted" in exc.value.detail
@@ -814,7 +755,7 @@ Current question"""
             "_fetch_retrieval_message",
             AsyncMock(return_value=(None, {})),
         ):
-            body, _response_headers = await RequestProcessor.prepare_request(request)
+            body, _response_headers = await RequestProcessor.prepare_request(json.loads(await request.body()), request.headers)
 
         assert body["messages"][0] == {"role": "system", "content": "Base system"}
         assert body["messages"][1]["role"] == "system"
@@ -884,7 +825,7 @@ Need context"""
             "_fetch_retrieval_message",
             AsyncMock(return_value=(retrieval_user_content, {"X-Retrieval-Injected": "true"})),
         ):
-            body, _response_headers = await RequestProcessor.prepare_request(request)
+            body, _response_headers = await RequestProcessor.prepare_request(json.loads(await request.body()), request.headers)
 
         assert body["messages"][0] == {
             "role": "user",
@@ -1238,7 +1179,7 @@ class TestCanonicalConversationState:
             AsyncMock(return_value=(None, {})),
         ):
             with pytest.raises(Exception) as exc_info:
-                await RequestProcessor.prepare_request(request)
+                await RequestProcessor.prepare_request(json.loads(await request.body()), request.headers)
 
         assert getattr(exc_info.value, "status_code", None) == 400
         assert await proxy_module.conversation_store.get_conversation("session-replay") == [
@@ -1276,7 +1217,7 @@ class TestCanonicalConversationState:
             "_fetch_retrieval_message",
             AsyncMock(return_value=(None, {})),
         ):
-            body, _headers = await RequestProcessor.prepare_request(request)
+            body, _headers = await RequestProcessor.prepare_request(json.loads(await request.body()), request.headers)
 
         assert body["messages"][-1] == {"role": "user", "content": "Follow-up"}
         assert await proxy_module.conversation_store.get_conversation("session-ephemeral") == [
@@ -1289,7 +1230,7 @@ class TestCanonicalConversationState:
             {"name": "primary", "url": "https://primary.example.com"},
             {"name": "secondary", "url": "https://secondary.example.com"},
         ]
-        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.llm_router.endpoints", {ep["name"]: {"model": "test-model", **ep} for ep in mock_endpoints}), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = AsyncMock()
@@ -1319,7 +1260,7 @@ class TestCanonicalConversationState:
             {"name": "primary", "url": "https://primary.example.com"},
             {"name": "secondary", "url": "https://secondary.example.com"},
         ]
-        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.llm_router.endpoints", {ep["name"]: {"model": "test-model", **ep} for ep in mock_endpoints}), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = AsyncMock()
@@ -1371,7 +1312,7 @@ class TestCanonicalConversationState:
 
     def test_reasoning_conflict_without_opt_in_returns_409(self, client):
         mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
-        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.llm_router.endpoints", {ep["name"]: {"model": "test-model", **ep} for ep in mock_endpoints}), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = AsyncMock()
@@ -1404,7 +1345,7 @@ class TestCanonicalConversationState:
         self, client, memory_conversation_store
     ):
         mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
-        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.llm_router.endpoints", {ep["name"]: {"model": "test-model", **ep} for ep in mock_endpoints}), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = AsyncMock()
@@ -1449,7 +1390,7 @@ class TestCanonicalConversationState:
 
     def test_pinned_reasoning_is_reused_when_later_turn_omits_header(self, client):
         mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
-        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.llm_router.endpoints", {ep["name"]: {"model": "test-model", **ep} for ep in mock_endpoints}), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = AsyncMock()
@@ -1486,7 +1427,7 @@ class TestCanonicalConversationState:
         mock_endpoints = [{
             "name": "primary", "url": "https://primary.example.com", "slot_affinity": True,
         }]
-        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.llm_router.endpoints", {ep["name"]: {"model": "test-model", **ep} for ep in mock_endpoints}), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = AsyncMock()
@@ -1516,7 +1457,7 @@ class TestCanonicalConversationState:
 
     def test_skip_conversation_header_bypasses_state_and_message_persistence(self, client):
         mock_endpoints = [{"name": "primary", "url": "https://primary.example.com"}]
-        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.llm_router.endpoints", {ep["name"]: {"model": "test-model", **ep} for ep in mock_endpoints}), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = AsyncMock()
@@ -1558,7 +1499,7 @@ class TestCanonicalConversationState:
         slots_response.raise_for_status = Mock()
         slots_response.json.return_value = [{"id": 2, "is_processing": False}]
 
-        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.llm_router.endpoints", {ep["name"]: {"model": "test-model", **ep} for ep in mock_endpoints}), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = AsyncMock()
@@ -1592,7 +1533,7 @@ class TestCanonicalConversationState:
         slots_response = Mock()
         slots_response.raise_for_status.side_effect = Exception("not found")
 
-        with patch("src.orchestrator.proxy_services.endpoints", mock_endpoints), patch(
+        with patch("src.orchestrator.proxy_services.llm_router.endpoints", {ep["name"]: {"model": "test-model", **ep} for ep in mock_endpoints}), patch(
             "httpx.AsyncClient"
         ) as mock_client_class:
             mock_client = AsyncMock()
@@ -1613,256 +1554,3 @@ class TestCanonicalConversationState:
         upstream_body = mock_client.post.call_args.kwargs["json"]
         assert "id_slot" not in upstream_body
         assert "cache_prompt" not in upstream_body
-
-
-class TestModelsEndpoint:
-    """Tests for the /models endpoint functionality."""
-
-    @pytest.mark.asyncio
-    async def test_list_models_cancels_stalled_probes_and_keeps_healthy_models(self):
-        endpoints = [
-            {"name": name, "url": f"https://{name}.example.com"}
-            for name in ["slow-a", "healthy", "slow-b"]
-        ]
-        cancelled = set()
-        real_timeout = asyncio.timeout
-
-        async def mock_get(url, **_kwargs):
-            if "slow-" in url:
-                try:
-                    await asyncio.Event().wait()
-                finally:
-                    cancelled.add(url)
-            return _MockUpstreamResponse({"data": [{"id": "halogen-qwen3.8-flash-next"}]})
-
-        with (
-            patch("src.orchestrator.proxy_services.endpoints", endpoints),
-            patch("httpx.AsyncClient") as mock_client_class,
-            patch(
-                "src.orchestrator.proxy.asyncio.timeout",
-                side_effect=lambda _seconds: real_timeout(0.05),
-            ) as deadline,
-        ):
-            mock_client = AsyncMock()
-            mock_client.get.side_effect = mock_get
-            mock_client_class.return_value.__aenter__.return_value = mock_client
-
-            result = await asyncio.wait_for(list_models(), timeout=1.0)
-
-        assert [call.args for call in deadline.call_args_list] == [(2.0,)] * 3
-        assert cancelled == {
-            "https://slow-a.example.com/v1/models",
-            "https://slow-b.example.com/v1/models",
-        }
-        assert [(model["endpoint"], model["id"]) for model in result["data"]] == [
-            ("healthy", "halogen-qwen3.8-flash-next")
-        ]
-        assert proxy_module.reachable_endpoints == ["healthy"]
-
-    @pytest.mark.asyncio
-    async def test_list_models_success(self):
-        """Test successful models endpoint with mock responses."""
-        test_client = TestClient(app)
-        # Mock the endpoints configuration
-        mock_endpoints = [
-            {
-                "name": "test-endpoint-1",
-                "url": "https://test1.example.com",
-                "gpu": "NVIDIA RTX 4090",
-                "vram": "24GB",
-                "cpu": "Intel i9",
-                "ram": "64GB",
-            },
-            {
-                "name": "test-endpoint-2",
-                "url": "https://test2.example.com",
-                "gpu": "Apple M2 Max",
-                "cpu": "Apple M2 Max",
-                "ram": "32GB",
-            },
-        ]
-
-        # Mock model responses from endpoints
-        mock_response_1 = {
-            "data": [
-                {
-                    "id": "gpt-test-1",
-                    "object": "model",
-                    "created": 1234567890,
-                    "owned_by": "test-org-1",
-                }
-            ]
-        }
-
-        mock_response_2 = {
-            "models": [
-                {"id": "gpt-test-2", "created": 1234567891, "owned_by": "test-org-2"}
-            ]
-        }
-
-        with (
-            patch("src.orchestrator.proxy_services.endpoints", mock_endpoints),
-            patch("httpx.AsyncClient") as mock_client_class,
-        ):
-
-            mock_client = AsyncMock()
-            mock_client_class.return_value.__aenter__.return_value = mock_client
-
-            # Mock responses for each endpoint
-            async def mock_get(url, **_kwargs):
-                mock_response = Mock()
-                mock_response.raise_for_status = Mock()
-
-                if "test1.example.com" in url:
-                    mock_response.json.return_value = mock_response_1
-                elif "test2.example.com" in url:
-                    mock_response.json.return_value = mock_response_2
-                else:
-                    mock_response.json.return_value = {"data": []}
-
-                return mock_response
-
-            mock_client.get = mock_get
-
-            response = test_client.get("/models")
-
-            assert response.status_code == 200
-            data = response.json()
-
-            # Check OpenAI-compatible format
-            assert data["object"] == "list"
-            assert "data" in data
-            assert len(data["data"]) == 2
-
-            # Check first model has injected metadata
-            model1 = data["data"][0]
-            assert model1["id"] == "gpt-test-1"
-            assert model1["endpoint"] == "test-endpoint-1"
-            assert model1["gpu"] == "NVIDIA RTX 4090"
-            assert model1["vram"] == "24GB"
-            assert model1["cpu"] == "Intel i9"
-            assert model1["ram"] == "64GB"
-
-            # Check second model
-            model2 = data["data"][1]
-            assert model2["id"] == "gpt-test-2"
-            assert model2["endpoint"] == "test-endpoint-2"
-            assert model2["gpu"] == "Apple M2 Max"
-            assert "vram" not in model2  # Should not have vram since not in config
-
-    @pytest.mark.asyncio
-    async def test_list_models_keeps_evo_x2_primary_utility_distinct(self):
-        """Test /models exposes the Evo X2 servers as distinct endpoints."""
-        test_client = TestClient(app)
-        mock_endpoints = [
-            {
-                "name": "evo-x2-primary",
-                "url": "https://llm-evo-x2.paperclips.dev",
-                "soc": "AMD Ryzen AI Max+ 395",
-                "ram": "128GB",
-            },
-            {
-                "name": "evo-x2-utility",
-                "url": "https://llm-evo-x2-utility.paperclips.dev",
-                "soc": "AMD Ryzen AI Max+ 395",
-                "ram": "128GB",
-            },
-        ]
-
-        with (
-            patch("src.orchestrator.proxy_services.endpoints", mock_endpoints),
-            patch("httpx.AsyncClient") as mock_client_class,
-        ):
-            mock_client = AsyncMock()
-            mock_client_class.return_value.__aenter__.return_value = mock_client
-
-            async def mock_get(url, **_kwargs):
-                mock_response = Mock()
-                mock_response.raise_for_status = Mock()
-                if "evo-x2-utility" in url:
-                    mock_response.json.return_value = {
-                        "data": [{"id": "utility-model", "object": "model"}]
-                    }
-                else:
-                    mock_response.json.return_value = {
-                        "data": [{"id": "primary-model", "object": "model"}]
-                    }
-                return mock_response
-
-            mock_client.get = mock_get
-
-            response = test_client.get("/models")
-
-        assert response.status_code == 200
-        models = response.json()["data"]
-        assert {
-            (model["endpoint"], model["id"])
-            for model in models
-        } == {
-            ("evo-x2-primary", "primary-model"),
-            ("evo-x2-utility", "utility-model"),
-        }
-        assert all(model["soc"] == "AMD Ryzen AI Max+ 395" for model in models)
-        assert all(model["ram"] == "128GB" for model in models)
-
-    @pytest.mark.asyncio
-    async def test_list_models_endpoint_failure(self):
-        """Test models endpoint handles individual endpoint failures gracefully."""
-        test_client = TestClient(app)
-        mock_endpoints = [
-            {"name": "failing-endpoint", "url": "https://failing.example.com"},
-            {"name": "working-endpoint", "url": "https://working.example.com"},
-        ]
-
-        mock_working_response = {
-            "data": [{"id": "working-model", "object": "model", "created": 1234567890}]
-        }
-
-        with (
-            patch("src.orchestrator.proxy_services.endpoints", mock_endpoints),
-            patch("httpx.AsyncClient") as mock_client_class,
-        ):
-
-            mock_client = AsyncMock()
-            mock_client_class.return_value.__aenter__.return_value = mock_client
-
-            async def mock_get(url, **_kwargs):
-                mock_response = Mock()
-
-                if "failing.example.com" in url:
-                    # Simulate HTTP error
-                    mock_response.raise_for_status.side_effect = Exception(
-                        "Connection failed"
-                    )
-                elif "working.example.com" in url:
-                    mock_response.raise_for_status = Mock()
-                    mock_response.json.return_value = mock_working_response
-
-                return mock_response
-
-            mock_client.get = mock_get
-
-            response = test_client.get("/models")
-
-            assert response.status_code == 200
-            data = response.json()
-
-            # Should still return successful models despite one endpoint failing
-            assert data["object"] == "list"
-            assert len(data["data"]) == 1
-            assert data["data"][0]["id"] == "working-model"
-
-    def test_list_models_empty_config(self):
-        """Test models endpoint with empty configuration."""
-        test_client = TestClient(app)
-        with patch("src.orchestrator.proxy_services.endpoints", []):
-            response = test_client.get("/models")
-
-            assert response.status_code == 200
-            data = response.json()
-            assert data["object"] == "list"
-            assert data["data"] == []
-
-
-if __name__ == "__main__":
-    pytest.main([__file__])

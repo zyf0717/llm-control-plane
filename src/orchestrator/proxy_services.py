@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -10,7 +9,7 @@ from src.logging_config import configure_logging
 from src.search import build_search_router
 
 from .config import CONFIG_FILE, load_config
-from .llm_router import resolve_workload_url
+from .llm_router import LLMRouter
 from .conversation_store import (
     ConversationStore,
     MemoryConversationStore,
@@ -24,13 +23,13 @@ load_dotenv()
 configure_logging()
 
 config = load_config(CONFIG_FILE)
-endpoints = config.get("endpoints", [])
+llm_router = LLMRouter(config)
 retrieval_config = config.get("retrieval", {})
 RETRIEVAL_TOP_K = int(retrieval_config.get("top_k", 3))
 search_service = build_search_router(
     config.get("search", {}),
-    query_refiner_headers=HeaderManager.create_auth_headers(),
-    workload_endpoint_resolver=resolve_workload_url,
+    reranker_headers=HeaderManager.create_auth_headers(),
+    llm_complete=llm_router.complete,
 )
 repo_context_client = RepoContextClient(load_repo_context_config(config))
 
@@ -43,8 +42,7 @@ workflow_executor = None
 graph_registry = None
 graph_store = None
 graph_executor = None
-reachable_endpoints: list[str] = []
-VALID_REASONING_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+VALID_REASONING_EFFORTS = {"none", "low", "medium", "high", "xhigh", "max"}
 conversation_finalization_tasks: set[asyncio.Task] = set()
 stream_producer_tasks: set[asyncio.Task] = set()
 SWITCH_WARNING_MESSAGE = (

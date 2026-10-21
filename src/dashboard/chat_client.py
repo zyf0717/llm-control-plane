@@ -198,10 +198,6 @@ async def stream_chat_response(
             payload["temperature"] = temperature
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
-        if endpoint_key != "smart":
-            models = endpoints_dict[endpoint_key].get("models", [])
-            if models and models[0].get("id"):
-                payload["model"] = models[0]["id"]
         headers = {
             "CF-Access-Client-Id": API_KEY_ID,
             "CF-Access-Client-Secret": API_KEY_SECRET,

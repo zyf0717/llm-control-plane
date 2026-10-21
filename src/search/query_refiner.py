@@ -7,11 +7,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-import httpx
-
 from src.llm_metrics import CallMetrics, llm_response_metadata
 
-from .types import SearchArgs, WorkloadEndpointResolver
+from .types import LLMCompletion, SearchArgs
 
 _ALLOWED_FRESHNESS = {"day", "week", "month", "none"}
 logger = logging.getLogger(__name__)
@@ -22,14 +20,10 @@ class SearchQueryRefinerConfig:
     """Bounded query-refiner configuration."""
 
     enabled: bool = False
-    model_endpoint: Optional[str] = None
-    workload_type: Optional[str] = None
-    model: str = "search-query-refiner"
     timeout_ms: int = 7000
     max_source_chars: int = 12000
     max_output_tokens: int = 512
     max_queries: int = 1
-    headers: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -73,58 +67,27 @@ class SearchQueryRefiner:
         self,
         config: SearchQueryRefinerConfig,
         *,
-        workload_endpoint_resolver: WorkloadEndpointResolver | None = None,
+        llm_complete: LLMCompletion | None = None,
     ):
-        if config.workload_type and config.model_endpoint:
-            raise ValueError("query refiner cannot set both model_endpoint and workload_type")
-        if config.workload_type and workload_endpoint_resolver is None:
-            raise ValueError("query refiner workload_type requires a workload endpoint resolver")
         self.config = config
-        self.workload_endpoint_resolver = workload_endpoint_resolver
+        self.llm_complete = llm_complete
 
     async def refine(self, args: SearchArgs) -> SearchQueryRefinement:
-        if not self.config.enabled or not (
-            self.config.model_endpoint or self.config.workload_type
-        ):
-            logger.info(
-                "search query refiner skipped: enabled=%s endpoint_configured=%s",
-                self.config.enabled,
-                bool(self.config.model_endpoint or self.config.workload_type),
-            )
+        if not self.config.enabled or self.llm_complete is None:
             return SearchQueryRefinement(
                 effective_query=args.query, queries=[args.query], used=False
             )
 
         try:
             payload = self._build_payload(args)
-            endpoint_base = self.config.model_endpoint
-            if self.config.workload_type:
-                endpoint_base = await self.workload_endpoint_resolver(self.config.workload_type)
-            endpoint = endpoint_base.rstrip("/") + "/v1/chat/completions"
-            logger.info(
-                "search query refiner request: endpoint=%s max_queries=%d source_text=%s",
-                endpoint,
-                self._max_queries(),
-                bool(args.source_text),
-            )
-
-            with CallMetrics(label="Query refinement", metadata={"endpoint": endpoint}) as call:
-                async with httpx.AsyncClient(
-                    timeout=self.config.timeout_ms / 1000
-                ) as client:
-                    response = await client.post(
-                        endpoint,
-                        json=payload,
-                        headers=self.config.headers,
-                    )
-                    response.raise_for_status()
-
-                data = response.json()
+            with CallMetrics(label="Query refinement") as call:
+                data = await self.llm_complete(
+                    payload, timeout=self.config.timeout_ms / 1000
+                )
+                call.metadata["endpoint"] = data.get("endpoint")
                 call.metadata.update(llm_response_metadata(data))
                 content = (
-                    data.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
+                    data.get("choices", [{}])[0].get("message", {}).get("content", "")
                 )
                 parsed = self._parse_json(content)
                 refined_queries = self._clean_queries(parsed, args.query)
@@ -198,7 +161,7 @@ Rules:
             "max_queries": max_queries,
         }
         return {
-            "model": self.config.model,
+            "reasoning_effort": "none",
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {

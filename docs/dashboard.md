@@ -60,7 +60,7 @@ The dashboard sends concrete machine endpoint requests to `/{endpoint}`. Smart r
 When the user submits a message, the dashboard sends:
 
 - selected machine endpoint
-- optional `X-Convo-ID`
+- optional `X-Conversation-ID`
 - optional `X-Reasoning-Effort`
 - optional `X-RAG-Endpoint`
 - optional system prompt as the first explicit system message

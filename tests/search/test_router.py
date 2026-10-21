@@ -39,13 +39,12 @@ async def test_search_exposes_refiner_call_even_when_query_unchanged_or_failed(m
                "timings": {"prompt_per_second": 300},
                "choices": [{"message": {"content": '{"query": "same"}'}}]}
     response = httpx.Response(200, json=payload, request=httpx.Request("POST", "http://utility"))
-    post = AsyncMock(side_effect=httpx.ReadTimeout("lost")) if failure else AsyncMock(return_value=response)
-    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    post = AsyncMock(side_effect=httpx.ReadTimeout("lost")) if failure else AsyncMock(return_value=payload)
     provider = StubProvider("stub", SearchResponse(query="same", provider="stub", results=[]))
     router = SearchRouter(SearchConfig(default_provider="stub"), providers={"stub": provider},
                           provider_configs={"stub": SearchProviderConfig(enabled=True)},
                           query_refiner=SearchQueryRefiner(SearchQueryRefinerConfig(
-                              enabled=True, model_endpoint="http://utility")))
+                              enabled=True), llm_complete=post))
     with capture_llm_calls() as parent:
         response = await router.search(SearchArgs(query="same"))
     assert response.query_refinement["used"] is False

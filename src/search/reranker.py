@@ -13,7 +13,7 @@ import httpx
 from src.llm_metrics import CallMetrics, llm_response_metadata
 from jsonschema import Draft202012Validator
 
-from .types import SearchResult, WorkloadEndpointResolver
+from .types import LLMCompletion, SearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +46,9 @@ class SearchRerankerConfig:
     """Bounded search-reranker configuration."""
 
     enabled: bool = False
-    model_endpoint: Optional[str] = None
-    fallback_model_endpoint: Optional[str] = None
-    workload_type: Optional[str] = None
-    fallback_workload_type: Optional[str] = None
+    endpoint: Optional[str] = None
     backend: str = "llm"
-    model: str = "search-reranker"
+    model: str | None = None
     timeout_ms: int = 7000
     max_source_chars: int = 12000
     max_candidates: int = 20
@@ -93,22 +90,10 @@ class SearchReranker:
         self,
         config: SearchRerankerConfig,
         *,
-        workload_endpoint_resolver: WorkloadEndpointResolver | None = None,
+        llm_complete: LLMCompletion | None = None,
     ):
-        if config.workload_type and config.model_endpoint:
-            raise ValueError("reranker cannot set both model_endpoint and workload_type")
-        if config.fallback_workload_type and config.fallback_model_endpoint:
-            raise ValueError(
-                "reranker cannot set both fallback_model_endpoint and fallback_workload_type"
-            )
-        if config.workload_type and config.backend != "llm":
-            raise ValueError("reranker workload_type requires the llm backend")
-        if (
-            config.workload_type or config.fallback_workload_type
-        ) and workload_endpoint_resolver is None:
-            raise ValueError("reranker workload_type requires a workload endpoint resolver")
         self.config = config
-        self.workload_endpoint_resolver = workload_endpoint_resolver
+        self.llm_complete = llm_complete
 
     async def rerank(
         self,
@@ -122,15 +107,13 @@ class SearchReranker:
             logger.info("search reranker skipped: no results")
             return SearchReranking(results=results, used=False, path="none")
         result_limit = self._result_limit(top_k, len(results))
-        if not self.config.enabled or not (
-            self.config.model_endpoint or self.config.workload_type
-        ):
+        if not self.config.enabled or not (self.config.endpoint or self.llm_complete):
             results = results[:result_limit]
             self._repair_ranks(results)
             logger.info(
                 "search reranker skipped: enabled=%s endpoint_configured=%s results=%d",
                 self.config.enabled,
-                bool(self.config.model_endpoint or self.config.workload_type),
+                bool(self.config.endpoint or self.llm_complete),
                 len(results),
             )
             return SearchReranking(results=results, used=False, path="none")
@@ -167,8 +150,6 @@ class SearchReranker:
             )
 
         return await self._rerank_llm(
-            endpoint_base=self.config.model_endpoint,
-            workload_type=self.config.workload_type,
             query=query,
             candidates=candidates,
             passthrough=passthrough,
@@ -193,7 +174,7 @@ class SearchReranker:
             payload = self._build_dedicated_payload(
                 query=query, results=candidates, source_text=source_text, top_k=top_k
             )
-            endpoint = self.config.model_endpoint.rstrip("/") + "/rerank"
+            endpoint = self.config.endpoint.rstrip("/") + "/rerank"
             logger.info(
                 "search reranker request: path=dedicated endpoint=%s candidates=%d",
                 endpoint,
@@ -233,9 +214,7 @@ class SearchReranker:
             )
         except Exception as exc:
             warning = f"dedicated-reranker-failed: {type(exc).__name__}"
-            if not (
-                self.config.fallback_model_endpoint or self.config.fallback_workload_type
-            ):
+            if self.llm_complete is None:
                 logger.warning(
                     "search reranker failed: path=dedicated fallback=none warning=%s",
                     warning,
@@ -246,14 +225,12 @@ class SearchReranker:
             logger.warning(
                 "search reranker fallback activated: from=dedicated to=llm "
                 "dedicated_endpoint=%s fallback_endpoint=%s warning=%s",
-                self.config.model_endpoint,
-                self.config.fallback_model_endpoint or self.config.fallback_workload_type,
+                self.config.endpoint,
+                "utility",
                 warning,
                 exc_info=True,
             )
             fallback = await self._rerank_llm(
-                endpoint_base=self.config.fallback_model_endpoint,
-                workload_type=self.config.fallback_workload_type,
                 query=query,
                 candidates=candidates,
                 passthrough=passthrough,
@@ -277,8 +254,6 @@ class SearchReranker:
     async def _rerank_llm(
         self,
         *,
-        endpoint_base: Optional[str],
-        workload_type: Optional[str] = None,
         query: str,
         candidates: list[SearchResult],
         passthrough: list[SearchResult],
@@ -290,7 +265,7 @@ class SearchReranker:
         success_warning: Optional[str] = None,
         degraded_on_success: bool = False,
     ) -> SearchReranking:
-        if not (endpoint_base or workload_type):
+        if self.llm_complete is None:
             logger.warning(
                 "search reranker failed: path=%s warning=%s",
                 backend,
@@ -302,36 +277,17 @@ class SearchReranker:
                 backend=backend,
             )
         try:
-            if workload_type:
-                endpoint_base = await self.workload_endpoint_resolver(workload_type)
             payload = self._build_llm_payload(
                 query=query, results=candidates, source_text=source_text, top_k=top_k
             )
-            endpoint = endpoint_base.rstrip("/") + "/v1/chat/completions"
-            logger.info(
-                "search reranker request: path=%s endpoint=%s candidates=%d",
-                backend,
-                endpoint,
-                len(candidates),
-            )
-
-            with CallMetrics(label="LLM reranking", metadata={"endpoint": endpoint}) as call:
-                async with httpx.AsyncClient(
-                    timeout=self.config.timeout_ms / 1000
-                ) as client:
-                    response = await client.post(
-                        endpoint,
-                        json=payload,
-                        headers=self.config.headers,
-                    )
-                    response.raise_for_status()
-
-                data = response.json()
+            with CallMetrics(label="LLM reranking") as call:
+                data = await self.llm_complete(
+                    payload, timeout=self.config.timeout_ms / 1000
+                )
+                call.metadata["endpoint"] = data.get("endpoint")
                 call.metadata.update(llm_response_metadata(data))
                 content = (
-                    data.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
+                    data.get("choices", [{}])[0].get("message", {}).get("content", "")
                 )
                 parsed = self._parse_json(content)
                 ordered = self._apply_ranking(candidates, parsed)
@@ -341,11 +297,13 @@ class SearchReranker:
                         backend,
                     )
                     call.on_error("empty ranking")
-                    return self._fallback(results[:top_k], "empty-ranking", backend=backend)
+                    return self._fallback(
+                        results[:top_k], "empty-ranking", backend=backend
+                    )
 
                 reranked = [*ordered, *passthrough][:top_k]
                 self._repair_ranks(reranked)
-                self._annotate_reranker_path(reranked, backend)
+                self._annotate_reranker_path(reranked, backend, data.get("model"))
                 logger.info(
                     "search reranker completed: path=%s results=%d degraded=%s warning=%s",
                     backend,
@@ -358,7 +316,7 @@ class SearchReranker:
                     used=True,
                     degraded=degraded_on_success,
                     warning=success_warning,
-                    model=self.config.model,
+                    model=data.get("model"),
                     backend=backend,
                     path=backend,
                 )
@@ -419,7 +377,7 @@ Rules:
             "candidates": candidates,
         }
         return {
-            "model": self.config.model,
+            "reasoning_effort": "none",
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {
@@ -535,7 +493,7 @@ Rules:
             result = by_id[candidate_id]
             result.score = self._clean_score(item.get("score"))
             reason = self._clean_reason(item.get("reason"))
-            result.ranking = {"reranker": self.config.model}
+            result.ranking = {}
             if reason:
                 result.ranking["reason"] = reason
             used_ids.add(candidate_id)
@@ -639,14 +597,15 @@ Rules:
             result.rank = index
 
     def _annotate_reranker_path(
-        self, results: list[SearchResult], path: str
+        self, results: list[SearchResult], path: str, model: str | None = None
     ) -> None:
         for result in results:
             result.ranking = {
-                "reranker": self.config.model,
                 **dict(result.ranking or {}),
                 "reranker_path": path,
             }
+            if model or self.config.model:
+                result.ranking["reranker"] = model or self.config.model
 
     def _fallback(
         self,
@@ -667,7 +626,7 @@ Rules:
             used=False,
             degraded=True,
             warning=warning,
-            model=self.config.model if self.config.model_endpoint else None,
+            model=self.config.model if self.config.endpoint else None,
             backend=backend,
             path="none",
         )

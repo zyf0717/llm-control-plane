@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Dict, Optional
 
 import httpx
 from fastapi import HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
+from starlette.datastructures import Headers
 
 from . import proxy_services as services
-from .llm_router import get_router
+from .llm_router import has_images
 from .request_processor import RequestProcessor
 from .trace import RequestTrace
 from .utils import (
@@ -21,314 +21,293 @@ from .utils import (
     process_stream_line,
 )
 
-class ProxyHandler:
-    """Handles HTTP proxying to upstream endpoints."""
 
+class ProxyHandler:
     @staticmethod
     async def stream_response(
-        request: Request,
-        target_url: str,
-        body: Dict,
-        conversation_id: Optional[str],
-        extra_headers: Dict = None,
-        trace: RequestTrace = None,
-    ) -> StreamingResponse:
-        """Handle streaming response."""
-        timeout = httpx.Timeout(connect=20, read=None, write=20, pool=20)
-        headers = HeaderManager.prepare_upstream_headers(request, for_streaming=True)
-        body["stream_options"] = {"include_usage": True}
-
+        upstream, conversation_id, response_headers, trace, on_ready
+    ):
+        """Open upstream before sending headers; keep draining after downstream leaves."""
         acc = SSEAccumulator()
-        chunks: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
+        chunks = asyncio.Queue()
+        ready = asyncio.get_running_loop().create_future()
+        # The caller can leave before an upstream error arrives.
+        ready.add_done_callback(
+            lambda future: None if future.cancelled() else future.exception()
+        )
         downstream_open = True
 
-        async def emit(chunk: bytes) -> None:
-            if downstream_open:
-                await chunks.put(chunk)
-
         async def produce():
+            started = False
             try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    async with client.stream(
-                        "POST", target_url, headers=headers, json=body
-                    ) as resp:
-                        resp.raise_for_status()
-
-                        start_reasoning_buffer = ""
-                        end_reasoning_buffer = ""
-                        async for line in resp.aiter_lines():
-                            (
-                                chunk,
-                                start_reasoning_buffer,
-                                end_reasoning_buffer,
-                                should_continue,
-                            ) = await process_stream_line(
-                                line, acc, start_reasoning_buffer, end_reasoning_buffer
-                            )
-
-                            if chunk:
-                                await emit(chunk)
-
-                            if not should_continue:
-                                break
-
-            except httpx.HTTPStatusError as e:
-                if trace:
-                    trace.status_code = e.response.status_code
-                    trace.error_class = type(e).__name__
-                await emit(
-                    create_error_sse_message(
-                        "error",
-                        status=e.response.status_code,
-                        detail=f"HTTP {e.response.status_code}",
+                async with upstream as (target, response):
+                    await on_ready(target)
+                    trace.apply_headers(response_headers)
+                    try:
+                        trace.emit(status_code=200, phase="started")
+                    except OSError:
+                        services.logger.exception("Failed to emit request trace")
+                    started = True
+                    ready.set_result(None)
+                    start_buffer = end_buffer = ""
+                    async for line in response.aiter_lines():
+                        (
+                            chunk,
+                            start_buffer,
+                            end_buffer,
+                            keep_reading,
+                        ) = await process_stream_line(
+                            line, acc, start_buffer, end_buffer
+                        )
+                        if chunk and downstream_open:
+                            await chunks.put(chunk)
+                        if not keep_reading:
+                            break
+            except asyncio.CancelledError:
+                if not ready.done():
+                    ready.cancel()
+                raise
+            except Exception as exc:
+                if not started:
+                    ready.set_exception(exc)
+                else:
+                    trace.status_code = (
+                        exc.response.status_code
+                        if isinstance(exc, httpx.HTTPStatusError)
+                        else 500
                     )
-                )
-            except Exception as e:
-                if trace:
-                    trace.status_code = 500
-                    trace.error_class = type(e).__name__
-                services.logger.exception("Upstream stream failed: %s", target_url)
-                detail = str(e).strip() or f"{type(e).__name__}: upstream response stream failed"
-                await emit(create_error_sse_message("error", detail=detail))
+                    trace.error_class = type(exc).__name__
+                    services.logger.exception(
+                        "Upstream stream failed: %s", trace.endpoint
+                    )
+                    detail = (
+                        str(exc).strip()
+                        or f"{type(exc).__name__}: upstream response stream failed"
+                    )
+                    if downstream_open:
+                        await chunks.put(
+                            create_error_sse_message("error", detail=detail)
+                        )
             finally:
-                await RequestProcessor.finalize_stream_response(
-                    conversation_id, acc.text(), trace
-                )
+                if started:
+                    await RequestProcessor.finalize_stream_response(
+                        conversation_id, acc.text(), trace
+                    )
                 if downstream_open:
                     await chunks.put(None)
 
         services.track_stream_producer(asyncio.create_task(produce()))
+        try:
+            await asyncio.shield(ready)
+        except BaseException:
+            downstream_open = False
+            raise
 
         async def stream():
             nonlocal downstream_open
             try:
-                while True:
-                    chunk = await chunks.get()
-                    if chunk is None:
-                        break
+                while (chunk := await chunks.get()) is not None:
                     yield chunk
             finally:
                 downstream_open = False
-
-        response_headers = HeaderManager.create_response_headers(
-            conversation_id=conversation_id, for_streaming=True
-        )
-        if extra_headers:
-            response_headers.update(extra_headers)
-        if trace:
-            trace.apply_headers(response_headers)
-            try:
-                trace.emit(status_code=200, phase="started")
-            except Exception:
-                services.logger.exception("Failed to emit request trace")
 
         return StreamingResponse(
             stream(), media_type="text/event-stream", headers=response_headers
         )
 
     @staticmethod
-    async def non_stream_response(
-        request: Request,
-        target_url: str,
-        body: Dict,
-        conversation_id: Optional[str],
-        extra_headers: Dict = None,
-        trace: RequestTrace = None,
-    ) -> Response:
-        """Handle non-streaming response."""
-        headers = HeaderManager.prepare_upstream_headers(request)
-
+    async def non_stream_response(response, conversation_id, response_headers, trace):
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
-                resp = await client.post(target_url, headers=headers, json=body)
-                resp.raise_for_status()
-
-                # Process response and extract reasoning
-                try:
-                    resp_json = resp.json()
-                    processed_resp = process_non_stream_response(resp_json)
-
-                    # Extract assistant text for conversation (from processed response)
-                    assistant_text = extract_assistant_text(processed_resp)
-
-                    if "model" in processed_resp:
-                        services.logger.info(f"Response model: {processed_resp['model']}")
-
-                    # Update response content with processed version
-                    resp_content = json.dumps(processed_resp).encode("utf-8")
-
-                except Exception:
-                    services.logger.info(f"Response: {resp.text[-500:]}")
-                    assistant_text = None
-                    resp_content = resp.content
-
-                conversation_outcome = await RequestProcessor.update_conversation(
-                    conversation_id, assistant_text
-                )
-                if trace:
-                    trace.conversation.update(conversation_outcome)
-
-                response_headers = HeaderManager.create_response_headers(
-                    dict(resp.headers), conversation_id
-                )
-                if extra_headers:
-                    response_headers.update(extra_headers)
-                if trace:
-                    trace.apply_headers(response_headers)
-                    trace.emit(status_code=resp.status_code)
-
-                return Response(resp_content, resp.status_code, response_headers)
-        except httpx.HTTPStatusError as exc:
-            if trace:
-                try:
-                    trace.emit(status_code=exc.response.status_code, error=exc)
-                except Exception:
-                    services.logger.exception("Failed to emit request trace")
-            raise
-        except Exception as exc:
-            if trace:
-                try:
-                    trace.emit(status_code=500, error=exc)
-                except Exception:
-                    services.logger.exception("Failed to emit request trace")
-            raise
+            processed = process_non_stream_response(response.json())
+            assistant_text = extract_assistant_text(processed)
+            content = json.dumps(processed).encode("utf-8")
+        except (ValueError, KeyError, TypeError):
+            assistant_text, content = None, response.content
+        trace.conversation.update(
+            await RequestProcessor.update_conversation(conversation_id, assistant_text)
+        )
+        headers = HeaderManager.create_response_headers(
+            dict(response.headers), conversation_id
+        )
+        headers.update(response_headers)
+        trace.apply_headers(headers)
+        trace.emit(status_code=response.status_code)
+        return Response(content, response.status_code, headers)
 
 
-##########  Core Proxy Function ##########
-async def proxy_request(
-    path: str,
-    request: Request,
-    extra_headers: Dict = None,
-    *,
-    route_conflict_policy: str = "reject",
+async def proxy_request(path: str, request: Request) -> Response:
+    """HTTP boundary; internal clients pass parsed data directly to complete_request."""
+    try:
+        body = await request.json()
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise HTTPException(400, "Invalid JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Expected a JSON object")
+    if request.query_params.get("stream") in {"true", "1"}:
+        body["stream"] = True
+    return await complete_request(
+        body, request.headers, endpoint=RequestProcessor._endpoint_key(path)
+    )
+
+
+async def complete_request(
+    body: dict, headers=None, *, endpoint=None, workload_type=None
 ) -> Response:
-    """Main proxy handler with canonical conversation-state pinning."""
-    endpoint_key = RequestProcessor._endpoint_key(path)
+    """Shared chat orchestration for HTTP, workflows, and graphs."""
+    headers = Headers(headers or {})
+    router = services.llm_router
+    if endpoint and workload_type:
+        raise HTTPException(400, "Specify endpoint or workload_type, not both")
+    if workload_type is not None and workload_type not in router.workloads:
+        raise HTTPException(400, f"Unknown workload: {workload_type}")
+    automatic = not workload_type and endpoint in {None, "", "smart"}
+    endpoint = None if automatic else endpoint
+    if endpoint and endpoint not in router.endpoints:
+        raise HTTPException(404, f"Endpoint not found: {endpoint}")
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise HTTPException(400, "No messages provided")
+    if not all(isinstance(m, dict) for m in messages):
+        raise HTTPException(400, "Invalid messages")
+    if automatic and not any(m.get("role") == "user" for m in messages):
+        raise HTTPException(400, "No user messages found")
+
     conversation_id = RequestProcessor._normalize_conversation_id(
-        request.headers.get("X-Conversation-ID")
+        headers.get("X-Conversation-ID")
     )
-    skip_conversation = RequestProcessor._truthy_header(
-        request.headers.get("X-LLMCP-Skip-Conversation")
+    skip = RequestProcessor._truthy_header(headers.get("X-LLMCP-Skip-Conversation"))
+    allow_switch = RequestProcessor._truthy_header(headers.get("X-Allow-Route-Switch"))
+    effort = RequestProcessor._normalize_reasoning_effort(
+        headers.get("X-Reasoning-Effort")
     )
-    requested_reasoning = RequestProcessor._normalize_reasoning_effort(
-        request.headers.get("X-Reasoning-Effort")
+    response_id = None if skip else conversation_id
+    response_headers = HeaderManager.create_response_headers(
+        conversation_id=response_id, for_streaming=bool(body.get("stream"))
     )
-    allow_route_switch = RequestProcessor._truthy_header(
-        request.headers.get("X-Allow-Route-Switch")
-    )
-    allow_reasoning_switch = RequestProcessor._truthy_header(
-        request.headers.get("X-Allow-Reasoning-Switch")
-    )
-    valid_endpoints = RequestProcessor.configured_endpoint_names()
-    state_headers: Dict[str, str] = {}
-    effective_reasoning = requested_reasoning
 
-    if conversation_id and not skip_conversation:
-        state_update = await services.conversation_store.update_conversation_control_state(
-            conversation_id,
-            route_endpoint=endpoint_key,
-            reasoning_effort=requested_reasoning,
-            valid_route_endpoints=valid_endpoints,
-            allow_route_switch=allow_route_switch,
-            allow_reasoning_switch=allow_reasoning_switch,
+    async def control_state(target=None):
+        if not response_id:
+            return {}
+        update = await services.conversation_store.update_conversation_control_state(
+            response_id,
+            route_endpoint=target,
+            reasoning_effort=effort,
+            valid_route_endpoints=list(router.endpoints),
+            allow_route_switch=allow_switch,
+            allow_reasoning_switch=RequestProcessor._truthy_header(
+                headers.get("X-Allow-Reasoning-Switch")
+            ),
         )
-        if state_update.get("conflict"):
-            conflicts = state_update.get("conflicts") or {}
-            if (
-                route_conflict_policy == "use-existing"
-                and set(conflicts) == {"route_endpoint"}
-            ):
-                endpoint_key = str(conflicts["route_endpoint"])
-                path = endpoint_key
-                state = await services.conversation_store.get_conversation_control_state(conversation_id)
-                state_headers["X-Route-Pinned"] = "true"
-            else:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "message": "Conversation metadata conflict",
-                        "conflicts": conflicts,
-                    },
-                )
-        else:
-            state = state_update["state"]
-            if state_update.get("route_stale"):
-                state_headers["X-Route-Pin-Stale"] = "true"
-            switched = state_update.get("switched") or {}
-            if isinstance(switched, dict):
-                if switched.get("route_endpoint"):
-                    state_headers["X-Route-Switched"] = "true"
-                    state_headers["X-Route-Previous"] = str(
-                        switched["route_endpoint"]
-                    )
-                    state_headers["X-Route-Decision"] = endpoint_key
-                if switched.get("reasoning_effort"):
-                    state_headers["X-Reasoning-Switched"] = "true"
-                    state_headers["X-Reasoning-Previous"] = str(
-                        switched["reasoning_effort"]
-                    )
-                if switched:
-                    state_headers["X-Warning"] = services.SWITCH_WARNING_MESSAGE
+        if update.get("conflict"):
+            raise HTTPException(
+                409,
+                {
+                    "message": "Conversation metadata conflict",
+                    "conflicts": update["conflicts"],
+                },
+            )
+        response_headers.setdefault("X-Route-Pin-Stale", "false")
+        if update.get("route_stale"):
+            response_headers["X-Route-Pin-Stale"] = "true"
+        for key, previous in (update.get("switched") or {}).items():
+            prefix = "X-Route" if key == "route_endpoint" else "X-Reasoning"
+            response_headers[f"{prefix}-Switched"] = "true"
+            response_headers[f"{prefix}-Previous"] = str(previous)
+            response_headers["X-Warning"] = services.SWITCH_WARNING_MESSAGE
+        return update["state"]
 
-        effective_reasoning = RequestProcessor._normalize_reasoning_effort(
-            state.get("reasoning_effort")
-        )
-        state_headers.setdefault("X-Route-Pinned", "false")
-        state_headers.setdefault("X-Route-Pin-Stale", "false")
-        if effective_reasoning:
-            state_headers["X-Reasoning-Effort"] = effective_reasoning
-
+    state = await control_state(endpoint)
+    effort = (
+        RequestProcessor._normalize_reasoning_effort(state.get("reasoning_effort"))
+        or effort
+    )
+    pinned = state.get("route_endpoint") if automatic and not allow_switch else None
+    if pinned and pinned not in router.workloads.get("vision", []):
+        history = await services.conversation_store.get_conversation(response_id) or []
+        if has_images(messages) or has_images(history):
+            raise HTTPException(
+                409,
+                "Pinned endpoint is not configured for vision; allow a route switch or select a vision endpoint",
+            )
     body, retrieval_headers = await RequestProcessor.prepare_request(
-        request,
-        effective_reasoning_effort=effective_reasoning,
-        persist_conversation=not skip_conversation,
-        history_mode="none" if skip_conversation else None,
+        dict(body),
+        headers,
+        effective_reasoning_effort=effort,
+        persist_conversation=not skip,
+        history_mode="none" if skip else None,
     )
-    is_streaming = body.get("stream", False) or request.query_params.get("stream") in {
-        "true",
-        "1",
-    }
-    response_conversation_id = None if skip_conversation else conversation_id
-    trace = RequestTrace(conversation_id=response_conversation_id, endpoint=endpoint_key)
-
-    target_url = RequestProcessor.get_endpoint_url(endpoint_key)
-    if not target_url:
-        try:
-            trace.emit(status_code=404)
-        except Exception:
-            services.logger.exception("Failed to emit request trace")
-        raise HTTPException(status_code=404, detail=f"Endpoint not found: {path}")
-
-    endpoint_config = RequestProcessor.get_endpoint_config(endpoint_key)
-    slot_headers = await RequestProcessor.apply_slot_affinity(
-        body, None if skip_conversation else conversation_id, endpoint_config
+    response_headers.update(retrieval_headers)
+    if skip:
+        response_headers["X-Conversation-Skipped"] = "true"
+    if automatic:
+        if pinned:
+            endpoint = pinned
+        else:
+            workload_type = await router.classify(body["messages"])
+    response_headers["X-Route-Pinned"] = str(bool(pinned)).lower()
+    trace = RequestTrace(
+        conversation_id=response_id, endpoint=endpoint or workload_type
     )
 
-    combined_headers = dict(retrieval_headers)
-    combined_headers.update(state_headers)
-    if skip_conversation:
-        combined_headers["X-Conversation-Skipped"] = "true"
-    if extra_headers:
-        combined_headers.update(extra_headers)
-    if state_headers.get("X-Route-Pin-Stale") == "true":
-        combined_headers["X-Route-Pin-Stale"] = "true"
-    combined_headers.update(slot_headers)
-    trace.capture_headers(combined_headers)
-    trace.capture_search_from_body(body)
-
-    services.logger.info(
-        f"Proxying {request.method} {request.url.path} to {target_url} (streaming: {is_streaming})"
-    )
-
-    if is_streaming:
-        return await ProxyHandler.stream_response(
-            request,
-            target_url,
-            body,
-            response_conversation_id,
-            combined_headers,
-            trace,
+    async def before_request(target, payload):
+        slot_headers = await RequestProcessor.apply_slot_affinity(
+            payload, response_id, target
         )
-    return await ProxyHandler.non_stream_response(
-        request, target_url, body, response_conversation_id, combined_headers, trace
+        # A failed candidate must not leave slot metadata on a later candidate.
+        for key in list(response_headers):
+            if key.startswith("X-Upstream-Slot-"):
+                del response_headers[key]
+        response_headers.update(slot_headers)
+
+    async def on_ready(target):
+        await control_state(target["name"])
+        trace.endpoint = target["name"]
+        response_headers["X-Route-Decision"] = target["name"]
+        response_headers["X-Route-Strategy"] = workload_type or (
+            "pinned" if pinned else "explicit"
+        )
+        for key in ("gpu", "vram", "soc", "cpu", "ram"):
+            if target.get(key):
+                response_headers[f"X-Route-{key.upper()}"] = str(target[key])
+        trace.capture_headers(response_headers)
+        trace.capture_search_from_body(body)
+
+    if body.get("stream"):
+        body["stream_options"] = {"include_usage": True}
+    timeout = (
+        httpx.Timeout(connect=20, read=None, write=20, pool=20)
+        if body.get("stream")
+        else 120
     )
+    upstream = router.request(
+        body,
+        endpoint=endpoint,
+        workload_type=workload_type,
+        headers=headers,
+        timeout=timeout,
+        before_request=before_request,
+    )
+    try:
+        if body.get("stream"):
+            return await ProxyHandler.stream_response(
+                upstream, response_id, response_headers, trace, on_ready
+            )
+        async with upstream as (target, response):
+            await on_ready(target)
+            return await ProxyHandler.non_stream_response(
+                response, response_id, response_headers, trace
+            )
+    except (httpx.HTTPError, HTTPException, TimeoutError) as exc:
+        status = (
+            exc.status_code
+            if isinstance(exc, HTTPException)
+            else (
+                exc.response.status_code
+                if isinstance(exc, httpx.HTTPStatusError)
+                else 502
+            )
+        )
+        trace.emit(status_code=status, error=exc)
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status, str(exc)) from exc

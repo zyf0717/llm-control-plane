@@ -16,7 +16,7 @@
 | Workflow executor | `src/orchestrator/workflow/` | YAML workflow model validation, DAG execution, output contracts |
 | Graph API | `src/orchestrator/graph/api.py` | LangGraph catalog and run lifecycle routes |
 | Graph runtime | `src/orchestrator/graph/` | LangGraph registry, run store, executor, and subsystem wrapper |
-| LLM Router | `src/orchestrator/llm_router.py` | Workload classification and smart endpoint selection |
+| LLM Router | `src/orchestrator/llm_router.py` | Model discovery, workload selection, and shared completion transport |
 | Dashboard | `src/dashboard/` | Shiny UI for chat, endpoint selection, RAG selection, and runtime inspection |
 | Entry point | `llm_control_plane.py` | Runs proxy and dashboard together |
 
@@ -29,7 +29,7 @@ flowchart TD
 
     D -->|GET /models| P
     D -->|GET health_url| RH[RAG health endpoints]
-    D -->|POST /smart or /{endpoint}<br/>X-Convo-ID<br/>X-Reasoning-Effort<br/>X-Allow-*-Switch<br/>X-RAG-Endpoint| P
+    D -->|POST /smart or /{endpoint}<br/>X-Conversation-ID<br/>X-Reasoning-Effort<br/>X-Allow-*-Switch<br/>X-Retrieval-Endpoint| P
     D -->|POST /search/web| P
     D -->|Workflow API / Graph API| P
 
@@ -52,8 +52,8 @@ flowchart TD
     P -->|Forward final messages| LLM[Upstream LLM endpoint]
     LLM -->|SSE or JSON response| P
 
-    P -->|Normalized response + X-Route-* + X-RAG-*| D
-    P -->|Normalized response + X-Route-* + X-RAG-*| U
+    P -->|Normalized response + X-Route-* + X-Retrieval-*| D
+    P -->|Normalized response + X-Route-* + X-Retrieval-*| U
 ```
 
 ## Request Processing
@@ -61,11 +61,11 @@ flowchart TD
 The proxy processes chat requests in this order:
 
 1. Parse the incoming body and headers.
-2. Atomically resolve, pin, or explicitly switch conversation route/reasoning metadata when `X-Convo-ID` is present.
+2. Atomically resolve, pin, or explicitly switch conversation route/reasoning metadata when `X-Conversation-ID` is present.
 3. Load persisted conversation history, reject full-history replay, then append only the current durable client messages.
 4. Inject the effective reasoning control.
-5. Retrieve RAG context if `X-RAG-Endpoint` is present.
-6. For smart routing, reuse a valid route pin or classify the latest user turn and pin the selected endpoint.
+5. Retrieve RAG context if `X-Retrieval-Endpoint` is present.
+6. For smart routing, reuse a valid route pin or classify the latest user turn and select ordered endpoint candidates; pin only the successful automatic route.
 7. Apply best-effort llama.cpp slot affinity for endpoints with `slot_affinity: true`.
 8. Forward the final request to the selected upstream model endpoint.
 9. Normalize streaming/non-streaming reasoning content, persist assistant text when present, and attach response metadata headers, including `X-Trace-ID`. Streaming uses a proxy-owned upstream producer and a downstream client consumer, so assistant accumulation and history finalization can continue after client disconnect. Pending producer/finalization tasks are drained on shutdown.
@@ -90,19 +90,22 @@ Graphs and workflows share neutral runtime adapters for LLM/search/rerank/retrie
 
 ## Smart Routing Logic
 
-Smart routing remains stateless without `X-Convo-ID`. With `X-Convo-ID`, the proxy treats the conversation id as canonical state: the first smart decision pins the route server-side, later `/smart` calls reuse the pin, and removed configured endpoints are reported as stale before rerouting. The dashboard does not keep a parallel smart-routing pin; direct dashboard endpoint selections opt in to proxy-managed route switching.
+Smart routing remains stateless without `X-Conversation-ID`. With `X-Conversation-ID`, the proxy treats the conversation id as canonical state: the first smart decision pins the route server-side, later `/smart` calls reuse the pin, and removed configured endpoints are reported as stale before rerouting. The dashboard does not keep a parallel smart-routing pin; direct dashboard endpoint selections opt in to proxy-managed route switching.
 
-Smart routing proceeds in three steps:
+Smart routing reuses a valid conversation pin, detects vision input, or classifies
+the latest user turn as complex/responsive using utility. Classification has a
+10-second total budget, 20 output tokens, temperature 0, and reasoning disabled;
+failure selects responsive.
 
-1. Classification: the latest user message is sent to the fastest available endpoint from the `classification` workload preference list.
-2. Endpoint selection: the first reachable endpoint in the selected workload’s `endpoint_preference` list is chosen.
-3. Fallback: if none of the preferred endpoints are reachable, any reachable endpoint is used; if none are reachable, the proxy returns `500`.
+One resolver owns ordered workload preferences, URL-level model discovery, model
+name repair, and pre-response failover. The HTTP `/models` handler reads that
+resolver rather than maintaining a second availability list. Workflows and graphs
+pass parsed requests to the same chat orchestration function; search helpers use
+its shared utility transport without conversation state.
 
-Classification uses:
-
-- timeout: `10s`
-- `max_tokens: 20`
-- `temperature: 0.1`
+The stream producer opens the upstream response before publishing route headers.
+After a successful response begins, it never retries or changes models. It keeps
+draining and finalizing history when the downstream consumer disconnects.
 
 ## Slot Affinity
 
@@ -122,7 +125,7 @@ The proxy normalizes these reasoning formats:
 
 ## RAG Grounding Model
 
-RAG context is not merged into the dashboard system prompt field. When `X-RAG-Endpoint` is set, the proxy sends the latest real user turn to the normalized `/api/retrieve/context` route with a `limit`, then rewrites only that latest user turn with the backend's returned `grounded_user_message`.
+RAG context is not merged into the dashboard system prompt field. When `X-Retrieval-Endpoint` is set, the proxy sends the latest real user turn to the normalized `/api/retrieve/context` route with a `limit`, then rewrites only that latest user turn with the backend's returned `grounded_user_message`.
 
 That preserves:
 

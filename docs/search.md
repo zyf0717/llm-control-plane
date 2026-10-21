@@ -38,11 +38,15 @@ Responses include normalized `results`, `warnings`, `degraded`, and `wrapped_res
 
 ## Query Refinement
 
-If `search.query_refiner_model_endpoint` or `search.query_refiner_workload_type` is configured and enabled, `/search/web` may convert a user query into provider-ready queries. `query_refiner_max_queries` bounds the fanout. If the refiner returns multiple queries, the router searches each query and dedupes results up to `search.search_max_total_results`.
+When `search.query_refiner_enabled` is true, query refinement uses the shared `utility` preference list, and `/search/web` may convert a user query into provider-ready queries. `query_refiner_max_queries` bounds the fanout. If the refiner returns multiple queries, the router searches each query and dedupes results up to `search.search_max_total_results`.
 
 Workflow-planned search usually sets `use_query_refiner: false` because the workflow LLM already produced provider-facing queries.
 
 ## Reranking
+
+LLM reranking uses `utility`. A dedicated reranker uses `search.reranker_endpoint`
+and falls back to utility on failure. Both LLM helpers send `reasoning_effort: none`
+and use the resolved served model.
 
 Reranking is opt-in for direct `/search/web` calls. The proxy default is `use_reranker: false`.
 

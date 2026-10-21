@@ -36,3 +36,25 @@ def mock_httpx_client():
     """Mock httpx client for network isolation."""
     with patch("httpx.AsyncClient") as mock:
         yield mock
+
+
+@pytest.fixture
+def http_backend(monkeypatch):
+    """Install an in-process upstream without replacing httpx response semantics."""
+    import httpx
+    real_client = httpx.AsyncClient
+
+    def install(handler):
+        requests = []
+
+        async def dispatch(request):
+            requests.append(request)
+            result = handler(request)
+            return await result if hasattr(result, "__await__") else result
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: real_client(
+            **kwargs, transport=httpx.MockTransport(dispatch)
+        ))
+        return requests
+
+    return install

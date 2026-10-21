@@ -19,7 +19,11 @@ class FakeRerankerResponse:
     def json(self):
         if self.payload is not None:
             return self.payload
-        return {"choices": [{"message": {"content": self.content}}]}
+        return {
+            "model": "served-reranker",
+            "endpoint": "utility-node",
+            "choices": [{"message": {"content": self.content}}],
+        }
 
 
 def _result(title: str, rank: int) -> SearchResult:
@@ -35,54 +39,63 @@ def _result(title: str, rank: int) -> SearchResult:
 
 
 @pytest.mark.asyncio
-async def test_dedicated_reranker_resolves_utility_only_on_failure():
-    resolver = AsyncMock(return_value="https://utility-fallback.local")
+async def test_dedicated_reranker_calls_utility_only_on_failure():
+    complete = AsyncMock(
+        return_value=FakeRerankerResponse('{"ranked":[{"id":"2"},{"id":"1"}]}').json()
+    )
     reranker = SearchReranker(
         SearchRerankerConfig(
-            enabled=True, backend="dedicated", model_endpoint="https://dedicated.local",
-            fallback_workload_type="utility",
+            enabled=True, backend="dedicated", endpoint="https://dedicated.local"
         ),
-        workload_endpoint_resolver=resolver,
+        llm_complete=complete,
     )
-    dedicated = FakeRerankerResponse(payload={"results": [{"index": 1, "relevance_score": 0.9}]})
-    llm = FakeRerankerResponse(json.dumps({"ranked": [{"id": "2"}, {"id": "1"}]}))
-    with patch("httpx.AsyncClient.post", AsyncMock(side_effect=[dedicated, httpx.ConnectError("offline"), llm])) as post:
-        first = await reranker.rerank(query="q", results=[_result("A", 1), _result("B", 2)])
-        resolver.assert_not_awaited()
-        second = await reranker.rerank(query="q", results=[_result("A", 1), _result("B", 2)])
-
+    dedicated = FakeRerankerResponse(
+        payload={"results": [{"index": 1, "relevance_score": 0.9}]}
+    )
+    with patch(
+        "httpx.AsyncClient.post",
+        AsyncMock(side_effect=[dedicated, httpx.ConnectError("offline")]),
+    ):
+        first = await reranker.rerank(
+            query="q", results=[_result("A", 1), _result("B", 2)]
+        )
+        complete.assert_not_awaited()
+        second = await reranker.rerank(
+            query="q", results=[_result("A", 1), _result("B", 2)]
+        )
     assert first.path == "dedicated"
-    assert second.path == "llm"
-    assert second.used is True
-    assert second.degraded is True
+    assert second.path == "llm" and second.used and second.degraded
     assert [r.title for r in second.results] == ["B", "A"]
-    resolver.assert_awaited_once_with("utility")
-    assert post.await_args.args[0] == "https://utility-fallback.local/v1/chat/completions"
+    complete.assert_awaited_once()
+    assert complete.await_args.args[0]["reasoning_effort"] == "none"
+    assert "model" not in complete.await_args.args[0]
 
 
 @pytest.mark.asyncio
-async def test_llm_reranker_uses_workload_and_preserves_order_if_unavailable():
-    resolver = AsyncMock(side_effect=["https://utility.local", RuntimeError("offline")])
-    reranker = SearchReranker(
-        SearchRerankerConfig(enabled=True, workload_type="utility"),
-        workload_endpoint_resolver=resolver,
+async def test_llm_reranker_preserves_order_if_utility_unavailable():
+    complete = AsyncMock(
+        side_effect=[
+            FakeRerankerResponse('{"ranked":[{"id":"2"},{"id":"1"}]}').json(),
+            RuntimeError("offline"),
+        ]
     )
-    response = FakeRerankerResponse(json.dumps({"ranked": [{"id": "2"}, {"id": "1"}]}))
-    with patch("httpx.AsyncClient.post", AsyncMock(return_value=response)) as post:
-        ranked = await reranker.rerank(query="q", results=[_result("A", 1), _result("B", 2)])
-        offline = await reranker.rerank(query="q", results=[_result("A", 1), _result("B", 2)])
-
-    assert ranked.used is True
-    assert [r.title for r in ranked.results] == ["B", "A"]
-    assert offline.used is False
-    assert offline.degraded is True
+    reranker = SearchReranker(SearchRerankerConfig(enabled=True), llm_complete=complete)
+    ranked = await reranker.rerank(
+        query="q", results=[_result("A", 1), _result("B", 2)]
+    )
+    offline = await reranker.rerank(
+        query="q", results=[_result("A", 1), _result("B", 2)]
+    )
+    assert ranked.used and [r.title for r in ranked.results] == ["B", "A"]
+    assert not offline.used and offline.degraded
     assert [r.title for r in offline.results] == ["A", "B"]
-    post.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_reranker_disabled_returns_original_order():
-    reranker = SearchReranker(SearchRerankerConfig(enabled=False))
+    reranker = SearchReranker(
+        SearchRerankerConfig(enabled=False), llm_complete=AsyncMock()
+    )
     results = [_result("A", 1), _result("B", 2)]
 
     ranking = await reranker.rerank(query="q", results=results)
@@ -94,7 +107,9 @@ async def test_reranker_disabled_returns_original_order():
 
 @pytest.mark.asyncio
 async def test_reranker_disabled_honors_top_k_limit():
-    reranker = SearchReranker(SearchRerankerConfig(enabled=False))
+    reranker = SearchReranker(
+        SearchRerankerConfig(enabled=False), llm_complete=AsyncMock()
+    )
     results = [_result("A", 1), _result("B", 2)]
 
     ranking = await reranker.rerank(query="q", results=results, top_k=1)
@@ -116,26 +131,26 @@ async def test_valid_reranker_response_reorders_results_and_attaches_metadata():
         }
     )
     reranker = SearchReranker(
-        SearchRerankerConfig(enabled=True, model_endpoint="https://reranker.local")
+        SearchRerankerConfig(enabled=True), llm_complete=AsyncMock()
     )
     results = [_result("A", 1), _result("B", 2)]
 
-    with patch(
-        "httpx.AsyncClient.post",
-        AsyncMock(return_value=FakeRerankerResponse(payload)),
-    ) as post:
+    with patch.object(
+        reranker,
+        "llm_complete",
+        AsyncMock(return_value=FakeRerankerResponse(payload).json()),
+    ):
         ranking = await reranker.rerank(
             query="q",
             results=results,
             source_text="prior source_text",
         )
 
-    assert post.await_args.args[0] == "https://reranker.local/v1/chat/completions"
     assert [result.title for result in ranking.results] == ["B", "A"]
     assert [result.rank for result in ranking.results] == [1, 2]
     assert ranking.results[0].score == 0.9
     assert ranking.results[0].ranking == {
-        "reranker": "search-reranker",
+        "reranker": "served-reranker",
         "reranker_path": "llm",
         "reason": "most relevant",
     }
@@ -143,7 +158,7 @@ async def test_valid_reranker_response_reorders_results_and_attaches_metadata():
     assert ranking.to_public_dict() == {
         "used": True,
         "degraded": False,
-        "model": "search-reranker",
+        "model": "served-reranker",
         "backend": "llm",
         "path": "llm",
     }
@@ -161,13 +176,14 @@ async def test_reranker_ignores_unknown_duplicate_and_appends_omitted_candidates
         }
     )
     reranker = SearchReranker(
-        SearchRerankerConfig(enabled=True, model_endpoint="https://reranker.local")
+        SearchRerankerConfig(enabled=True), llm_complete=AsyncMock()
     )
     results = [_result("A", 1), _result("B", 2), _result("C", 3)]
 
-    with patch(
-        "httpx.AsyncClient.post",
-        AsyncMock(return_value=FakeRerankerResponse(payload)),
+    with patch.object(
+        reranker,
+        "llm_complete",
+        AsyncMock(return_value=FakeRerankerResponse(payload).json()),
     ):
         ranking = await reranker.rerank(query="q", results=results)
 
@@ -178,13 +194,14 @@ async def test_reranker_ignores_unknown_duplicate_and_appends_omitted_candidates
 @pytest.mark.asyncio
 async def test_invalid_json_falls_back_to_original_order():
     reranker = SearchReranker(
-        SearchRerankerConfig(enabled=True, model_endpoint="https://reranker.local")
+        SearchRerankerConfig(enabled=True), llm_complete=AsyncMock()
     )
     results = [_result("A", 1), _result("B", 2)]
 
-    with patch(
-        "httpx.AsyncClient.post",
-        AsyncMock(return_value=FakeRerankerResponse("not json")),
+    with patch.object(
+        reranker,
+        "llm_complete",
+        AsyncMock(return_value=FakeRerankerResponse("not json").json()),
     ):
         ranking = await reranker.rerank(query="q", results=results)
 
@@ -196,16 +213,17 @@ async def test_invalid_json_falls_back_to_original_order():
 @pytest.mark.asyncio
 async def test_mixed_prose_json_reranker_response_is_rejected():
     reranker = SearchReranker(
-        SearchRerankerConfig(enabled=True, model_endpoint="https://reranker.local")
+        SearchRerankerConfig(enabled=True), llm_complete=AsyncMock()
     )
     results = [_result("A", 1), _result("B", 2)]
 
-    with patch(
-        "httpx.AsyncClient.post",
+    with patch.object(
+        reranker,
+        "llm_complete",
         AsyncMock(
             return_value=FakeRerankerResponse(
                 'Here is JSON:\n{"ranked": [{"id": "2"}]}'
-            )
+            ).json()
         ),
     ):
         ranking = await reranker.rerank(query="q", results=results)
@@ -218,13 +236,16 @@ async def test_mixed_prose_json_reranker_response_is_rejected():
 @pytest.mark.asyncio
 async def test_schema_invalid_reranker_response_falls_back_to_original_order():
     reranker = SearchReranker(
-        SearchRerankerConfig(enabled=True, model_endpoint="https://reranker.local")
+        SearchRerankerConfig(enabled=True), llm_complete=AsyncMock()
     )
     results = [_result("A", 1), _result("B", 2)]
 
-    with patch(
-        "httpx.AsyncClient.post",
-        AsyncMock(return_value=FakeRerankerResponse('{"ranked": [{"score": 0.9}]}')),
+    with patch.object(
+        reranker,
+        "llm_complete",
+        AsyncMock(
+            return_value=FakeRerankerResponse('{"ranked": [{"score": 0.9}]}').json()
+        ),
     ):
         ranking = await reranker.rerank(query="q", results=results)
 
@@ -236,13 +257,14 @@ async def test_schema_invalid_reranker_response_falls_back_to_original_order():
 @pytest.mark.asyncio
 async def test_empty_ranking_falls_back_to_original_order():
     reranker = SearchReranker(
-        SearchRerankerConfig(enabled=True, model_endpoint="https://reranker.local")
+        SearchRerankerConfig(enabled=True), llm_complete=AsyncMock()
     )
     results = [_result("A", 1), _result("B", 2)]
 
-    with patch(
-        "httpx.AsyncClient.post",
-        AsyncMock(return_value=FakeRerankerResponse('{"ranked": []}')),
+    with patch.object(
+        reranker,
+        "llm_complete",
+        AsyncMock(return_value=FakeRerankerResponse('{"ranked": []}').json()),
     ):
         ranking = await reranker.rerank(query="q", results=results)
 
@@ -254,12 +276,13 @@ async def test_empty_ranking_falls_back_to_original_order():
 @pytest.mark.asyncio
 async def test_timeout_falls_back_to_original_order():
     reranker = SearchReranker(
-        SearchRerankerConfig(enabled=True, model_endpoint="https://reranker.local")
+        SearchRerankerConfig(enabled=True), llm_complete=AsyncMock()
     )
     results = [_result("A", 1), _result("B", 2)]
 
-    with patch(
-        "httpx.AsyncClient.post",
+    with patch.object(
+        reranker,
+        "llm_complete",
         AsyncMock(side_effect=httpx.TimeoutException("timeout")),
     ):
         ranking = await reranker.rerank(query="q", results=results)
@@ -272,18 +295,17 @@ async def test_timeout_falls_back_to_original_order():
 @pytest.mark.asyncio
 async def test_context_and_candidate_limits_are_enforced():
     reranker = SearchReranker(
-        SearchRerankerConfig(
-            enabled=True,
-            model_endpoint="https://reranker.local",
-            max_source_chars=4,
-            max_candidates=1,
-        )
+        SearchRerankerConfig(enabled=True, max_source_chars=4, max_candidates=1),
+        llm_complete=AsyncMock(),
     )
     results = [_result("A", 1), _result("B", 2)]
 
-    with patch(
-        "httpx.AsyncClient.post",
-        AsyncMock(return_value=FakeRerankerResponse('{"ranked": [{"id": "1"}]}')),
+    with patch.object(
+        reranker,
+        "llm_complete",
+        AsyncMock(
+            return_value=FakeRerankerResponse('{"ranked": [{"id": "1"}]}').json()
+        ),
     ) as post:
         ranking = await reranker.rerank(
             query="q",
@@ -291,7 +313,7 @@ async def test_context_and_candidate_limits_are_enforced():
             source_text="abcdef",
         )
 
-    body = post.await_args.kwargs["json"]
+    body = post.await_args.args[0]
     user_payload = json.loads(body["messages"][1]["content"])
     assert user_payload["context"] == "abcd"
     assert len(user_payload["candidates"]) == 1
@@ -301,13 +323,16 @@ async def test_context_and_candidate_limits_are_enforced():
 @pytest.mark.asyncio
 async def test_public_metadata_does_not_expose_prompt_or_raw_output():
     reranker = SearchReranker(
-        SearchRerankerConfig(enabled=True, model_endpoint="https://reranker.local")
+        SearchRerankerConfig(enabled=True), llm_complete=AsyncMock()
     )
 
-    with patch(
-        "httpx.AsyncClient.post",
+    with patch.object(
+        reranker,
+        "llm_complete",
         AsyncMock(
-            return_value=FakeRerankerResponse('```json\n{"ranked":[{"id":"1"}]}\n```')
+            return_value=FakeRerankerResponse(
+                '```json\n{"ranked":[{"id":"1"}]}\n```'
+            ).json()
         ),
     ):
         ranking = await reranker.rerank(query="q", results=[_result("A", 1)])
@@ -323,10 +348,11 @@ async def test_dedicated_reranker_posts_documents_and_reorders_by_index():
     reranker = SearchReranker(
         SearchRerankerConfig(
             enabled=True,
-            model_endpoint="https://reranker.local",
+            endpoint="https://reranker.local",
             backend="dedicated",
             max_candidates=2,
-        )
+        ),
+        llm_complete=AsyncMock(),
     )
     results = [_result("A", 1), _result("B", 2), _result("C", 3)]
     response = {
@@ -363,7 +389,6 @@ async def test_dedicated_reranker_posts_documents_and_reorders_by_index():
     assert ranking.to_public_dict() == {
         "used": True,
         "degraded": False,
-        "model": "search-reranker",
         "backend": "dedicated",
         "path": "dedicated",
     }
@@ -375,10 +400,11 @@ async def test_dedicated_reranker_top_k_caps_returned_results():
     reranker = SearchReranker(
         SearchRerankerConfig(
             enabled=True,
-            model_endpoint="https://reranker.local",
+            endpoint="https://reranker.local",
             backend="dedicated",
             max_candidates=3,
-        )
+        ),
+        llm_complete=AsyncMock(),
     )
     results = [_result("A", 1), _result("B", 2), _result("C", 3)]
     response = {
@@ -404,10 +430,9 @@ async def test_dedicated_reranker_top_k_caps_returned_results():
 async def test_dedicated_reranker_ignores_unknown_duplicate_and_appends_omitted():
     reranker = SearchReranker(
         SearchRerankerConfig(
-            enabled=True,
-            model_endpoint="https://reranker.local",
-            backend="dedicated",
-        )
+            enabled=True, endpoint="https://reranker.local", backend="dedicated"
+        ),
+        llm_complete=AsyncMock(),
     )
     results = [_result("A", 1), _result("B", 2), _result("C", 3)]
     response = {
@@ -429,72 +454,25 @@ async def test_dedicated_reranker_ignores_unknown_duplicate_and_appends_omitted(
 
 
 @pytest.mark.asyncio
-async def test_dedicated_reranker_falls_back_to_llm_when_configured():
-    fallback_payload = json.dumps(
-        {"ranked": [{"id": "2", "score": 0.8}, {"id": "1", "score": 0.3}]}
-    )
-    reranker = SearchReranker(
-        SearchRerankerConfig(
-            enabled=True,
-            model_endpoint="https://dedicated.local",
-            fallback_model_endpoint="https://llm.local",
-            backend="dedicated",
-        )
-    )
-    results = [_result("A", 1), _result("B", 2)]
-
-    with patch(
-        "httpx.AsyncClient.post",
-        AsyncMock(
-            side_effect=[
-                httpx.TimeoutException("timeout"),
-                FakeRerankerResponse(fallback_payload),
-            ]
-        ),
-    ) as post:
-        ranking = await reranker.rerank(query="q", results=results)
-
-    assert post.await_args_list[0].args[0] == "https://dedicated.local/rerank"
-    assert post.await_args_list[1].args[0] == "https://llm.local/v1/chat/completions"
-    assert [result.title for result in ranking.results] == ["B", "A"]
-    assert ranking.to_public_dict() == {
-        "used": True,
-        "degraded": True,
-        "model": "search-reranker",
-        "backend": "llm",
-        "path": "llm",
-        "warning": "dedicated-reranker-failed: TimeoutException",
-    }
-
-
-@pytest.mark.asyncio
 async def test_dedicated_and_llm_fallback_fail_preserves_provider_order():
+    complete = AsyncMock(side_effect=httpx.ConnectError("connect"))
     reranker = SearchReranker(
         SearchRerankerConfig(
-            enabled=True,
-            model_endpoint="https://dedicated.local",
-            fallback_model_endpoint="https://llm.local",
-            backend="dedicated",
-        )
+            enabled=True, endpoint="https://dedicated.local", backend="dedicated"
+        ),
+        llm_complete=complete,
     )
-    results = [_result("A", 1), _result("B", 2)]
-
     with patch(
         "httpx.AsyncClient.post",
-        AsyncMock(
-            side_effect=[
-                httpx.TimeoutException("timeout"),
-                httpx.ConnectError("connect"),
-            ]
-        ),
+        AsyncMock(side_effect=httpx.TimeoutException("timeout")),
     ):
-        ranking = await reranker.rerank(query="q", results=results)
-
-    assert [result.title for result in ranking.results] == ["A", "B"]
-    assert ranking.degraded is True
-    assert ranking.warning == (
-        "dedicated-reranker-failed: TimeoutException; "
-        "llm-fallback-failed: ConnectError"
+        ranking = await reranker.rerank(
+            query="q", results=[_result("A", 1), _result("B", 2)]
+        )
+    assert [r.title for r in ranking.results] == ["A", "B"]
+    assert ranking.degraded
+    assert (
+        ranking.warning
+        == "dedicated-reranker-failed: TimeoutException; llm-fallback-failed: ConnectError"
     )
-    assert ranking.to_public_dict()["backend"] == "dedicated"
-    assert ranking.to_public_dict()["path"] == "none"
+    assert ranking.path == "none" and ranking.backend == "dedicated"

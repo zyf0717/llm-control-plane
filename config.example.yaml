@@ -1,73 +1,56 @@
-# Copy to config.yaml and replace URLs/model names for your deployment.
+# Each endpoint selects one model; model may be omitted for a single-model URL.
 endpoints:
-  - name: "primary"
-    url: "http://localhost:8000"
-    slot_affinity: false  # best-effort llama.cpp id_slot/cache_prompt affinity
-    gpu: "NVIDIA GPU"
-    vram: "24GB"
-    cpu: "x86_64"
-    ram: "64GB"
-
-  - name: "fast-local"
-    url: "http://localhost:8001"
-    soc: "Apple Silicon"
-    ram: "16GB"
-
+  primary:
+    url: http://localhost:8000
+    model: your-model-id  # Replace with an advertised model ID, or omit.
+    slot_affinity: false
+  fast:
+    url: http://localhost:8001
+    # Discover the model automatically when exactly one is advertised.
 dashboard:
-  display_timezone: "Asia/Singapore"
-
+  display_timezone: UTC
 orchestration:
   workflows:
     enabled: true
   graphs:
     enabled: true
-
 repo_context:
   enabled: true
-  project_dir: "/home/yifei/repos/repo-context"
-  repos_root: "/home/yifei/repos"
+  project_dir: /path/to/repo-context
+  repos_root: /path/to/repos
   entry_point:
-    command: "uv"
+    command: uv
     args:
-      - "run"
-      - "--project"
-      - "/home/yifei/repos/repo-context"
-      - "repo-context"
+    - run
+    - --project
+    - /path/to/repo-context
+    - repo-context
     env: {}
   default_max_turns: 6
   timeout_seconds: 180
   max_concurrent: 2
-
 retrieval:
-  default_endpoint: "http://localhost:8100/api/retrieve/context"
+  default_endpoint: http://localhost:8100/api/retrieve/context
   endpoints:
-    - name: "local-retrieval"
-      retrieve_url: "http://localhost:8100/api/retrieve/context"
-      health_url: "http://localhost:8100/api/health"
+  - name: local-retrieval
+    retrieve_url: http://localhost:8100/api/retrieve/context
+    health_url: http://localhost:8100/api/health
   top_k: 10
-
 search:
   enabled: false
-  query_refiner_model_endpoint: ""
-  query_refiner_workload_type: "utility"
-  query_refiner_model: "search-query-refiner"
   query_refiner_enabled: false
   query_refiner_timeout_ms: 7000
   query_refiner_max_source_chars: 12000
   query_refiner_max_output_tokens: 512
   query_refiner_max_queries: 1
-  reranker_model_endpoint: ""
-  reranker_fallback_model_endpoint: ""
-  reranker_fallback_workload_type: "utility"
-  reranker_backend: "llm"
-  reranker_model: "search-reranker"
+  reranker_backend: llm
   reranker_enabled: false
   reranker_timeout_ms: 7000
   reranker_max_source_chars: 12000
   reranker_max_candidates: 20
   reranker_max_output_tokens: 1024
   search_max_total_results: 10
-  default_provider: "duckduckgo_html"
+  default_provider: duckduckgo_html
   timeout_ms: 7000
   max_results: 20
   cache_ttl_seconds: 900
@@ -91,18 +74,9 @@ search:
       enabled: false
       priority: 50
       fallback_only: true
-      endpoint: "http://localhost:8080/search"
-
+      endpoint: http://localhost:8080/search
 workloads:
-  - type: "utility"
-    endpoint_preference: ["fast-local", "primary"]
-  - type: "reasoning"
-    endpoint_preference: ["primary", "fast-local"]
-  - type: "programming"
-    endpoint_preference: ["primary", "fast-local"]
-  - type: "tokens_per_second"
-    endpoint_preference: ["fast-local", "primary"]
-  - type: "ttft_content"
-    endpoint_preference: ["fast-local", "primary"]
-  - type: "classification"
-    endpoint_preference: ["fast-local", "primary"]
+  utility: [fast, primary]
+  complex: [primary, fast]
+  responsive: [fast, primary]
+  vision: [primary]  # Include only endpoints serving vision-capable models.
