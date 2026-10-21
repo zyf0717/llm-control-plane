@@ -1044,7 +1044,7 @@ def test_format_trace_summary_uses_display_timezone():
             "timestamp": "2026-06-09T02:16:33.957094+00:00",
             "phase": "started",
             "status_code": 200,
-            "endpoint": "gmktec-evo-x2",
+            "endpoint": "evo-x2",
             "conversation_id": "abc123",
             "request_id": "trace123",
             "timing": {"elapsed_ms": 42},
@@ -1053,7 +1053,7 @@ def test_format_trace_summary_uses_display_timezone():
 
     assert summary == (
         "2026-06-09 10:16:33 GMT+8 | started | 200 | "
-        "gmktec-evo-x2 | abc123 | trace123 | 42ms"
+        "evo-x2 | abc123 | trace123 | 42ms"
     )
 
 

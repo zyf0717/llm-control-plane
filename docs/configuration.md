@@ -170,7 +170,7 @@ Configure utility servers in one place:
 ```yaml
 workloads:
   - type: utility
-    endpoint_preference: [gti13, gmktec-evo-x2-utility]
+    endpoint_preference: [gti13, evo-x2-utility]
 ```
 
 Built-in search, RAG, and repo-context planners use `utility` in both workflows and

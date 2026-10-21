@@ -1756,13 +1756,13 @@ class TestModelsEndpoint:
         test_client = TestClient(app)
         mock_endpoints = [
             {
-                "name": "gmktec-evo-x2-primary",
+                "name": "evo-x2-primary",
                 "url": "https://llm-evo-x2.paperclips.dev",
                 "soc": "AMD Ryzen AI Max+ 395",
                 "ram": "128GB",
             },
             {
-                "name": "gmktec-evo-x2-utility",
+                "name": "evo-x2-utility",
                 "url": "https://llm-evo-x2-utility.paperclips.dev",
                 "soc": "AMD Ryzen AI Max+ 395",
                 "ram": "128GB",
@@ -1799,8 +1799,8 @@ class TestModelsEndpoint:
             (model["endpoint"], model["id"])
             for model in models
         } == {
-            ("gmktec-evo-x2-primary", "primary-model"),
-            ("gmktec-evo-x2-utility", "utility-model"),
+            ("evo-x2-primary", "primary-model"),
+            ("evo-x2-utility", "utility-model"),
         }
         assert all(model["soc"] == "AMD Ryzen AI Max+ 395" for model in models)
         assert all(model["ram"] == "128GB" for model in models)
