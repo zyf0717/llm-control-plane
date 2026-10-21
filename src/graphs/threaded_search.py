@@ -45,17 +45,6 @@ async def plan_search_queries(
     prompt = f"""Latest user prompt:
 {text(state.get("latest_user_prompt"))}
 
-Prior thread context:
-{text(state.get("thread_state_text"))}
-
-Recent conversation context:
-{text(state.get("recent_conversation_messages"))}
-
-Additional context:
-{text(state.get("thread_briefing"))}
-{text(state.get("manual_source_text"))}
-{text(state.get("uploaded_source_text"))}
-
 Infer the user's actual information need from the latest turn in the
 full thread context. Decide exactly what should be searched before
 any web lookup happens.
@@ -83,6 +72,7 @@ Query rules:
     output = await llm_json(
         prompt,
         config,
+        context=state,
         schema=SEARCH_PLAN_SCHEMA,
         workload_type="utility",
         max_attempts=3,
@@ -148,17 +138,6 @@ async def consolidate_reply(
     prompt = f"""Latest user prompt:
 {text(state.get("latest_user_prompt"))}
 
-Prior thread context:
-{text(state.get("thread_state_text"))}
-
-Recent conversation context:
-{text(state.get("recent_conversation_messages"))}
-
-Additional context:
-{text(state.get("thread_briefing"))}
-{text(state.get("manual_source_text"))}
-{text(state.get("uploaded_source_text"))}
-
 Search plan:
 {output_text(outputs.get("search_plan"))}
 
@@ -169,7 +148,7 @@ Answer the latest user prompt directly. Use the thread context to
 preserve intent and constraints, and use the search context for factual
 grounding. Surface material uncertainty or missing evidence clearly.
 """
-    output = await llm_text(prompt, config)
+    output = await llm_text(prompt, config, context=state)
     return with_output(state, "reply", output, final=output["text"])
 
 

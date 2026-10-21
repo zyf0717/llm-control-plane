@@ -33,12 +33,6 @@ async def plan_repo_context_query(
     prompt = f"""Latest user prompt:
 {text(state.get("latest_user_prompt"))}
 
-Prior thread context:
-{text(state.get("thread_state_text"))}
-
-Recent conversation context:
-{text(state.get("recent_conversation_messages"))}
-
 Repository:
 {text(state.get("repo_name"))}
 
@@ -81,6 +75,7 @@ Return strict JSON only:
     output = await llm_json(
         prompt,
         config,
+        context=state,
         schema=REPO_CONTEXT_PLAN_SCHEMA,
         workload_type="utility",
         max_attempts=3,
@@ -136,7 +131,7 @@ Answer the original request directly using the repo-context evidence.
 Preserve relevant file paths and line ranges. Surface uncertainty or
 missing evidence clearly; do not invent repository details.
 """
-    output = await llm_text(prompt, config, use_retrieval=False)
+    output = await llm_text(prompt, config, context=state, use_retrieval=False)
     return with_output(state, "reply", output, final=output["text"])
 
 

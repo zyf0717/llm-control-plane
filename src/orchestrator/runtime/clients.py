@@ -11,6 +11,45 @@ from src.search import SearchArgs, wrap_search_results
 from src.search.types import SearchResponse, SearchResult
 
 
+def _context_messages(prompt: str, context: dict | None) -> list[dict]:
+    """Keep reusable background in separate messages before the changing task."""
+    context = context or {}
+    messages = context.get("conversation_messages")
+    history = str(context.get("thread_state_text") or "").strip()
+    if messages is None:
+        briefing = str(context.get("thread_briefing") or "").strip()
+        history = "\n\n".join(
+            [
+                *(
+                    str(context[key]).strip()
+                    for key in ("thread_state_text", "recent_conversation_messages")
+                    if context.get(key) and str(context[key]).strip() not in briefing
+                ),
+                briefing,
+            ]
+        ).strip()
+    sections = (
+        ("Supplied context", context.get("manual_source_text")),
+        ("Uploaded source", context.get("uploaded_source_text")),
+        ("Prior conversation context", history),
+    )
+    return (
+        [
+            {"role": "user", "content": f"{label}:\n{str(value).strip()}"}
+            for label, value in sections
+            if value and str(value).strip()
+        ]
+        + [
+            {"role": message["role"], "content": message["content"]}
+            for message in messages or []
+            if isinstance(message, dict)
+            and message.get("role") in {"user", "assistant"}
+            and message.get("content")
+        ]
+        + [{"role": "user", "content": prompt}]
+    )
+
+
 class ProxyRuntimeLLMClient:
     async def _request(
         self,
@@ -18,6 +57,7 @@ class ProxyRuntimeLLMClient:
         *,
         prompt: str,
         conversation_id: str,
+        context: dict | None = None,
         endpoint: str | None = None,
         workload_type: str | None = None,
         reasoning_effort: str | None = None,
@@ -27,7 +67,7 @@ class ProxyRuntimeLLMClient:
     ):
         from ..upstream_proxy import complete_request
 
-        payload = {"stream": stream, "messages": [{"role": "user", "content": prompt}]}
+        payload = {"stream": stream, "messages": _context_messages(prompt, context)}
         if max_tokens is not None:
             payload["max_tokens"] = int(max_tokens)
         headers = {"X-Conversation-ID": conversation_id}

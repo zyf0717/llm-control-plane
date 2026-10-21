@@ -51,12 +51,13 @@ def build_workflow_chat_params(
     *,
     latest_user_prompt: str,
     thread_briefing: str = "",
+    conversation_messages: list[dict[str, Any]] | None = None,
     manual_source_text: str = "",
     uploaded_source_text: str = "",
     repo_name: str = "",
-) -> dict[str, str]:
+) -> dict[str, Any]:
     keys = _workflow_param_keys(spec)
-    params: dict[str, str] = {}
+    params: dict[str, Any] = {}
     for key in keys:
         if key in WORKFLOW_CHAT_PROMPT_PARAM_NAMES:
             params[key] = str(latest_user_prompt or "")
@@ -68,6 +69,8 @@ def build_workflow_chat_params(
             params[key] = str(uploaded_source_text or "")
         elif key == "repo_name":
             params[key] = str(repo_name or "")
+    if conversation_messages is not None:
+        params["conversation_messages"] = conversation_messages
     return params
 
 
@@ -76,6 +79,7 @@ def build_workflow_chat_run_payload(
     *,
     latest_user_prompt: str,
     thread_briefing: str = "",
+    conversation_messages: list[dict[str, Any]] | None = None,
     manual_source_text: str = "",
     uploaded_source_text: str = "",
     repo_name: str = "",
@@ -90,6 +94,7 @@ def build_workflow_chat_run_payload(
             spec,
             latest_user_prompt=latest_user_prompt,
             thread_briefing=thread_briefing,
+            conversation_messages=conversation_messages,
             manual_source_text=manual_source_text,
             uploaded_source_text=uploaded_source_text,
             repo_name=repo_name,
@@ -109,21 +114,6 @@ def build_workflow_chat_run_payload(
     if provider:
         payload["search_provider"] = provider
     return payload
-
-
-def format_workflow_thread_briefing(history: list[dict[str, Any]] | None) -> str:
-    lines: list[str] = []
-    for message in history or []:
-        if not isinstance(message, dict):
-            continue
-        role = str(message.get("role") or "").strip()
-        content = message.get("content")
-        if role == "system" or not role or not isinstance(content, str):
-            continue
-        text = content.strip()
-        if text:
-            lines.append(f"{role}: {text}")
-    return "\n\n".join(lines)
 
 
 def workflow_chat_response_text(snapshot: dict[str, Any] | None) -> str:

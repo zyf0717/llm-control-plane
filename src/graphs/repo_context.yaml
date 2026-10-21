@@ -9,6 +9,8 @@ input_schema:
       type: string
     repo_name:
       type: string
+    thread_briefing:
+      type: string
     thread_state_text:
       type: string
     recent_conversation_messages:

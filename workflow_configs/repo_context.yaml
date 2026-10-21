@@ -11,6 +11,8 @@ params_schema:
       type: string
     repo_name:
       type: string
+    thread_briefing:
+      type: string
 
 steps:
   - id: plan_repo_context_query
@@ -21,12 +23,6 @@ steps:
     prompt: |
       Latest user prompt:
       {{ params.latest_user_prompt }}
-
-      Prior thread context:
-      {{ params.thread_state_text }}
-
-      Recent conversation context:
-      {{ params.recent_conversation_messages }}
 
       Repository:
       {{ params.repo_name }}

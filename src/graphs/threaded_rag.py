@@ -40,17 +40,6 @@ async def plan_rag_prompt(
     prompt = f"""Latest user prompt:
 {text(state.get("latest_user_prompt"))}
 
-Prior thread context:
-{text(state.get("thread_state_text"))}
-
-Recent conversation context:
-{text(state.get("recent_conversation_messages"))}
-
-Additional context:
-{text(state.get("thread_briefing"))}
-{text(state.get("manual_source_text"))}
-{text(state.get("uploaded_source_text"))}
-
 Infer the user's actual information need from the latest turn in the
 full thread context. Decide exactly what should be sent to Retrieval
 before any RAG lookup happens.
@@ -92,6 +81,7 @@ RAG prompt rules:
     output = await llm_json(
         prompt,
         config,
+        context=state,
         schema=RAG_PLAN_SCHEMA,
         workload_type="utility",
         max_attempts=3,
@@ -135,7 +125,7 @@ Answer the user prompt directly using the retrieved context. Compare or
 combine evidence across all retrieved entities/projects when relevant.
 Surface material uncertainty, missing evidence, or retrieval failures.
 """
-    output = await llm_text(prompt, config, use_retrieval=False)
+    output = await llm_text(prompt, config, context=state, use_retrieval=False)
     return with_output(state, "reply", output, final=output["text"])
 
 

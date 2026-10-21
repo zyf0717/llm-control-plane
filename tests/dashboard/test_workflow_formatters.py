@@ -10,10 +10,10 @@ from src.dashboard.workflow_formatters import (
 
 def test_format_workflow_choices_uses_id_keys():
     choices = format_workflow_choices(
-        [{"id": "implementation_plan", "name": "Implementation Plan", "version": "0.1.0"}]
+        [{"id": "repo_context", "name": "Repo Context", "version": "0.1.0"}]
     )
 
-    assert choices == {"implementation_plan": "Implementation Plan (0.1.0)"}
+    assert choices == {"repo_context": "Repo Context (0.1.0)"}
 
 
 def test_format_workflow_run_choices_uses_run_id_keys():
@@ -21,7 +21,7 @@ def test_format_workflow_run_choices_uses_run_id_keys():
         [
             {
                 "run_id": "wf_123",
-                "workflow_id": "implementation_plan",
+                "workflow_id": "repo_context",
                 "status": "completed",
                 "updated_at": "2026-01-01T00:00:00.123456+00:00",
             }
@@ -30,7 +30,7 @@ def test_format_workflow_run_choices_uses_run_id_keys():
 
     assert (
         choices["wf_123"]
-        == "2026-01-01 08:00:00 +08 | wf_123 | implementation_plan | completed"
+        == "2026-01-01 08:00:00 +08 | wf_123 | repo_context | completed"
     )
 
 
@@ -77,7 +77,7 @@ def test_format_step_timeline_renders_horizontal_step_boxes():
             {
                 "run": {
                     "run_id": "wf_123",
-                    "workflow_id": "implementation_plan",
+                    "workflow_id": "repo_context",
                     "status": "failed",
                     "current_step_id": "failed_step",
                     "conversation_id": "wf_123_conversation",

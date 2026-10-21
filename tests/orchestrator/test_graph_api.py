@@ -266,7 +266,11 @@ def test_app_can_start_without_orchestration_subsystems():
 
 
 class FakeGraphLLMClient:
+    def __init__(self):
+        self.requests = []
+
     async def complete(self, **kwargs):
+        self.requests.append(kwargs)
         prompt = kwargs["prompt"]
         if "Return strict JSON only" in prompt and '"retrieval_queries"' in prompt:
             return {
@@ -376,8 +380,6 @@ class FakeGraphRepoContextClient:
 @pytest.mark.parametrize(
     ("graph_id", "graph_input"),
     [
-        ("research_brief", {"question": "ship graph support"}),
-        ("implementation_plan", {"goal": "ship graph support"}),
         ("threaded_search", {"latest_user_prompt": "ship graph support"}),
         ("threaded_rag", {"latest_user_prompt": "ship graph support"}),
         (
@@ -395,7 +397,8 @@ async def test_shipped_generated_graphs_execute_with_neutral_runtime_clients(
     graph_id,
     graph_input,
 ):
-    monkeypatch.setattr(graph_common, "LLM_CLIENT", FakeGraphLLMClient())
+    llm = FakeGraphLLMClient()
+    monkeypatch.setattr(graph_common, "LLM_CLIENT", llm)
     monkeypatch.setattr(graph_common, "SEARCH_CLIENT", FakeGraphSearchClient())
     monkeypatch.setattr(graph_common, "RETRIEVAL_CLIENT", FakeGraphRetrievalClient())
     monkeypatch.setattr(graph_common, "REPO_CONTEXT_CLIENT", FakeGraphRepoContextClient())
@@ -407,7 +410,13 @@ async def test_shipped_generated_graphs_execute_with_neutral_runtime_clients(
         executor = GraphExecutor(registry, store)
         created = await executor.create_run(
             graph_id,
-            input=graph_input,
+            input={
+                **graph_input,
+                "thread_briefing": "OLD_HISTORY",
+                "manual_source_text": "FIXED_INSTRUCTIONS",
+                "uploaded_source_text": "FIXED_DOCUMENT",
+                "conversation_messages": [{"role": "user", "content": "OLD_HISTORY"}],
+            },
             config={
                 "configurable": {
                     "thread_id": f"{graph_id}-thread",
@@ -421,6 +430,15 @@ async def test_shipped_generated_graphs_execute_with_neutral_runtime_clients(
 
         assert snapshot["run"]["status"] == "completed"
         assert snapshot["run"]["output"]["final"].startswith("answer:")
+        for request in llm.requests:
+            assert request["context"]["conversation_messages"] == [{"role": "user", "content": "OLD_HISTORY"}]
+            for key, value in (
+                ("thread_briefing", "OLD_HISTORY"),
+                ("manual_source_text", "FIXED_INSTRUCTIONS"),
+                ("uploaded_source_text", "FIXED_DOCUMENT"),
+            ):
+                assert request["context"][key] == value
+                assert value not in request["prompt"]
         planner_key = {
             "threaded_search": "search_plan",
             "threaded_rag": "rag_prompt",

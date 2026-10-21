@@ -5,6 +5,7 @@ from src.orchestrator.thread_briefing import (
     build_thread_briefing_bundle,
     enrich_workflow_params_with_thread_bundle,
     format_message_records,
+    MESSAGE_TRUNCATION_MARKER,
 )
 from src.orchestrator.conversation_store import MemoryConversationStore
 
@@ -38,6 +39,10 @@ async def test_thread_bundle_includes_thread_state_and_recent_messages():
     assert "two" in bundle["recent_conversation_messages"]
     assert "three" in bundle["recent_conversation_messages"]
     assert "one" not in bundle["recent_conversation_messages"]
+    assert bundle["conversation_messages"] == [
+        {"role": "assistant", "content": "two"},
+        {"role": "user", "content": "three"},
+    ]
     assert bundle["thread_metadata"]["covered_message_id"] == records[1]["id"]
     assert bundle["thread_metadata"]["latest_message_id"] == records[-1]["id"]
 
@@ -85,6 +90,7 @@ def test_bounded_chat_messages_preserves_current_user_without_full_history():
 
 def test_workflow_param_enrichment_preserves_existing_briefing_and_prompt():
     bundle = {
+        "conversation_messages": [{"role": "user", "content": "tail"}],
         "thread_state_text": "summary",
         "recent_conversation_messages": "tail",
         "thread_briefing": "server briefing",
@@ -103,6 +109,10 @@ def test_workflow_param_enrichment_preserves_existing_briefing_and_prompt():
     assert enriched["recent_conversation_messages"] == "tail"
     assert enriched["thread_briefing"].startswith("manual briefing")
     assert "server briefing" in enriched["thread_briefing"]
+    assert enriched["conversation_messages"] == [
+        {"role": "user", "content": "manual briefing"},
+        {"role": "user", "content": "tail"},
+    ]
 
 
 def test_workflow_param_enrichment_sets_blank_briefing():
@@ -115,3 +125,24 @@ def test_workflow_param_enrichment_sets_blank_briefing():
     )
 
     assert enriched["thread_briefing"] == "server briefing"
+
+
+@pytest.mark.asyncio
+async def test_workflow_message_history_respects_briefing_budget():
+    store = MemoryConversationStore()
+    await store.append_messages(
+        "thread",
+        [
+            {"role": "user", "content": "a" * 100},
+            {"role": "assistant", "content": "b" * 20},
+            {"role": "user", "content": "latest"},
+        ],
+    )
+    bundle = await build_thread_briefing_bundle(
+        store, source_conversation_id="thread", max_recent_message_chars=30
+    )
+    assert bundle["conversation_messages"] == [
+        {"role": "user", "content": MESSAGE_TRUNCATION_MARKER + "\n" + "a" * 4},
+        {"role": "assistant", "content": "b" * 20},
+        {"role": "user", "content": "latest"},
+    ]

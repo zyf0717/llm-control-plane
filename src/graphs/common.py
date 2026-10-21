@@ -83,7 +83,7 @@ def with_output(
 ) -> dict[str, Any]:
     outputs = dict(state.get("outputs") or {})
     outputs[key] = output
-    return {"outputs": outputs, **extra}
+    return {**state, "outputs": outputs, **extra}
 
 
 def output_from_payload(
@@ -110,6 +110,7 @@ async def llm_text(
     *,
     default_endpoint: str = "smart",
     workload_type: str | None = None,
+    context: dict[str, Any] | None = None,
     max_output_tokens: int | None = None,
     use_retrieval: bool = True,
 ) -> dict[str, Any]:
@@ -117,6 +118,7 @@ async def llm_text(
         endpoint=None if workload_type else endpoint(config, default=default_endpoint),
         workload_type=workload_type,
         prompt=prompt,
+        context=context,
         conversation_id=thread_id(config),
         reasoning_effort=reasoning_effort(config),
         retrieval_endpoint=retrieval_endpoint(config) if use_retrieval else None,
@@ -139,6 +141,7 @@ async def llm_json(
     schema: dict[str, Any],
     default_endpoint: str = "smart",
     workload_type: str | None = None,
+    context: dict[str, Any] | None = None,
     max_attempts: int = 3,
     use_retrieval: bool = True,
 ) -> dict[str, Any]:
@@ -151,6 +154,7 @@ async def llm_json(
             config,
             default_endpoint=default_endpoint,
             workload_type=workload_type,
+            context=context,
             use_retrieval=use_retrieval,
         )
         last_text = output["text"]

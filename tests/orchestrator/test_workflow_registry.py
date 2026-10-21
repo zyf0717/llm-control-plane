@@ -561,8 +561,6 @@ def test_default_workflow_config_directory_loads_shipped_specs():
     assert {spec.id for spec in registry.list()} == {
         "threaded_search",
         "threaded_rag",
-        "implementation_plan",
-        "research_brief",
         "repo_context",
     }
 

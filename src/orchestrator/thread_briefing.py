@@ -103,6 +103,22 @@ async def build_thread_briefing_bundle(
         tail_records,
         max_chars=max_recent_message_chars,
     )
+    messages = []
+    remaining = max_recent_message_chars
+    for record in reversed(tail_records):
+        message = record["message"]
+        content = _message_source_text(message)
+        if message.get("role") not in {"user", "assistant"} or not content:
+            continue
+        if max_recent_message_chars > 0:
+            if remaining <= 0:
+                break
+            size = len(content)
+            if size > remaining:
+                content = MESSAGE_TRUNCATION_MARKER + "\n" + content[-remaining:]
+            remaining -= size
+        messages.append({"role": message["role"], "content": content})
+    messages.reverse()
     thread_state_text = (
         str((thread_state or {}).get("state_text") or "").strip()
         if thread_state
@@ -121,6 +137,7 @@ async def build_thread_briefing_bundle(
         f"{recent_conversation_messages or '(none)'}"
     )
     return {
+        "conversation_messages": messages,
         "thread_state_text": thread_state_text,
         "recent_conversation_messages": recent_conversation_messages,
         "thread_briefing": thread_briefing,
@@ -176,6 +193,10 @@ def enrich_workflow_params_with_thread_bundle(
     enriched["thread_metadata"] = deepcopy(bundle.get("thread_metadata") or {})
 
     existing_briefing = str(enriched.get("thread_briefing") or "").strip()
+    if "conversation_messages" in bundle:
+        enriched["conversation_messages"] = (
+            [{"role": "user", "content": existing_briefing}] if existing_briefing else []
+        ) + deepcopy(bundle["conversation_messages"])
     if not existing_briefing:
         enriched["thread_briefing"] = server_briefing
     elif server_briefing:

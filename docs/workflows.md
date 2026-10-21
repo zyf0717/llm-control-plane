@@ -8,9 +8,10 @@ Workflows are YAML-defined multi-step runs loaded from `workflow_configs/`. They
 |---|---|
 | `threaded_search` | Use thread context to plan searches, dispatch multiple queries, rerank globally, and answer the latest prompt |
 | `threaded_rag` | Use thread context to plan multiple Retrieval queries, dispatch them concurrently, then answer from merged RAG evidence |
-| `research_brief` | Build a concise brief from a question, optional manual context, uploaded files, search, and rerank |
-| `implementation_plan` | Build staged implementation guidance from a goal, optional context, search, and rerank |
 | `repo_context` | Explore one local repository through the configured repo-context CLI |
+
+Research Brief and Implementation Plan have been retired. Use Search with the
+desired answer format in the request, or Repo Context for repository-specific work.
 
 ## API
 
@@ -31,7 +32,7 @@ Create-run body:
 
 ```json
 {
-  "params": {"goal": "ship the feature"},
+  "params": {"latest_user_prompt": "Find evidence for this feature"},
   "endpoint": "primary",
   "conversation_id": "optional-session",
   "reasoning_effort": "high",
@@ -46,6 +47,13 @@ Model-backed steps can instead declare `workload_type: utility` to resolve their
 endpoint from the [workload preference list](configuration.md#workload-preferences).
 This takes precedence over the run endpoint. A step cannot specify both
 `endpoint` and `workload_type`; steps with neither inherit the run endpoint.
+
+LLM steps receive manual/uploaded sources and thread context as messages before
+the rendered task prompt, including during streaming and JSON repair. The dashboard
+passes history in `params.conversation_messages` as a list of `role`/`content`
+messages so growing conversations retain stable cache boundaries. API callers can
+pass the same list; `thread_briefing` is the text fallback. Avoid repeating these
+context fields inside LLM prompt templates. Cache reuse depends on the upstream server.
 
 ## Spec Shape
 

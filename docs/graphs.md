@@ -2,6 +2,8 @@
 
 Graphs are LangGraph-native orchestration units that live independently from YAML workflows. They use Python graph code and the LangGraph app convention instead of the workflow step-DAG YAML schema.
 
+The shipped graphs are `repo_context`, `threaded_rag`, and `threaded_search`.
+
 ## Configuration
 
 Graph refs are loaded from `langgraph.json`:
@@ -43,6 +45,10 @@ The search, RAG, and repo-context planners call `llm_json(..., workload_type="ut
 The shared `llm_json` and `llm_text` helpers resolve explicit workloads from
 `config.yaml` instead of using `configurable.endpoint`. Final-answer nodes omit
 the workload and use the selected endpoint. See [workload preferences](configuration.md#workload-preferences).
+
+Pass `context=state` to `llm_text`/`llm_json` to send the same reusable source/history
+prefix as [workflows](workflows.md). All shipped graphs do this and preserve their
+input context between nodes.
 
 ## API
 

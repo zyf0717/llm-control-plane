@@ -47,7 +47,6 @@ from src.dashboard.workflow_server_helpers import (
     build_workflow_chat_run_payload,
     build_workflow_params_template,
     format_workflow_intermediate_content,
-    format_workflow_thread_briefing,
     merge_repo_context_repo_name,
     merge_uploaded_source_text,
     workflow_chat_response_text,
@@ -309,19 +308,6 @@ def test_build_workflow_chat_run_payload_includes_workflow_retrieval_endpoint():
     assert payload["retrieval_endpoint"] == "http://retrieval/api/retrieve/context"
 
 
-def test_format_workflow_thread_briefing_skips_system_messages():
-    rendered = format_workflow_thread_briefing(
-        [
-            {"role": "system", "content": "hidden"},
-            {"role": "user", "content": "Earlier question"},
-            {"role": "assistant", "content": "Earlier answer"},
-            {"role": "", "content": "skip"},
-        ]
-    )
-
-    assert rendered == "user: Earlier question\n\nassistant: Earlier answer"
-
-
 def test_workflow_chat_response_text_uses_last_completed_step_text():
     text = workflow_chat_response_text(
         {
@@ -441,7 +427,7 @@ def test_resolve_workflow_dispatch_selection_defaults_to_none():
     selected = resolve_workflow_dispatch_selection(
         {
             "": "None",
-            "implementation_plan": "Implementation Plan",
+            "repo_context": "Repo Context",
             "threaded_search": "Threaded Search",
         },
         current_selection="",
@@ -454,21 +440,21 @@ def test_resolve_workflow_dispatch_selection_preserves_valid_current_selection()
     selected = resolve_workflow_dispatch_selection(
         {
             "": "None",
-            "implementation_plan": "Implementation Plan",
+            "repo_context": "Repo Context",
             "threaded_search": "Threaded Search",
         },
-        current_selection="implementation_plan",
+        current_selection="repo_context",
     )
 
-    assert selected == "implementation_plan"
+    assert selected == "repo_context"
 
 
 def test_resolve_workflow_dispatch_selection_falls_back_to_none_option():
     selected = resolve_workflow_dispatch_selection(
         {
             "": "None",
-            "research_brief": "Research Brief",
-            "implementation_plan": "Implementation Plan",
+            "threaded_rag": "Threaded RAG",
+            "repo_context": "Repo Context",
         },
         current_selection="missing",
     )
@@ -479,13 +465,13 @@ def test_resolve_workflow_dispatch_selection_falls_back_to_none_option():
 def test_resolve_workflow_dispatch_selection_falls_back_to_first_without_none_option():
     selected = resolve_workflow_dispatch_selection(
         {
-            "research_brief": "Research Brief",
-            "implementation_plan": "Implementation Plan",
+            "threaded_rag": "Threaded RAG",
+            "repo_context": "Repo Context",
         },
         current_selection="missing",
     )
 
-    assert selected == "research_brief"
+    assert selected == "threaded_rag"
 
 
 def test_resolve_workflow_dispatch_selection_handles_empty_choices():

@@ -38,17 +38,6 @@ steps:
       Latest user prompt:
       {{ params.latest_user_prompt }}
 
-      Prior thread context:
-      {{ params.thread_state_text }}
-
-      Recent conversation context:
-      {{ params.recent_conversation_messages }}
-
-      Additional context:
-      {{ params.thread_briefing }}
-      {{ params.manual_source_text }}
-      {{ params.uploaded_source_text }}
-
       Infer the user's actual information need from the latest turn in the
       full thread context. Decide exactly what should be sent to Retrieval
       before any RAG lookup happens.

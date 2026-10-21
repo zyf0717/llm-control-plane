@@ -76,7 +76,6 @@ from .workflow_server_helpers import (
     build_workflow_chat_run_payload,
     build_workflow_params_template,
     format_workflow_intermediate_content,
-    format_workflow_thread_briefing,
     merge_repo_context_repo_name,
     merge_uploaded_source_text,
     workflow_chat_response_text,
@@ -1842,9 +1841,7 @@ def server(input, output, session):
                 payload = build_workflow_chat_run_payload(
                     spec,
                     latest_user_prompt=latest_user_prompt,
-                    thread_briefing=format_workflow_thread_briefing(
-                        workflow_history
-                    ),
+                    conversation_messages=workflow_history,
                     manual_source_text=current_prompt,
                     uploaded_source_text=workflow_uploaded_source_text,
                     repo_name=workflow_repo_name,
