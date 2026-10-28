@@ -7,7 +7,7 @@ import ipaddress
 import json
 import re
 import socket
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -27,10 +27,11 @@ class URLRetrievalConfig:
     max_body_bytes: int = 2_500_000
     max_redirects: int = 5
     max_text_chars: int = 30_000
+    max_links: int = 100
 
     def __post_init__(self) -> None:
-        if min(self.concurrency, self.timeout_seconds, self.max_body_bytes, self.max_text_chars) <= 0:
-            raise ValueError("Concurrency, timeout, byte limit, and text limit must be positive")
+        if min(self.concurrency, self.timeout_seconds, self.max_body_bytes, self.max_text_chars, self.max_links) <= 0:
+            raise ValueError("Concurrency, timeout, byte limit, text limit, and link limit must be positive")
         if self.max_redirects < 0:
             raise ValueError("Redirect limit must be nonnegative")
 
@@ -48,6 +49,7 @@ class URLDocument:
     fetched_at: str | None = None
     truncated: bool = False
     error: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class URLRetrievalError(ValueError):
@@ -137,15 +139,57 @@ class PublicHTTPTransport(httpx.AsyncBaseTransport):
         await self._transport.aclose()
 
 
-def _parse_html(html: str) -> tuple[str | None, str, str]:
+def _extract_links(soup: BeautifulSoup, page_url: str, config: URLRetrievalConfig) -> dict[str, Any]:
+    base_url = httpx.URL(page_url)
+    base = soup.find("base", href=True)
+    if base is not None:
+        try:
+            base_url = base_url.join(base["href"])
+        except httpx.InvalidURL:
+            pass
+    links: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    characters = 0
+    truncated = False
+    for anchor in soup.find_all("a", href=True):
+        href = anchor["href"].strip()
+        if not href or href == "#":
+            continue
+        try:
+            url = base_url.join(href)
+        except httpx.InvalidURL:
+            continue
+        if url.scheme not in {"http", "https"} or not url.host or url.userinfo:
+            continue
+        text = " ".join(anchor.get_text(" ", strip=True).split())
+        destination = str(url)
+        key = (text, destination)
+        if key in seen:
+            continue
+        size = len(text) + len(destination)
+        if len(links) == config.max_links or characters + size > config.max_text_chars:
+            truncated = True
+            break
+        seen.add(key)
+        links.append({"text": text, "url": destination})
+        characters += size
+    return {"links": links, "links_truncated": truncated}
+
+
+def _parse_html(
+    html: str, page_url: str, config: URLRetrievalConfig,
+) -> tuple[str | None, str, dict[str, Any]]:
     soup = BeautifulSoup(html, "html.parser")
     title = soup.title.get_text(" ", strip=True) if soup.title else None
-    for element in soup(["script", "style", "noscript", "template", "head", "nav", "footer"]):
+    for element in soup(["script", "style", "noscript", "template"]):
+        element.decompose()
+    metadata = _extract_links(soup, page_url, config)
+    for element in soup(["head", "nav", "footer"]):
         element.decompose()
     text = soup.get_text("\n", strip=True)
     if not text:
         raise URLRetrievalError("HTML contained no readable text")
-    return title, text, "beautifulsoup"
+    return title, text, metadata
 
 
 async def _download(
@@ -197,9 +241,10 @@ async def _fetch_document(
         async with asyncio.timeout(config.timeout_seconds):
             body = await _download(client, document, config)
         if document.content_type in {"text/html", "application/xhtml+xml"}:
-            document.title, text, document.extraction_method = await asyncio.to_thread(
-                _parse_html, body,
+            document.title, text, document.metadata = await asyncio.to_thread(
+                _parse_html, body, document.final_url, config,
             )
+            document.extraction_method = "beautifulsoup"
         else:
             text = body.strip()
             document.extraction_method = "plain_text"
@@ -233,6 +278,11 @@ def _render_results(results: list[dict[str, Any]]) -> str:
             lines.append(result["text"])
             if result["truncated"]:
                 lines.append("[Content truncated]")
+            if result["metadata"].get("links"):
+                lines.append("Discovered page links:")
+                lines.append(json.dumps(result["metadata"]["links"], ensure_ascii=False))
+            if result["metadata"].get("links_truncated"):
+                lines.append("[Link metadata truncated]")
         sections.append("\n".join(lines))
     return "\n\n".join(sections)
 

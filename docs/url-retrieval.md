@@ -56,6 +56,13 @@ answer from the model using the available context.
 BeautifulSoup extracts readable text from HTML/XHTML after removing scripts,
 styles, head, navigation, footer, and other non-content elements. Headings,
 link text, and table text are retained. Raw HTML is not included.
+Each HTML document also includes `metadata.links`, a list of `{text, url}`
+pairs in page order. Relative destinations use the final fetched URL and any
+HTML `<base href>`. HTTP/S links from navigation and footer are included in
+metadata even though those sections are omitted from the body text. Identical
+label/destination pairs are deduplicated; distinct labels and section fragments
+are retained. Empty, non-HTTP/S, malformed, and credential-bearing destinations
+are excluded. Discovered destinations are not fetched.
 Text MIME types and JSON are returned as text. PDFs, binary files, and responses
 without a supported Content-Type produce explicit document errors. JavaScript
 is not executed.
@@ -71,10 +78,16 @@ envelope:
   `extraction_method` (`beautifulsoup` or `plain_text`), UTC
   `fetched_at`, `truncated`, and `error`. Unavailable optional metadata is null;
   failed documents have empty text.
+- Per-document `metadata`: HTML results include `links` and `links_truncated`;
+  non-HTML results have an empty metadata object. Link discovery is independent
+  of body-text truncation, so links beyond the retained text can still appear.
 - `text`: readable source text and per-document errors, labeled as untrusted
   external material. The workflow saves this as an artifact, while the final
   chat response comes from the subsequent answer step.
 - `metadata`: `kind`, `attempted`, `successful`, and `failed` counts.
+
+The rendered source text includes discovered links for the answer step, with a
+separate marker when link metadata is truncated.
 
 Both engines store the model answer in `outputs.reply`. The graph uses the same
 `outputs.url_candidates` and `outputs.url_documents` envelopes and sets `final`
@@ -86,6 +99,11 @@ Defaults are four concurrent documents, a ten-second total network deadline per
 document (including DNS and redirects), five redirects, 2.5 MB of decompressed
 response bytes, and 30,000 extracted characters per document. Excess response
 bytes fail retrieval; excess extracted text is truncated and marked. There is
+also a separate link-metadata budget of 100 unique label/destination pairs and
+30,000 characters across their labels and URLs per page. The character ceiling
+uses `max_text_chars`; the count ceiling uses `max_links`. Discovery stops at
+either ceiling and sets `metadata.links_truncated` when another eligible link
+cannot fit. These limits apply independently of the body-text limit. There is
 no URL-count cap, automatic retry, or persistent content cache. Shared Python
 callers can supply `URLRetrievalConfig` to adjust these limits.
 

@@ -34,7 +34,7 @@ def test_discovery_includes_quoted_code_urls_but_not_schemeless_addresses():
 
 @pytest.mark.parametrize("options", [
     {"concurrency": 0}, {"timeout_seconds": 0}, {"max_body_bytes": 0},
-    {"max_text_chars": 0}, {"max_redirects": -1},
+    {"max_text_chars": 0}, {"max_redirects": -1}, {"max_links": 0},
 ])
 def test_invalid_limits_are_rejected_before_running(options):
     with pytest.raises(ValueError):
@@ -93,6 +93,58 @@ async def test_xhtml_extraction_removes_noncontent_elements(web_backend):
 
 
 @pytest.mark.asyncio
+async def test_html_link_metadata_resolves_and_deduplicates_page_links(web_backend):
+    requests, _ = web_backend(lambda request: httpx.Response(
+        200, headers={"content-type": "text/html"}, text="""
+        <head><base href="https://static.example/docs/"></head>
+        <nav><a href="../index">Navigation</a></nav>
+        <main><h1>Directory</h1>
+          <a href="post?x=%2f#intro"><strong>First</strong> post</a>
+          <a href="./post?x=%2f#intro"> First  post </a>
+          <a href="post?x=%2f#intro">Alternate label</a>
+          <a href="//external.example/page">External</a>
+          <a href="#section">Section</a>
+          <a href="">Empty</a><a href="#">Top</a>
+          <a href="mailto:someone@example.com">Email</a>
+          <a href="javascript:void(0)">Script</a>
+          <a href="https://[invalid]">Malformed</a>
+          <a href="https://user:password@example.com">Credentials</a>
+        </main>
+        <noscript><a href="hidden">Hidden</a></noscript>
+        <footer><a href="/contact">Contact</a></footer>
+        """,
+    ))
+    output = await fetch_url_output(["https://example.com/page"])
+    result = output["json"]["results"][0]
+    assert result["metadata"] == {"links": [
+        {"text": "Navigation", "url": "https://static.example/index"},
+        {"text": "First post", "url": "https://static.example/docs/post?x=%2f#intro"},
+        {"text": "Alternate label", "url": "https://static.example/docs/post?x=%2f#intro"},
+        {"text": "External", "url": "https://external.example/page"},
+        {"text": "Section", "url": "https://static.example/docs/#section"},
+        {"text": "Contact", "url": "https://static.example/contact"},
+    ], "links_truncated": False}
+    assert "Navigation" not in result["text"]
+    assert '"url": "https://static.example/docs/post?x=%2f#intro"' in output["text"]
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limits,retained", [({"max_links": 1}, 1), ({"max_text_chars": 25}, 0)])
+async def test_link_metadata_limits_are_independent_of_body_truncation(web_backend, limits, retained):
+    web_backend(lambda request: httpx.Response(
+        200, headers={"content-type": "text/html"},
+        text='<a href="/one">One</a><a href="/two">Two</a>',
+    ))
+    output = await fetch_url_output(["https://example.com"], config=URLRetrievalConfig(**limits))
+    result = output["json"]["results"][0]
+    assert len(result["metadata"]["links"]) == retained
+    assert result["metadata"]["links_truncated"] is True
+    assert result["truncated"] is False
+    assert "[Link metadata truncated]" in output["text"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("content_type,text", [
     ("text/plain", "Plain text"),
     ("application/json", '{"key": "value"}'),
@@ -105,6 +157,7 @@ async def test_textual_content_is_returned_without_html_extraction(web_backend, 
     result = (await fetch_url_output(["https://example.com"]))["json"]["results"][0]
     assert result["text"] == text
     assert result["extraction_method"] == "plain_text"
+    assert result["metadata"] == {}
 
 
 @pytest.mark.asyncio
@@ -141,12 +194,16 @@ async def test_public_redirect_preserves_https_identity_and_encoded_target(web_b
     def handler(request):
         if request.headers["host"] == "first.example":
             return httpx.Response(302, headers={"location": "https://second.example/a%2Fb?q=%2f#top"})
-        return httpx.Response(200, text="Redirected", headers={"content-type": "text/plain"})
+        return httpx.Response(
+            200, text='<p>Redirected</p><a href="../next">Next</a>',
+            headers={"content-type": "text/html"},
+        )
 
     requests, resolved = web_backend(handler)
     result = (await fetch_url_output(["https://first.example"]))["json"]["results"][0]
     assert result["final_url"] == "https://second.example/a%2Fb?q=%2f"
-    assert result["text"] == "Redirected"
+    assert result["text"] == "Redirected\nNext"
+    assert result["metadata"]["links"] == [{"text": "Next", "url": "https://second.example/next"}]
     assert resolved == ["first.example", "second.example"]
     assert requests[1].headers["host"] == "second.example"
     assert requests[1].extensions["sni_hostname"] == "second.example"

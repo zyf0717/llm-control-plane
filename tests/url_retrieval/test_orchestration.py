@@ -69,7 +69,8 @@ async def test_workflow_and_graph_answer_the_prompt_after_deterministic_retrieva
 ):
     app, workflow, graph = orchestration
     requests, _ = web_backend(lambda request: httpx.Response(
-        200, text="Reference content", headers={"content-type": "text/plain"},
+        200, text='<p>Reference content</p><a href="/article?x=1#intro">Read more</a>',
+        headers={"content-type": "text/html"},
     ))
     params = {
         "latest_user_prompt": "Summarize https://example.com/page#one and https://example.com/page#two in two bullets.",
@@ -127,6 +128,7 @@ async def test_workflow_and_graph_answer_the_prompt_after_deterministic_retrieva
     for call in workflow.llm_client.calls:
         assert params["latest_user_prompt"] in call["prompt"]
         assert "Reference content" in call["prompt"]
+        assert "https://example.com/article?x=1#intro" in call["prompt"]
         assert "requested output format" in call["prompt"]
         assert call["endpoint"] == "selected-model"
         assert call["retrieval_endpoint"] is None
