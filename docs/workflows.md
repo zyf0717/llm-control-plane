@@ -9,7 +9,7 @@ Workflows are YAML-defined multi-step runs loaded from `workflow_configs/`. They
 | `threaded_search` | Use thread context to plan searches, dispatch multiple queries, rerank globally, and answer the latest prompt |
 | `threaded_rag` | Use thread context to plan multiple Retrieval queries, dispatch them concurrently, then answer from merged RAG evidence |
 | `repo_context` | Explore one local repository through the configured repo-context CLI |
-| `url_retrieval` | Discover supplied URLs and return parsed public-web content without an LLM |
+| `url_retrieval` | Fetch supplied URLs deterministically, then answer the original prompt using their content |
 
 Research Brief and Implementation Plan have been retired. Use Search with the
 desired answer format in the request, or Repo Context for repository-specific work.
@@ -43,8 +43,9 @@ Create-run body:
 ```
 
 `endpoint` is required for workflows containing `llm` or `compress_source` steps
-and must be a concrete configured endpoint, not `smart`. Deterministic workflows
-such as `url_retrieval` can omit it.
+and must be a concrete configured endpoint, not `smart`. Workflows containing
+only deterministic steps can omit it. `url_retrieval` requires an endpoint for
+its final answer step.
 
 Model-backed steps can instead declare `workload_type: utility` to resolve their
 endpoint from the [workload preference list](configuration.md#workload-preferences).
@@ -208,6 +209,10 @@ also be used in custom workflows. `url_extract` consumes text and returns
 `json.urls`; `url_fetch` consumes a JSON array of URL strings and returns
 `json.results`. See [URL Retrieval](url-retrieval.md) for invocation, limits, and
 content extraction behavior.
+
+After fetching, `answer_from_urls` uses the selected model to follow the original
+prompt, including its requested output format, with the source documents and
+normal thread/supplied context. The discovery and fetch steps do not call an LLM.
 
 ## Dashboard Integration
 

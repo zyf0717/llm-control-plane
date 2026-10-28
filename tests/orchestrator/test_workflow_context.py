@@ -20,6 +20,7 @@ from src.orchestrator.workflow.step_executor import WorkflowStepExecutor
         "repo_context",
         "threaded_rag",
         "threaded_search",
+        "url_retrieval",
     ],
 )
 @pytest.mark.parametrize("stream", [False, True])
