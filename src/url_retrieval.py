@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 import httpx
-import trafilatura
 from bs4 import BeautifulSoup
 
 
@@ -138,19 +137,9 @@ class PublicHTTPTransport(httpx.AsyncBaseTransport):
         await self._transport.aclose()
 
 
-def _parse_html(html: str, url: str) -> tuple[str | None, str, str]:
+def _parse_html(html: str) -> tuple[str | None, str, str]:
     soup = BeautifulSoup(html, "html.parser")
     title = soup.title.get_text(" ", strip=True) if soup.title else None
-    try:
-        text = trafilatura.extract(
-            html, url=url, output_format="txt",
-            include_comments=False, include_tables=True,
-        )
-    except Exception:
-        # The extractor is an optional best-effort interpretation of valid HTML.
-        text = None
-    if text and text.strip():
-        return title, text.strip(), "trafilatura"
     for element in soup(["script", "style", "noscript", "template", "head", "nav", "footer"]):
         element.decompose()
     text = soup.get_text("\n", strip=True)
@@ -209,7 +198,7 @@ async def _fetch_document(
             body = await _download(client, document, config)
         if document.content_type in {"text/html", "application/xhtml+xml"}:
             document.title, text, document.extraction_method = await asyncio.to_thread(
-                _parse_html, body, document.final_url,
+                _parse_html, body,
             )
         else:
             text = body.strip()

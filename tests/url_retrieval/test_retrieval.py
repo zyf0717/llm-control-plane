@@ -55,7 +55,7 @@ async def test_empty_batch_performs_no_network_activity(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_html_extraction_uses_real_trafilatura_and_preserves_tables(web_backend):
+async def test_html_extraction_uses_beautifulsoup_and_preserves_tables(web_backend):
     html = (Path(__file__).parent / "fixtures/article.html").read_text()
     requests, _ = web_backend(lambda request: httpx.Response(
         200, text=html, headers={"content-type": "text/html; charset=utf-8"},
@@ -64,7 +64,7 @@ async def test_html_extraction_uses_real_trafilatura_and_preserves_tables(web_ba
     result = output["json"]["results"][0]
     assert result["status"] == "success"
     assert result["title"] == "Public Reference"
-    assert result["extraction_method"] == "trafilatura"
+    assert result["extraction_method"] == "beautifulsoup"
     assert "retrieval pipeline" in result["text"]
     assert "Concurrency" in result["text"]
     assert "Navigation menu" not in result["text"]
@@ -78,14 +78,7 @@ async def test_html_extraction_uses_real_trafilatura_and_preserves_tables(web_ba
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("extraction", [None, " \n", RuntimeError("extractor failed")])
-async def test_html_falls_back_to_cleaned_text(web_backend, monkeypatch, extraction):
-    def extract(*args, **kwargs):
-        if isinstance(extraction, Exception):
-            raise extraction
-        return extraction
-
-    monkeypatch.setattr(retrieval.trafilatura, "extract", extract)
+async def test_xhtml_extraction_removes_noncontent_elements(web_backend):
     web_backend(lambda request: httpx.Response(
         200, headers={"content-type": "application/xhtml+xml"},
         text="<head><title>Example</title><style>bad_css</style></head>"

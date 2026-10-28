@@ -8,7 +8,7 @@
 - [API Guide](api.md): proxy endpoints, request headers, streaming behavior, workflow APIs, and response metadata.
 - [Dashboard Guide](dashboard.md): Single-Slot chat, workflow dispatch, workflow run management, and runtime observability.
 - [Search Guide](search.md): ad hoc search, query refinement, reranking, provider limits, and workflow search behavior.
-- [URL Retrieval Guide](url-retrieval.md): deterministic URL discovery, public-web fetching, content extraction, and fallback.
+- [URL Retrieval Guide](url-retrieval.md): deterministic URL discovery, public-web fetching, and BeautifulSoup content extraction.
 - [Workflow Guide](workflows.md): workflow YAML schema, execution API, search/rerank steps, and built-in workflow patterns.
 - [Graph Guide](graphs.md): LangGraph-native graph configuration, API, and separation from workflows.
 

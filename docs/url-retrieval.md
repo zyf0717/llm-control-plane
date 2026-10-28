@@ -53,10 +53,9 @@ Bare domains and non-HTTP schemes are not discovered. Retrieved links are not
 crawled. A prompt with no URLs skips network retrieval and still receives an
 answer from the model using the available context.
 
-HTML/XHTML is processed by Trafilatura with comments excluded and tables
-included. If Trafilatura raises or produces empty/whitespace-only content,
-BeautifulSoup extracts readable text after removing scripts, styles, head,
-navigation, footer, and other non-content elements. Raw HTML is not included.
+BeautifulSoup extracts readable text from HTML/XHTML after removing scripts,
+styles, head, navigation, footer, and other non-content elements. Headings,
+link text, and table text are retained. Raw HTML is not included.
 Text MIME types and JSON are returned as text. PDFs, binary files, and responses
 without a supported Content-Type produce explicit document errors. JavaScript
 is not executed.
@@ -69,7 +68,7 @@ envelope:
 
 - `json.results`: ordered document records with `url`, `final_url`, `status`
   (`success` or `error`), `http_status`, `content_type`, `title`, `text`,
-  `extraction_method` (`trafilatura`, `beautifulsoup`, or `plain_text`), UTC
+  `extraction_method` (`beautifulsoup` or `plain_text`), UTC
   `fetched_at`, `truncated`, and `error`. Unavailable optional metadata is null;
   failed documents have empty text.
 - `text`: readable source text and per-document errors, labeled as untrusted
