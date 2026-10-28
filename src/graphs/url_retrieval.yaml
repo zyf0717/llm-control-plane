@@ -1,0 +1,12 @@
+id: url_retrieval
+name: URL Retrieval
+description: Deterministic URL discovery and public-web content retrieval without an LLM.
+input_schema:
+  type: object
+  required: [latest_user_prompt]
+  properties:
+    latest_user_prompt:
+      type: string
+ui:
+  supports_streaming: true
+  supports_interrupts: false

@@ -100,6 +100,7 @@ def test_shipped_graph_registry_loads_workflow_derived_graphs():
         "repo_context",
         "threaded_rag",
         "threaded_search",
+        "url_retrieval",
     }
 
 

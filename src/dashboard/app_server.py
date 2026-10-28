@@ -196,6 +196,10 @@ def workflow_uses_search_provider(spec: dict[str, Any] | None) -> bool:
     return "search" in workflow_step_kinds(spec)
 
 
+def workflow_requires_model_endpoint(spec: dict[str, Any] | None) -> bool:
+    return bool(workflow_step_kinds(spec) & {"llm", "compress_source"})
+
+
 def workflow_uses_retrieval_endpoint(spec: dict[str, Any] | None) -> bool:
     return "retrieval" in workflow_step_kinds(spec)
 
@@ -1330,8 +1334,9 @@ def server(input, output, session):
             )
             payload = {
                 "params": params,
-                "endpoint": workflow_endpoint_key(),
             }
+            if workflow_requires_model_endpoint(selected_spec):
+                payload["endpoint"] = workflow_endpoint_key()
             reasoning = str(input.workflowReasoning() or "").strip()
             if reasoning:
                 payload["reasoning_effort"] = reasoning
@@ -1793,17 +1798,20 @@ def server(input, output, session):
         if workflow_dispatch_id:
             send_button_state.set("busy")
             try:
+                spec = await fetch_workflow(workflow_dispatch_id)
                 endpoint_for_workflow = str(actual_endpoint_key or "").strip()
-                if not endpoint_for_workflow:
+                requires_endpoint = workflow_requires_model_endpoint(spec)
+                if requires_endpoint and not endpoint_for_workflow:
                     raise ValueError("select a machine endpoint")
-                if endpoint_for_workflow.lower() == "smart":
+                if requires_endpoint and endpoint_for_workflow.lower() == "smart":
                     raise ValueError(
                         "workflow dispatch requires a concrete Endpoint"
                     )
                 workflow_retrieval_endpoint = str(
                     _input_value(input, "retrievalEndpoint") or ""
                 ).strip()
-                spec = await fetch_workflow(workflow_dispatch_id)
+                if not requires_endpoint:
+                    endpoint_for_workflow = ""
                 panel_state = single_node_right_panel_state(
                     workflow_dispatch_id,
                     spec,

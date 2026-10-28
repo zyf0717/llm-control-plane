@@ -562,6 +562,7 @@ def test_default_workflow_config_directory_loads_shipped_specs():
         "threaded_search",
         "threaded_rag",
         "repo_context",
+        "url_retrieval",
     }
 
 

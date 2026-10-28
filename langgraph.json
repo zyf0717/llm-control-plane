@@ -3,7 +3,8 @@
   "graphs": {
     "repo_context": "src.graphs.repo_context:graph",
     "threaded_rag": "src.graphs.threaded_rag:graph",
-    "threaded_search": "src.graphs.threaded_search:graph"
+    "threaded_search": "src.graphs.threaded_search:graph",
+    "url_retrieval": "src.graphs.url_retrieval:graph"
   },
   "env": ".env"
 }

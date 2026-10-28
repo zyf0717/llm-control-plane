@@ -1,0 +1,34 @@
+id: url_retrieval
+name: URL Retrieval
+version: 0.1.0
+description: Deterministically discover URLs and return parsed public-web content without an LLM.
+params_schema:
+  type: object
+  required: [latest_user_prompt]
+  properties:
+    latest_user_prompt:
+      type: string
+steps:
+  - id: extract_urls
+    name: Extract URLs
+    kind: url_extract
+    prompt: "{{ params.latest_user_prompt }}"
+    output_key: url_candidates
+    output_contract:
+      format: json
+      required: true
+      schema:
+        type: object
+        required: [urls]
+        properties:
+          urls:
+            type: array
+            items:
+              type: string
+  - id: fetch_urls
+    name: Fetch and parse URLs
+    kind: url_fetch
+    depends_on: [extract_urls]
+    prompt: "{{ outputs.url_candidates.json.urls }}"
+    output_key: url_documents
+    chat_visibility: final
