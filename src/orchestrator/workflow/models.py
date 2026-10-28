@@ -12,6 +12,8 @@ WorkflowStepKind = Literal[
     "manual",
     "compress_source",
     "repo_context",
+    "url_extract",
+    "url_fetch",
 ]
 WorkflowChatVisibility = Literal["hidden", "intermediate", "final"]
 WorkflowOutputFormat = Literal["json", "yaml", "text"]
@@ -190,6 +192,8 @@ class WorkflowStepSpec:
             "manual",
             "compress_source",
             "repo_context",
+            "url_extract",
+            "url_fetch",
         }:
             raise ValueError(f"workflow step {step_id} has unsupported kind: {kind}")
         if "use_reranker" in data:
@@ -386,6 +390,10 @@ class WorkflowSpec:
     params_schema: dict[str, Any]
     defaults: WorkflowDefaults
     steps: list[WorkflowStepSpec]
+
+    @property
+    def requires_model_endpoint(self) -> bool:
+        return any(step.kind in {"llm", "compress_source"} for step in self.steps)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "WorkflowSpec":

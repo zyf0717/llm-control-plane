@@ -1,0 +1,8 @@
+<!doctype html>
+<html><head><title>Public Reference</title><style>.hidden { display: none }</style></head>
+<body><nav>Navigation menu</nav><main><article><h1>Retrieving reference documents</h1>
+<p>A retrieval pipeline downloads reference documents and extracts the relevant text. Each source retains its address so readers can inspect the original evidence. Downloading the source does not establish the accuracy of its claims. A useful result records where the content came from and whether it was truncated during processing.</p>
+<p>Network failures should be reported for each document independently. When several documents are requested together, one unavailable server should not discard all the other sources. Results should retain their input order even when their requests finish in a different order. This makes the output predictable for downstream consumers.</p>
+<p>HTML extraction removes surrounding navigation and unrelated material. Documentation frequently includes tables and code examples that should remain available in the extracted content. If the main extractor cannot identify readable content, a simpler parser can return the visible text. The extraction method should be recorded alongside the content.</p>
+<table><tr><th>Parameter</th><th>Value</th></tr><tr><td>Concurrency</td><td>Four</td></tr></table>
+</article></main><script>secret_script()</script><footer>Footer links</footer></body></html>

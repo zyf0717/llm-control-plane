@@ -2,7 +2,9 @@
 
 Graphs are LangGraph-native orchestration units that live independently from YAML workflows. They use Python graph code and the LangGraph app convention instead of the workflow step-DAG YAML schema.
 
-The shipped graphs are `repo_context`, `threaded_rag`, and `threaded_search`.
+The shipped graphs are `repo_context`, `threaded_rag`, `threaded_search`, and
+`url_retrieval`. [URL Retrieval](url-retrieval.md) fetches and parses URLs
+deterministically, then uses the selected model to answer the original prompt.
 
 ## Configuration
 

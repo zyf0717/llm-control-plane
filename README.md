@@ -18,6 +18,7 @@ optional model; multiple model entries can share a device or URL. See
 - [API Guide](docs/api.md)
 - [Dashboard Guide](docs/dashboard.md)
 - [Search Guide](docs/search.md)
+- [URL Retrieval Guide](docs/url-retrieval.md)
 - [Workflow Guide](docs/workflows.md)
 - [Graph Guide](docs/graphs.md)
 

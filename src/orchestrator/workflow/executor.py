@@ -62,7 +62,7 @@ class WorkflowExecutor:
         cleaned_params = params if isinstance(params, dict) else {}
         self._validate_required_params(spec, cleaned_params)
         run_endpoint = str(endpoint or "").strip()
-        if not run_endpoint:
+        if not run_endpoint and spec.requires_model_endpoint:
             raise ValueError("workflow run endpoint is required")
         if run_endpoint.lower() == "smart":
             raise ValueError("workflow run endpoint must be a concrete endpoint")
@@ -76,7 +76,7 @@ class WorkflowExecutor:
             status="pending",
             conversation_id=str(conversation_id or "").strip() or f"{run_id}_conversation",
             params=cleaned_params,
-            endpoint=run_endpoint,
+            endpoint=run_endpoint or None,
             reasoning_effort=reasoning_effort or spec.defaults.reasoning_effort,
             retrieval_endpoint=_optional_str(retrieval_endpoint),
             search_provider=_optional_str(search_provider),

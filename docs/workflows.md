@@ -9,6 +9,7 @@ Workflows are YAML-defined multi-step runs loaded from `workflow_configs/`. They
 | `threaded_search` | Use thread context to plan searches, dispatch multiple queries, rerank globally, and answer the latest prompt |
 | `threaded_rag` | Use thread context to plan multiple Retrieval queries, dispatch them concurrently, then answer from merged RAG evidence |
 | `repo_context` | Explore one local repository through the configured repo-context CLI |
+| `url_retrieval` | Fetch supplied URLs deterministically, then answer the original prompt using their content |
 
 Research Brief and Implementation Plan have been retired. Use Search with the
 desired answer format in the request, or Repo Context for repository-specific work.
@@ -41,7 +42,10 @@ Create-run body:
 }
 ```
 
-`endpoint` is required and must be a concrete configured endpoint, not `smart`.
+`endpoint` is required for workflows containing `llm` or `compress_source` steps
+and must be a concrete configured endpoint, not `smart`. Workflows containing
+only deterministic steps can omit it. `url_retrieval` requires an endpoint for
+its final answer step.
 
 Model-backed steps can instead declare `workload_type: utility` to resolve their
 endpoint from the [workload preference list](configuration.md#workload-preferences).
@@ -92,11 +96,11 @@ Common fields:
 |---|---|---|
 | `id` | all | Stable step id |
 | `name` | all | Display label; defaults to `id` |
-| `kind` | all | `llm`, `search`, `retrieval`, `rerank`, `manual`, `compress_source`, or `repo_context` |
+| `kind` | all | `llm`, `search`, `retrieval`, `rerank`, `manual`, `compress_source`, `repo_context`, `url_extract`, or `url_fetch` |
 | `depends_on` | all | Step ids that must complete first |
-| `prompt` | `llm`, `search`, `retrieval`, `rerank` | Template rendered from params and prior outputs |
+| `prompt` | `llm`, `search`, `retrieval`, `rerank`, `url_extract`, `url_fetch` | Template rendered from params and prior outputs |
 | `output_key` | all | Key used in `outputs`; defaults to step id |
-| `chat_visibility` | `llm` | `hidden`, `intermediate`, or `final` |
+| `chat_visibility` | all | `hidden`, `intermediate`, or `final` |
 | `chat_stream` | `llm` | Override streaming for that LLM step |
 | `endpoint` | `llm`, `compress_source` | Override the run endpoint for this model-backed step |
 | `workload_type` | `llm`, `compress_source` | Resolve a configured workload instead of inheriting the run endpoint; mutually exclusive with `endpoint` |
@@ -197,6 +201,18 @@ This keeps search recall and reranking relevance separate: provider queries can 
 `threaded_rag` first runs `plan_rag_prompt` with `use_retrieval: false`. That step resolves pronouns, ellipses, omitted subjects, and thread-local constraints into one self-contained `retrieval_prompt` plus one to six `retrieval_queries`. It emits multiple queries when the prompt mentions, compares, or implies multiple entities, projects, repos, products, services, dates, or evidence angles.
 
 The `retrieve_evidence` step dispatches those queries concurrently to the selected run-level Retrieval endpoint and merges the returned evidence. The final `answer_with_rag` LLM step also sets `use_retrieval: false`; it synthesizes from the merged retrieval output instead of triggering an additional single-query proxy Retrieval pass.
+
+## URL Retrieval Pattern
+
+`url_retrieval` exposes deterministic `url_extract` and `url_fetch` steps that can
+also be used in custom workflows. `url_extract` consumes text and returns
+`json.urls`; `url_fetch` consumes a JSON array of URL strings and returns
+`json.results`. See [URL Retrieval](url-retrieval.md) for invocation, limits, and
+content extraction behavior.
+
+After fetching, `answer_from_urls` uses the selected model to follow the original
+prompt, including its requested output format, with the source documents and
+normal thread/supplied context. The discovery and fetch steps do not call an LLM.
 
 ## Dashboard Integration
 

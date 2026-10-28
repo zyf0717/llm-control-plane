@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, AsyncIterator, Protocol
 
 from src.llm_metrics import without_call_metrics
+from src.url_retrieval import extract_url_output, fetch_url_output
 
 from ..repo_context import RepoContextResult
 from .compression import (
@@ -159,6 +160,13 @@ class WorkflowStepExecutor:
             )
 
         prompt = render_template(step.prompt or "", step_input)
+        if step.kind == "url_extract":
+            return WorkflowStepExecution(output=extract_url_output(prompt))
+
+        if step.kind == "url_fetch":
+            output = await fetch_url_output(json.loads(prompt))
+            return WorkflowStepExecution(output=output, artifact_text=output["text"])
+
         if step.kind == "compress_source":
             return await self._execute_compress_source_step(
                 run=run,
